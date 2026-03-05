@@ -1,21 +1,25 @@
 using Unity.Netcode;
 using UnityEngine;
+using Unity.XR.CoreUtils;
 
 public class AvatarFollowXROrigin : NetworkBehaviour
 {
-    [Header("Assign these in the prefab")]
-    public Transform xrOrigin;   // XR Origin transform (local player)
-    public Transform head;       // Head mesh transform (Sphere)
+    public Transform head;
 
-    private Transform hmd;       // Main Camera in XR Origin
+    Transform xrOrigin;
+    Transform hmd;
 
     public override void OnNetworkSpawn()
     {
         if (!IsOwner) return;
+        TryFindXR();
+    }
 
-        // Find XR Origin in scene
-        var origin = FindObjectOfType<Unity.XR.CoreUtils.XROrigin>();
-        if (origin != null)
+    void TryFindXR()
+    {
+        var origin = FindObjectOfType<XROrigin>();
+
+        if (origin != null && origin.Camera != null)
         {
             xrOrigin = origin.transform;
             hmd = origin.Camera.transform;
@@ -25,13 +29,18 @@ public class AvatarFollowXROrigin : NetworkBehaviour
     void Update()
     {
         if (!IsOwner) return;
-        if (xrOrigin == null || hmd == null) return;
 
-        // Move avatar root to XR Origin position (feet)
-        transform.position = xrOrigin.position;
-        transform.rotation = Quaternion.Euler(0f, hmd.eulerAngles.y, 0f);
+        if (xrOrigin == null || hmd == null)
+        {
+            TryFindXR();
+            return;
+        }
 
-        // Move head to HMD pose (relative)
+        // Avatar root follows player feet
+        transform.position = new Vector3(hmd.position.x, 0f, hmd.position.z);
+        transform.rotation = Quaternion.Euler(0, hmd.eulerAngles.y, 0);
+
+        // Head follows HMD
         if (head != null)
         {
             head.position = hmd.position;
