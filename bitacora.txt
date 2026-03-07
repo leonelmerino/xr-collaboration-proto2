@@ -1,0 +1,4 @@
+6 de marzo
+-red casi funcionando. se ven los avatars. el host ve dos avatars pero ninguno se mueve. Salvo uno de los avatars que solo mueve la cabeza (en altura) que es el mismo.
+-el cliente ve al host moviendose perfectamente. no ve los movimientos de cabeza que si ve el host.
+-se resolvio un problema de conexion desactivando windows defender y activando en un componente de network que se permitieran conexiones remotas
