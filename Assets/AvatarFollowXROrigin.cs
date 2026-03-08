@@ -6,8 +6,7 @@ public class AvatarFollowXROrigin : NetworkBehaviour
 {
     public Transform head;
 
-    Transform xrOrigin;
-    Transform hmd;
+    private Transform hmd;
 
     public override void OnNetworkSpawn()
     {
@@ -21,30 +20,30 @@ public class AvatarFollowXROrigin : NetworkBehaviour
 
         if (origin != null && origin.Camera != null)
         {
-            xrOrigin = origin.transform;
             hmd = origin.Camera.transform;
         }
     }
 
-    void Update()
+    void LateUpdate()
     {
-        if (!IsOwner) return;
+        if (!IsOwner)
+            return;
 
-        if (xrOrigin == null || hmd == null)
+        if (hmd == null)
         {
             TryFindXR();
             return;
         }
 
-        // Avatar root follows player feet
+        // Root = body/feet approximation
         transform.position = new Vector3(hmd.position.x, 0f, hmd.position.z);
-        transform.rotation = Quaternion.Euler(0, hmd.eulerAngles.y, 0);
+        transform.rotation = Quaternion.Euler(0f, hmd.eulerAngles.y, 0f);
 
-        // Head follows HMD
+        // Head = local pose relative to body
         if (head != null)
         {
-            head.position = hmd.position;
-            head.rotation = hmd.rotation;
+            head.localPosition = transform.InverseTransformPoint(hmd.position);
+            head.localRotation = Quaternion.Inverse(transform.rotation) * hmd.rotation;
         }
     }
 }
