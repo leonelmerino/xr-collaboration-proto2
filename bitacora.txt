@@ -1,4 +1,81 @@
-6 de marzo
--red casi funcionando. se ven los avatars. el host ve dos avatars pero ninguno se mueve. Salvo uno de los avatars que solo mueve la cabeza (en altura) que es el mismo.
--el cliente ve al host moviendose perfectamente. no ve los movimientos de cabeza que si ve el host.
--se resolvio un problema de conexion desactivando windows defender y activando en un componente de network que se permitieran conexiones remotas
++++++++6 de marzo
+
+-Estado inicial de la red multijugador y sincronización de avatares.
+-La conexión de red estaba casi funcionando. Los avatares aparecían en la
+escena para ambos usuarios.
+-En el host se veían dos avatares, pero ninguno se movía correctamente.
+Solo uno mostraba movimiento vertical de la cabeza (eje Y),
+correspondiente al propio usuario.
+-En el cliente, el avatar del host se veía moverse correctamente en la
+escena.
+-El cliente no observaba correctamente los movimientos de cabeza que sí
+eran visibles desde el host.
+-Se identificó un problema de conexión relacionado con la configuración
+de red del sistema.
+-La comunicación entre los dos equipos se corrigió mediante:
+    -desactivación temporal de Windows Defender Firewall
+    -activación de la opción Allow Remote Connections en el componente de
+red utilizado en Unity
+-Después de este cambio la comunicación entre host y cliente comenzó a
+funcionar correctamente.
+
++++++++8 de marzo
+
+-Corrección de sincronización de avatares entre cliente y host.
+-Antes de la corrección ocurría lo siguiente:
+-En el host, el avatar del cliente solo mostraba movimiento vertical de
+la cabeza.
+-En el cliente, su propio avatar aparecía estático sin movimiento
+corporal.
+-El cliente sí veía correctamente el movimiento del avatar del host.
+-Se revisó la lógica de propiedad de red (NetworkObject ownership) y el
+comportamiento del script que sincroniza el avatar con el XROrigin.
+-Se ajustó el script AvatarFollowXROrigin para asegurar que solo el
+owner del avatar actualice su posición y que el resto de los clientes
+reciba la actualización a través del sistema de red.
+-Después de estos cambios:
+    -el host ve correctamente el movimiento del cliente
+    -el cliente ve correctamente el movimiento del host
+    -cada usuario ve su propio avatar sincronizado con el headset
+-El sistema multijugador quedó funcionando correctamente en la red
+local.
+
++++++++11 de marzo
+
+-Implementación y depuración de hand tracking con visualización del
+gesto pinch usando XR Hands en Quest 3.
+-Se habilitó Hand Tracking en OpenXR dentro de Unity.
+-Se verificó que el seguimiento de manos funciona en Play Mode usando
+Quest Link sin necesidad de compilar para Android.
+-Se confirmó la detección del gesto pinch mediante mensajes en la
+consola al juntar pulgar e índice.
+-Se implementó el script PinchDebugVisualizer para visualizar las
+posiciones de los dedos.
+-Se creó un objeto contenedor en la escena llamado HandDebug para
+agrupar los elementos de depuración.
+-Dentro de HandDebug se agregaron marcadores visuales (esferas) para
+representar las puntas del pulgar y del índice.
+-Para cada mano se crearon tres marcadores:
+-ThumbMarker (punta del pulgar)
+-IndexMarker (punta del índice)
+-PinchMarker (punto medio cuando ocurre el pinch)
+-Se añadió un LineRenderer para dibujar una línea entre pulgar e índice
+y visualizar la distancia entre ambos dedos.
+-El sistema calcula la distancia entre los joints ThumbTip e IndexTip.
+-Cuando la distancia es menor que un umbral (pinchThreshold) se activa
+el marcador de pinch.
+-Se agregó soporte para ambas manos duplicando los marcadores y las
+líneas de depuración para mano izquierda y derecha.
+-Durante la depuración se detectó un desplazamiento de las esferas
+respecto a la posición real de las manos.
+-El problema se debía a una diferencia entre el espacio de tracking del
+headset y el espacio de mundo de Unity.
+-Se corrigió el cálculo de posición usando la relación entre la
+posición global de la cámara y su posición local dentro del XR Origin.
+-Después de la corrección el sistema muestra correctamente:
+    -esferas en la punta del pulgar e índice
+    -linea entre ambos dedos
+    -marcador de pinch cuando los dedos se juntan
+-Este sistema servirá como base para implementar interacción mediante
+gestos de mano para manipular objetos en la escena (por ejemplo bloques
+del Jenga).
