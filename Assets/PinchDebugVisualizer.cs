@@ -1,21 +1,35 @@
 using UnityEngine;
 using UnityEngine.XR.Hands;
+using Unity.XR.CoreUtils;
 using System.Collections.Generic;
 
 public class PinchDebugVisualizer : MonoBehaviour
 {
     XRHandSubsystem handSubsystem;
+    XROrigin xrOrigin;
+    Transform hmd;
 
-    public Transform thumbMarker;
-    public Transform indexMarker;
-    public Transform pinchMarker;
+    public Transform rightThumb;
+    public Transform rightIndex;
+    public Transform rightPinch;
+    public LineRenderer rightPinchLine;
 
-    [SerializeField] float pinchThreshold = 0.025f;
+    public Transform leftThumb;
+    public Transform leftIndex;
+    public Transform leftPinch;
+    public LineRenderer leftPinchLine;
 
-    bool isPinching = false;
+    public float pinchThreshold = 0.025f;
 
     void Start()
     {
+        xrOrigin = FindObjectOfType<XROrigin>();
+
+        if (xrOrigin != null && xrOrigin.Camera != null)
+        {
+            hmd = xrOrigin.Camera.transform;
+        }
+
         List<XRHandSubsystem> subsystems = new List<XRHandSubsystem>();
         SubsystemManager.GetSubsystems(subsystems);
 
@@ -36,11 +50,25 @@ public class PinchDebugVisualizer : MonoBehaviour
         XRHandSubsystem.UpdateSuccessFlags flags,
         XRHandSubsystem.UpdateType updateType)
     {
-        var hand = subsystem.rightHand;
+        UpdateHand(subsystem.rightHand, rightThumb, rightIndex, rightPinch, rightPinchLine);
+        UpdateHand(subsystem.leftHand, leftThumb, leftIndex, leftPinch, leftPinchLine);
+    }
 
+    void UpdateHand(XRHand hand,
+                    Transform thumbMarker,
+                    Transform indexMarker,
+                    Transform pinchMarker,
+                    LineRenderer pinchLine)
+    {
         if (!hand.isTracked)
         {
+            thumbMarker.gameObject.SetActive(false);
+            indexMarker.gameObject.SetActive(false);
             pinchMarker.gameObject.SetActive(false);
+
+            if (pinchLine != null)
+                pinchLine.enabled = false;
+
             return;
         }
 
@@ -50,27 +78,40 @@ public class PinchDebugVisualizer : MonoBehaviour
         if (!thumb.TryGetPose(out var thumbPose)) return;
         if (!index.TryGetPose(out var indexPose)) return;
 
-        thumbMarker.position = thumbPose.position;
-        indexMarker.position = indexPose.position;
+        Vector3 thumbWorld = thumbPose.position;
+        Vector3 indexWorld = indexPose.position;
 
-        float dist = Vector3.Distance(
-            thumbPose.position,
-            indexPose.position
-        );
+        if (hmd != null)
+        {
+            Vector3 trackingToWorldOffset = hmd.position - hmd.localPosition;
+            thumbWorld = trackingToWorldOffset + thumbPose.position;
+            indexWorld = trackingToWorldOffset + indexPose.position;
+        }
 
-        bool pinchNow = dist < pinchThreshold;
+        thumbMarker.gameObject.SetActive(true);
+        indexMarker.gameObject.SetActive(true);
 
-        if (pinchNow)
+        thumbMarker.position = thumbWorld;
+        indexMarker.position = indexWorld;
+
+        if (pinchLine != null)
+        {
+            pinchLine.enabled = true;
+            pinchLine.positionCount = 2;
+            pinchLine.SetPosition(0, thumbWorld);
+            pinchLine.SetPosition(1, indexWorld);
+        }
+
+        float dist = Vector3.Distance(thumbWorld, indexWorld);
+
+        if (dist < pinchThreshold)
         {
             pinchMarker.gameObject.SetActive(true);
-            pinchMarker.position =
-                (thumbPose.position + indexPose.position) * 0.5f;
+            pinchMarker.position = (thumbWorld + indexWorld) * 0.5f;
         }
         else
         {
             pinchMarker.gameObject.SetActive(false);
         }
-
-        isPinching = pinchNow;
     }
 }
