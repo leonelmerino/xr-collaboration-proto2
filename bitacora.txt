@@ -79,3 +79,28 @@ posición global de la cámara y su posición local dentro del XR Origin.
 -Este sistema servirá como base para implementar interacción mediante
 gestos de mano para manipular objetos en la escena (por ejemplo bloques
 del Jenga).
+
++++++++11 de marzo
+
+-se inicio la implementacion del juego jenga en la escena de VR colaborativa
+-se definio la estructura de la torre con bloques apilados en niveles alternados
+-se creo el prefab JengaBlock con Rigidbody y BoxCollider para fisica
+-se definieron las dimensiones reales del bloque (0.075, 0.015, 0.025)
+-se implemento el script JengaTowerGenerator para crear la torre
+-se genero la torre automaticamente como hijo del objeto JengaTower
+-se agrego asignacion aleatoria de materiales para tres colores de bloques
+-se detecto que los bloques explotaban al iniciar por colisiones incorrectas
+-se revisaron las posiciones y rotaciones generadas por el script
+-se confirmo mediante logs que las posiciones calculadas eran correctas
+-se detecto que el BoxCollider del prefab tenia tamaño incorrecto
+-el collider estaba definido como 0.75,0.75,0.75 en lugar de 0.075,0.015,0.025
+-se corrigieron las dimensiones del collider para coincidir con el bloque
+-se reorganizo el prefab separando fisica y visual en root y objeto hijo
+-se creo el objeto hijo Visual para contener el mesh del bloque
+-el root JengaBlock se dejo con Rigidbody y BoxCollider solamente
+-se verifico que el root del prefab tenga scale 1,1,1
+-se eliminaron posibles colliders duplicados en el objeto visual
+-se ajustaron los parametros de separacion horizontal y vertical
+-se probaron distintos valores de spacing para evitar interpenetraciones
+-se confirmo que la torre ahora se genera sin explosiones de fisica
+-se dejaron valores iniciales de spacing para mejorar estabilidad de la torre
