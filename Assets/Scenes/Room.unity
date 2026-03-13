@@ -6967,10 +6967,13 @@ MonoBehaviour:
   blockLength: 0.075
   blockHeight: 0.015
   blockWidth: 0.025
-  levels: 6
+  levels: 4
   horizontalSpacing: 0.0005
   verticalSpacing: 0.0002
-  generateOnStart: 1
+  dropHeight: 0.01
+  settleVelocity: 0.01
+  settleAngularVelocity: 0.01
+  maxSettleTime: 1
 --- !u!114 &1947143816
 MonoBehaviour:
   m_ObjectHideFlags: 0
