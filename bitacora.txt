@@ -104,3 +104,32 @@ del Jenga).
 -se probaron distintos valores de spacing para evitar interpenetraciones
 -se confirmo que la torre ahora se genera sin explosiones de fisica
 -se dejaron valores iniciales de spacing para mejorar estabilidad de la torre
+
++++++++12 de marzo
+
+-se estabilizó la generación de la torre de jenga
+-se reemplazó el generador anterior por uno que crea bloques de forma
+progresiva usando física
+-se implementó WaitUntilSettled para esperar a que cada bloque se
+estabilice antes de crear el siguiente
+-se ajustaron parámetros de generación (spacing, drop height,
+vertical spacing) para reducir intersecciones entre bloques
+-se revisó la configuración de rigidbody y colliders del bloque
+para evitar penetraciones y explosiones físicas
+-se probó la estabilidad de la torre con distintos números de niveles
+-se diagnosticó que el problema principal de colapso ocurre durante
+la interacción con los bloques intermedios
+-se definió una estrategia de interacción por etapas para jenga
+-se decidió implementar primero interacción tipo poke con el
+dedo índice para empujar bloques de forma física
+-se diseñó el componente JengaPokeInteractor para detectar contacto
+del índice y aplicar una fuerza pequeña al bloque
+
+Próxima sesión (plan)
+-implementar y probar el sistema de interacción poke con los
+marcadores de índice del hand tracking
+-calibrar la fuerza aplicada a los bloques para lograr empujes
+naturales sin derrumbar la torre
+-evaluar estabilidad de la torre con interacción física real del dedo
+-definir el estado "grabbable" de un bloque parcialmente extraído
+para implementar posteriormente el pinch grab controlado
