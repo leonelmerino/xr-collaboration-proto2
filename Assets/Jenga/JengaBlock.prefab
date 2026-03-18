@@ -11,6 +11,8 @@ GameObject:
   - component: {fileID: 6231455106769663187}
   - component: {fileID: 5999386345397306083}
   - component: {fileID: 5455298381079598215}
+  - component: {fileID: -1257038230711148130}
+  - component: {fileID: 284153896150984869}
   m_Layer: 0
   m_Name: JengaBlock
   m_TagString: Untagged
@@ -82,6 +84,30 @@ Rigidbody:
   m_Interpolate: 1
   m_Constraints: 0
   m_CollisionDetection: 2
+--- !u!114 &-1257038230711148130
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5077624559600400925}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ac72b653ee9790f4ebed2aad4fca6757, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+--- !u!114 &284153896150984869
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5077624559600400925}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 26e7e96cf52956147addc1a8c8e3486e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!1 &5996739235252616761
 GameObject:
   m_ObjectHideFlags: 0

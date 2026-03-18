@@ -1,35 +1,35 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR.Hands;
 using Unity.XR.CoreUtils;
-using System.Collections.Generic;
 
 public class PinchDebugVisualizer : MonoBehaviour
 {
-    XRHandSubsystem handSubsystem;
-    XROrigin xrOrigin;
-    Transform hmd;
+    private XRHandSubsystem handSubsystem;
+    private XROrigin xrOrigin;
+    private Transform trackingRoot;
 
+    [Header("Right Hand")]
     public Transform rightThumb;
     public Transform rightIndex;
     public Transform rightPinch;
     public LineRenderer rightPinchLine;
+    public Transform rightRayOrigin;
+    public JengaRayGrabInteractor rightRayGrabInteractor;
 
+    [Header("Left Hand")]
     public Transform leftThumb;
     public Transform leftIndex;
     public Transform leftPinch;
     public LineRenderer leftPinchLine;
+    public Transform leftRayOrigin;
+    public JengaRayGrabInteractor leftRayGrabInteractor;
 
+    [Header("Pinch Settings")]
     public float pinchThreshold = 0.025f;
 
     void Start()
     {
-        xrOrigin = FindObjectOfType<XROrigin>();
-
-        if (xrOrigin != null && xrOrigin.Camera != null)
-        {
-            hmd = xrOrigin.Camera.transform;
-        }
-
         List<XRHandSubsystem> subsystems = new List<XRHandSubsystem>();
         SubsystemManager.GetSubsystems(subsystems);
 
@@ -37,6 +37,22 @@ public class PinchDebugVisualizer : MonoBehaviour
         {
             handSubsystem = subsystems[0];
             handSubsystem.updatedHands += OnHandsUpdated;
+            Debug.Log("XRHandSubsystem connected.");
+        }
+        else
+        {
+            Debug.LogWarning("No XRHandSubsystem found.");
+        }
+
+        xrOrigin = FindObjectOfType<XROrigin>();
+        if (xrOrigin != null)
+        {
+            trackingRoot = xrOrigin.transform;
+            Debug.Log("XROrigin found: " + xrOrigin.name);
+        }
+        else
+        {
+            Debug.LogWarning("No XROrigin found.");
         }
     }
 
@@ -46,20 +62,44 @@ public class PinchDebugVisualizer : MonoBehaviour
             handSubsystem.updatedHands -= OnHandsUpdated;
     }
 
-    void OnHandsUpdated(XRHandSubsystem subsystem,
+    void OnHandsUpdated(
+        XRHandSubsystem subsystem,
         XRHandSubsystem.UpdateSuccessFlags flags,
         XRHandSubsystem.UpdateType updateType)
     {
-        UpdateHand(subsystem.rightHand, rightThumb, rightIndex, rightPinch, rightPinchLine);
-        UpdateHand(subsystem.leftHand, leftThumb, leftIndex, leftPinch, leftPinchLine);
+        UpdateSingleHand(
+            subsystem.rightHand,
+            rightThumb,
+            rightIndex,
+            rightPinch,
+            rightPinchLine,
+            rightRayOrigin,
+            rightRayGrabInteractor
+        );
+
+        UpdateSingleHand(
+            subsystem.leftHand,
+            leftThumb,
+            leftIndex,
+            leftPinch,
+            leftPinchLine,
+            leftRayOrigin,
+            leftRayGrabInteractor
+        );
     }
 
-    void UpdateHand(XRHand hand,
-                    Transform thumbMarker,
-                    Transform indexMarker,
-                    Transform pinchMarker,
-                    LineRenderer pinchLine)
+    void UpdateSingleHand(
+        XRHand hand,
+        Transform thumbMarker,
+        Transform indexMarker,
+        Transform pinchMarker,
+        LineRenderer pinchLine,
+        Transform rayOrigin,
+        JengaRayGrabInteractor rayGrabInteractor)
     {
+        if (thumbMarker == null || indexMarker == null || pinchMarker == null)
+            return;
+
         if (!hand.isTracked)
         {
             thumbMarker.gameObject.SetActive(false);
@@ -69,23 +109,32 @@ public class PinchDebugVisualizer : MonoBehaviour
             if (pinchLine != null)
                 pinchLine.enabled = false;
 
+            if (rayOrigin != null)
+                rayOrigin.gameObject.SetActive(false);
+
+            if (rayGrabInteractor != null)
+                rayGrabInteractor.SetPinchState(false);
+
             return;
         }
 
         var thumb = hand.GetJoint(XRHandJointID.ThumbTip);
         var index = hand.GetJoint(XRHandJointID.IndexTip);
 
-        if (!thumb.TryGetPose(out var thumbPose)) return;
-        if (!index.TryGetPose(out var indexPose)) return;
+        if (!thumb.TryGetPose(out Pose thumbPose) ||
+            !index.TryGetPose(out Pose indexPose))
+        {
+            return;
+        }
 
+        // Convertir a world space usando el XR Origin
         Vector3 thumbWorld = thumbPose.position;
         Vector3 indexWorld = indexPose.position;
 
-        if (hmd != null)
+        if (trackingRoot != null)
         {
-            Vector3 trackingToWorldOffset = hmd.position - hmd.localPosition;
-            thumbWorld = trackingToWorldOffset + thumbPose.position;
-            indexWorld = trackingToWorldOffset + indexPose.position;
+            thumbWorld = trackingRoot.TransformPoint(thumbPose.position);
+            indexWorld = trackingRoot.TransformPoint(indexPose.position);
         }
 
         thumbMarker.gameObject.SetActive(true);
@@ -103,8 +152,9 @@ public class PinchDebugVisualizer : MonoBehaviour
         }
 
         float dist = Vector3.Distance(thumbWorld, indexWorld);
+        bool isPinching = dist < pinchThreshold;
 
-        if (dist < pinchThreshold)
+        if (isPinching)
         {
             pinchMarker.gameObject.SetActive(true);
             pinchMarker.position = (thumbWorld + indexWorld) * 0.5f;
@@ -113,5 +163,20 @@ public class PinchDebugVisualizer : MonoBehaviour
         {
             pinchMarker.gameObject.SetActive(false);
         }
+
+        // Ray origin sale desde la punta del índice
+        if (rayOrigin != null)
+        {
+            rayOrigin.gameObject.SetActive(true);
+            rayOrigin.position = indexWorld;
+
+            if (Camera.main != null)
+            {
+                rayOrigin.rotation = Camera.main.transform.rotation;
+            }
+        }
+
+        if (rayGrabInteractor != null)
+            rayGrabInteractor.SetPinchState(isPinching);
     }
 }

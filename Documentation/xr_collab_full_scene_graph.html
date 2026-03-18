@@ -1,0 +1,397 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font-sans, sans-serif); background: transparent; }
+
+#wrap { position: relative; }
+canvas { display: block; width: 100%; height: auto; cursor: default; }
+
+.tip {
+  position: absolute;
+  background: var(--color-background-primary);
+  border: 0.5px solid var(--color-border-secondary);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.55;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.1s;
+  max-width: 220px;
+  z-index: 20;
+  color: var(--color-text-primary);
+}
+.tip strong { font-weight: 500; display: block; margin-bottom: 3px; }
+.tip span { color: var(--color-text-secondary); }
+
+.legend {
+  display: flex; flex-wrap: wrap; gap: 8px 16px;
+  padding: 8px 6px 2px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  border-top: 0.5px solid var(--color-border-tertiary);
+  margin-top: 4px;
+}
+.li { display: flex; align-items: center; gap: 5px; }
+.li-sq { width: 10px; height: 10px; border-radius: 3px; }
+.li-ln { width: 22px; height: 2px; border-radius: 1px; }
+.li-ds { width: 22px; height: 0; border-top: 2px dashed; }
+.li-mat { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid rgba(0,0,0,0.2); }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div class="tip" id="tip"></div>
+</div>
+<div class="legend">
+  <span style="font-weight:500;color:var(--color-text-primary)">Tipos de nodo:</span>
+  <span class="li"><span class="li-sq" style="background:#EEEDFE;border:1px solid #7F77DD"></span>Script .cs</span>
+  <span class="li"><span class="li-sq" style="background:#E6F1FB;border:1px solid #378ADD"></span>GameObject</span>
+  <span class="li"><span class="li-sq" style="background:#FAEEDA;border:1px solid #BA7517"></span>Prefab / Asset</span>
+  <span class="li"><span class="li-sq" style="background:#E1F5EE;border:1px solid #1D9E75"></span>Comp. de red (NGO)</span>
+  <span class="li"><span class="li-sq" style="background:#FAECE7;border:1px solid #D85A30"></span>Material custom</span>
+  <span style="font-weight:500;color:var(--color-text-primary)">Relaciones:</span>
+  <span class="li"><span class="li-ln" style="background:#378ADD"></span>usa / referencia</span>
+  <span class="li"><span class="li-ds" style="border-color:#1D9E75"></span>instancia en runtime</span>
+  <span class="li"><span class="li-ln" style="background:#D85A30"></span>hereda de</span>
+  <span class="li"><span class="li-ln" style="background:#888780"></span>hijo de (escena)</span>
+</div>
+<script>
+const CVS = document.getElementById('c');
+const ctx = CVS.getContext('2d');
+const tip = document.getElementById('tip');
+const DPR = window.devicePixelRatio || 1;
+const W = 1020, H = 1160;
+CVS.width = W*DPR; CVS.height = H*DPR;
+CVS.style.width = '100%';
+ctx.scale(DPR, DPR);
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+const TP = dark ? '#e2e0d6' : '#1a1a18';
+const TS = dark ? '#9c9a92' : '#73726c';
+
+// ── Node type palettes ──────────────────────────────────────────────
+const PAL = {
+  script:  { f: dark?'#26215C':'#EEEDFE', s:'#7F77DD', t: dark?'#CCC8F4':'#3C3489' },
+  go:      { f: dark?'#042C53':'#E6F1FB', s:'#378ADD', t: dark?'#85B7EB':'#0C447C' },
+  asset:   { f: dark?'#412402':'#FAEEDA', s:'#BA7517', t: dark?'#FAC775':'#633806' },
+  net:     { f: dark?'#04342C':'#E1F5EE', s:'#1D9E75', t: dark?'#5DCAA5':'#085041' },
+  mat:     { f: dark?'#4A1B0C':'#FAECE7', s:'#D85A30', t: dark?'#F0997B':'#712B13' },
+  group:   { f: dark?'#2C2C2A':'#F1EFE8', s:'#888780', t: dark?'#B4B2A9':'#444441' },
+};
+
+// ── NODES ────────────────────────────────────────────────────────────
+// Each node: id, label, sub, x, y, w, h, type, info, inactive
+const N = [
+
+  // ════ ZONA: HABITACIÓN ═══════════════════════════════════════════
+  { id:'room',        label:'Room',              sub:'ProBuilder · raíz de escena',    x:100,  y:60,   w:170, h:50, type:'go',    info:'Contenedor raíz de la escena. Tiene 3 hijos: Furniture, Floor (con Ceiling anidado), Walls.' },
+  { id:'furniture',   label:'Furniture',         sub:'Mesa + 3 sillas',                x:100,  y:145,  w:170, h:50, type:'go',    info:'GO hijo de Room. Contiene: TableTop, TableLeg ×4, ChairSeat ×3. Sin scripts propios.' },
+  { id:'walls',       label:'Walls',             sub:'Wall_N/S/E/W · 4 planos',        x:100,  y:230,  w:170, h:50, type:'go',    info:'GO hijo de Room. Contiene Wall_North, South, East, West. Cada pared usa WallMaterial.' },
+  { id:'floor',       label:'Floor + Ceiling',   sub:'plano suelo y techo',            x:100,  y:315,  w:170, h:50, type:'go',    info:'Floor usa FloorMaterial (gris oscuro #262626). Ceiling es hijo de Floor y usa CeilingMaterial (blanco cálido).' },
+
+  // materiales habitación
+  { id:'matWall',     label:'WallMaterial',      sub:'gris #858585',                   x:310,  y:145,  w:145, h:44, type:'mat',   info:'Standard shader. Color: gris medio rgba(0.52,0.52,0.52). Aplicado en los 4 muros.' },
+  { id:'matFloor',    label:'FloorMaterial',     sub:'gris oscuro #262626',            x:310,  y:200,  w:145, h:44, type:'mat',   info:'Standard shader. Color: gris muy oscuro rgba(0.15,0.15,0.15). Simula suelo neutro.' },
+  { id:'matCeil',     label:'CeilingMaterial',   sub:'blanco cálido #F5EFEF',          x:310,  y:255,  w:145, h:44, type:'mat',   info:'Standard shader. Color: blanco casi puro con leve tono cálido rgba(0.96,0.94,0.94).' },
+
+  // ════ ZONA: MULTIJUGADOR ══════════════════════════════════════════
+  { id:'networkGO',   label:'Network',           sub:'GO · NetworkManager',            x:560,  y:60,   w:175, h:50, type:'net',   info:'GO raíz de red. Tiene el componente NetworkManager de NGO. DefaultNetworkPrefabs está asignado aquí.' },
+  { id:'netLauncher', label:'NetworkLauncher.cs', sub:'H = Host  ·  C = Client',       x:760,  y:60,   w:185, h:50, type:'script',info:'Script attached a Network. Escucha teclas H y C en Update() y llama NetworkManager.Singleton.StartHost/Client().' },
+  { id:'defPrefabs',  label:'DefaultNetworkPrefabs', sub:'asset de registro NGO',      x:960,  y:60,   w:185, h:50, type:'asset', info:'Asset que registra qué prefabs puede instanciar NGO en red. Tiene registrado Avatar.prefab.' },
+
+  { id:'avatarPrefab',label:'Avatar.prefab',     sub:'prefab de jugador en red',       x:760,  y:165,  w:185, h:50, type:'asset', info:'Prefab instanciado por NGO para cada cliente. Root: Avatar GO. Hijos: Head (esfera, escala 0.22) y Body (cápsula). Tiene NetworkObject, AvatarFollowXROrigin y OwnerNetworkTransform.' },
+  { id:'avatarGO',    label:'Avatar (instancia)', sub:'GO · 1 por jugador conectado',  x:560,  y:165,  w:185, h:50, type:'go',    info:'Instancia de Avatar.prefab creada por NGO al conectarse un cliente. Contiene Head y Body como hijos con MeshRenderer (sin material custom asignado, usa Default-Material).' },
+  { id:'avatarFollow',label:'AvatarFollowXROrigin.cs', sub:'NetworkBehaviour',         x:560,  y:255,  w:200, h:50, type:'script',info:'Attached al root de Avatar. Solo el IsOwner actualiza. Root sigue posición XZ y rotación Y del HMD. Head recibe pose completa vía InverseTransformPoint en LateUpdate().' },
+  { id:'ownerNT',     label:'OwnerNetworkTransform.cs', sub:'client-authoritative',    x:780,  y:255,  w:210, h:50, type:'script',info:'Attached al root de Avatar. Hereda NetworkTransform (NGO) y overridea OnIsServerAuthoritative() → false. Esto da autoridad de movimiento al cliente propietario, no al servidor.' },
+  { id:'netTransform',label:'NetworkTransform',  sub:'NGO built-in (base class)',      x:900,  y:340,  w:185, h:50, type:'net',   info:'Componente de Netcode for GameObjects. Sincroniza Transform por red. OwnerNetworkTransform lo hereda para cambiar el modelo de autoridad.' },
+  { id:'networkObj',  label:'NetworkObject',     sub:'NGO built-in',                   x:700,  y:340,  w:175, h:50, type:'net',   info:'Componente NGO en el root de Avatar.prefab. Identifica el objeto en la red y gestiona ownership. Cada cliente posee su propio avatar.' },
+
+  // ════ ZONA: XR INPUT / LOCOMOCIÓN ════════════════════════════════
+  { id:'xrInput',     label:'XR_Input',          sub:'GO · XROrigin + Camera',         x:100,  y:470,  w:175, h:50, type:'go',    info:'GO que contiene el XROrigin (XR Rig) prefab de XRI. Expone Camera.transform como referencia del headset para el resto del sistema. Tiene también InputActionManager.' },
+  { id:'locoSys',     label:'Locomotion System', sub:'GO hijo · SnapTurnProvider',     x:100,  y:555,  w:175, h:50, type:'go',    info:'Hijo de XR_Input. Tiene SnapTurnProvider configurado para mano izquierda y derecha (Left/Right Hand Snap Turn). Referencia al XROrigin.' },
+  { id:'xriMgr',     label:'XR Interaction Mgr', sub:'GO · XRInteractionManager',      x:100,  y:640,  w:175, h:50, type:'go',    info:'GO independiente. XRInteractionManager de XRI gestiona el registro y resolución de todos los interactores y objetos interactuables de la escena.' },
+
+  // ════ ZONA: HAND TRACKING ══════════════════════════════════════════
+  { id:'xrHandsSub',  label:'XRHandSubsystem',   sub:'OpenXR runtime · 26 joints',     x:350,  y:470,  w:190, h:50, type:'net',   info:'Subsistema provisto por com.unity.xr.hands 1.4.3 vía OpenXR. Emite evento updatedHands cada frame con datos de ambas manos. Contiene joints: ThumbTip, IndexTip, etc.' },
+  { id:'xrHands',     label:'XR_Hands',          sub:'GO · LeftHand + RightHand',      x:350,  y:555,  w:190, h:50, type:'go',    info:'GO contenedor de las manos. Hijos: LeftHand y RightHand, cada uno con XRHandMeshController y un hijo Visual con MeshRenderer para la malla 3D de la mano.' },
+
+  { id:'htMgr',       label:'HandTrackingManager', sub:'GO (2 instancias en escena)',   x:350,  y:640,  w:190, h:50, type:'go',    info:'GO con los scripts de detección. Una instancia tiene PinchDetector.cs, otra tiene PinchDebugVisualizer.cs. Ambas instancias están presentes en la escena simultáneamente.' },
+  { id:'pinchDet',    label:'PinchDetector.cs',   sub:'thresh: 0.025 m · log events',  x:210,  y:730,  w:185, h:50, type:'script',info:'Suscribe updatedHands. Mide dist(ThumbTip, IndexTip) por mano. Si dist < 0.025m → PINCH START. Si dist ≥ 0.025m → PINCH END. Estado independiente izq/der.' },
+  { id:'pinchViz',    label:'PinchDebugVisualizer.cs', sub:'mueve markers + LineRenderer', x:490, y:730, w:215, h:50, type:'script',info:'Suscribe updatedHands. Corrige offset tracking→world: offset = hmd.position − hmd.localPosition. Mueve 6 esferas y 2 LineRenderers cada frame con los joints reales.' },
+
+  // ════ ZONA: DEBUG VISUAL DE MANOS ════════════════════════════════
+  { id:'handDebug',   label:'HandDebug',         sub:'GO contenedor debug',            x:350,  y:835,  w:175, h:50, type:'go',    info:'GO padre de todos los objetos visuales de debug. HandDebug > {RightThumbMarker, RightIndexMarker, RightPinchMarker, RightPinchLine, LeftThumbMarker, LeftIndexMarker, LeftPinchMarker, LeftPinchLine}.' },
+  { id:'thumbMk',     label:'ThumbMarker ×2',    sub:'esfera · RedMaterial',           x:200,  y:930,  w:155, h:44, type:'go',    info:'LeftThumbMarker y RightThumbMarker. Esferas con RedMaterial (rojo puro). PinchDebugVisualizer mueve su .position al joint ThumbTip de cada mano.' },
+  { id:'indexMk',     label:'IndexMarker ×2',    sub:'esfera · BlueMaterial',          x:375,  y:930,  w:155, h:44, type:'go',    info:'LeftIndexMarker y RightIndexMarker. Esferas con BlueMaterial (azul puro). PinchDebugVisualizer mueve su .position al joint IndexTip de cada mano.' },
+  { id:'pinchMk',     label:'PinchMarker ×2',    sub:'esfera · GreenMaterial',         x:550,  y:930,  w:155, h:44, type:'go',    info:'LeftPinchMarker y RightPinchMarker. Esferas con GreenMaterial (verde puro). Aparecen en el punto medio pulgar-índice solo cuando dist < threshold.' },
+  { id:'pinchLine',   label:'PinchLine ×2',       sub:'LineRenderer · LineMaterial',   x:725,  y:930,  w:155, h:44, type:'go',    info:'LeftPinchLine y RightPinchLine. LineRenderer con LineMaterial (amarillo #FFE000). Dibuja la línea entre ThumbTip e IndexTip cada frame.' },
+
+  // materiales debug
+  { id:'matRed',      label:'RedMaterial',       sub:'rojo puro',                      x:200,  y:1020, w:130, h:40, type:'mat',   info:'Standard shader. Color: rgba(1,0,0,1). Usado en ThumbMarker izquierdo y derecho.' },
+  { id:'matBlue',     label:'BlueMaterial',      sub:'azul puro',                      x:345,  y:1020, w:130, h:40, type:'mat',   info:'Standard shader. Color: rgba(0,0,1,1). Usado en IndexMarker izquierdo y derecho.' },
+  { id:'matGreen',    label:'GreenMaterial',     sub:'verde puro',                     x:490,  y:1020, w:130, h:40, type:'mat',   info:'Standard shader. Color: rgba(0,1,0,1). Usado en PinchMarker izquierdo y derecho.' },
+  { id:'matLine',     label:'LineMaterial',      sub:'amarillo #FFE000',               x:635,  y:1020, w:130, h:40, type:'mat',   info:'Standard shader. Color: rgba(1,0.87,0,1). Usado en los dos LineRenderers de pinch.' },
+
+  // ════ ZONA: JENGA / FÍSICA ════════════════════════════════════════
+  { id:'jengaTower',  label:'JengaTower',        sub:'GO · raíz de la torre',          x:750,  y:470,  w:170, h:50, type:'go',    info:'GO en escena a y=0.745. JengaTowerGenerator.cs attached. Los bloques se instancian como hijos en Start().' },
+  { id:'jengaGen',    label:'JengaTowerGenerator.cs', sub:'6 niveles · coroutine',     x:750,  y:560,  w:185, h:50, type:'script',info:'Coroutine BuildTower(): instancia 3 bloques por nivel (alternados 90°). WaitUntilSettled() espera que velocity+angularVelocity < umbral antes del siguiente bloque. Asigna material aleatorio.' },
+  { id:'jengaBlock',  label:'JengaBlock.prefab', sub:'Rigidbody · BoxCollider',        x:750,  y:650,  w:175, h:50, type:'asset', info:'Root: Rigidbody + BoxCollider (7.5×1.5×2.5 cm). Hijo Visual: MeshRenderer. PhysicMaterial: JengaBlockPhysics. JengaTowerGenerator instancia N clones como hijos de JengaTower.' },
+  { id:'jengaDbg',    label:'JengaDebugGenerator.cs', sub:'1 nivel · sin coroutine',   x:750,  y:740,  w:185, h:50, type:'script',info:'Alternativa de prueba. Genera un solo nivel sin física animada. Imprime posición y dibuja Debug.DrawLine roja por cada bloque. No tiene WaitUntilSettled.' },
+  { id:'blockMats',   label:'Block Materials ×3', sub:'Red · Blue · Yellow',           x:750,  y:830,  w:175, h:44, type:'mat',   info:'BlockRed (rojo), BlockBlue (azul), BlockYellow (amarillo). Standard shader. JengaTowerGenerator elige uno aleatorio con Random.Range y lo asigna al MeshRenderer del hijo Visual.' },
+  { id:'physMat',     label:'JengaBlockPhysics', sub:'PhysicMaterial',                 x:750,  y:890,  w:175, h:44, type:'asset', info:'PhysicMaterial asignado al BoxCollider de JengaBlock.prefab. Define fricción estática/dinámica y bounciness para la simulación física de la torre.' },
+
+  // ════ ZONA: ESPEJO (inactivo) ════════════════════════════════════
+  { id:'mirrorSys',   label:'MirrorSystem',      sub:'GO [INACTIVO]',                  x:940,  y:470,  w:160, h:50, type:'go',    info:'GO raíz del espejo. m_IsActive: 0 → desactivado en la escena actual. Tiene PlanarMirror.cs attached. Padre de MirrorCamera.' , inactive:true },
+  { id:'planarMirror',label:'PlanarMirror.cs',   sub:'[ExecuteAlways] · inactivo',     x:940,  y:560,  w:160, h:50, type:'script',info:'[ExecuteAlways] = funciona en editor. Fórmula: P\' = P − 2·dot(P−p, n)·n. Refleja posición y orientación de Camera XR. Sincroniza FOV.', inactive:true },
+  { id:'mirrorCam',   label:'MirrorCamera',      sub:'GO Camera → MirrorRT',           x:940,  y:650,  w:160, h:50, type:'go',    info:'GO inactivo. Camera que renderiza a MirrorRT. PlanarMirror.cs controla su transform en LateUpdate().', inactive:true },
+  { id:'mirrorRT',    label:'MirrorRT',          sub:'RenderTexture asset',            x:940,  y:740,  w:160, h:44, type:'asset', info:'RenderTexture. MirrorCamera renderiza en este asset. Se asigna como textura principal de MirrorMaterial.', inactive:true },
+  { id:'mirrorPlane', label:'Mirror',            sub:'GO [INACTIVO] · quad',           x:940,  y:800,  w:160, h:44, type:'go',    info:'GO con MeshRenderer usando MirrorMaterial. PlanarMirror.cs referencia su Transform como plano de reflexión.', inactive:true },
+  { id:'matMirror',   label:'MirrorMaterial',    sub:'blanco casi puro + RenderTex',   x:940,  y:860,  w:160, h:40, type:'mat',   info:'Standard shader. Color base: rgba(1,0.99,0.99). En uso normal se le asignaría MirrorRT como _MainTex para mostrar el reflejo.', inactive:true },
+];
+
+// ── EDGES ────────────────────────────────────────────────────────────
+const E = [
+  // habitación
+  { f:'room',        t:'furniture',   tp:'child',   lb:'' },
+  { f:'room',        t:'walls',       tp:'child',   lb:'' },
+  { f:'room',        t:'floor',       tp:'child',   lb:'' },
+  { f:'walls',       t:'matWall',     tp:'use',     lb:'usa' },
+  { f:'floor',       t:'matFloor',    tp:'use',     lb:'usa' },
+  { f:'floor',       t:'matCeil',     tp:'use',     lb:'usa' },
+
+  // multijugador
+  { f:'networkGO',   t:'netLauncher', tp:'use',     lb:'attached to' },
+  { f:'networkGO',   t:'defPrefabs',  tp:'use',     lb:'registra' },
+  { f:'networkGO',   t:'avatarGO',    tp:'inst',    lb:'spawns x cliente' },
+  { f:'avatarPrefab',t:'avatarGO',    tp:'inst',    lb:'instancia de' },
+  { f:'avatarGO',    t:'avatarFollow',tp:'use',     lb:'attached' },
+  { f:'avatarGO',    t:'ownerNT',     tp:'use',     lb:'attached' },
+  { f:'avatarGO',    t:'networkObj',  tp:'use',     lb:'componente' },
+  { f:'ownerNT',     t:'netTransform',tp:'inherit', lb:'hereda' },
+  { f:'avatarFollow',t:'xrInput',     tp:'use',     lb:'FindObjectOfType XROrigin' },
+  { f:'defPrefabs',  t:'avatarPrefab',tp:'use',     lb:'registra' },
+
+  // xr input
+  { f:'locoSys',     t:'xrInput',     tp:'use',     lb:'ref XROrigin' },
+
+  // hand tracking
+  { f:'pinchDet',    t:'xrHandsSub',  tp:'use',     lb:'subscribe updatedHands' },
+  { f:'pinchViz',    t:'xrHandsSub',  tp:'use',     lb:'subscribe updatedHands' },
+  { f:'pinchViz',    t:'xrInput',     tp:'use',     lb:'FindObjectOfType XROrigin' },
+  { f:'htMgr',       t:'pinchDet',    tp:'use',     lb:'attached' },
+  { f:'htMgr',       t:'pinchViz',    tp:'use',     lb:'attached' },
+
+  // debug visual
+  { f:'handDebug',   t:'thumbMk',     tp:'child',   lb:'' },
+  { f:'handDebug',   t:'indexMk',     tp:'child',   lb:'' },
+  { f:'handDebug',   t:'pinchMk',     tp:'child',   lb:'' },
+  { f:'handDebug',   t:'pinchLine',   tp:'child',   lb:'' },
+  { f:'pinchViz',    t:'handDebug',   tp:'use',     lb:'mueve hijos' },
+  { f:'thumbMk',     t:'matRed',      tp:'use',     lb:'usa' },
+  { f:'indexMk',     t:'matBlue',     tp:'use',     lb:'usa' },
+  { f:'pinchMk',     t:'matGreen',    tp:'use',     lb:'usa' },
+  { f:'pinchLine',   t:'matLine',     tp:'use',     lb:'usa' },
+
+  // jenga
+  { f:'jengaTower',  t:'jengaGen',    tp:'use',     lb:'attached' },
+  { f:'jengaTower',  t:'jengaDbg',    tp:'use',     lb:'alternativa debug' },
+  { f:'jengaGen',    t:'jengaBlock',  tp:'inst',    lb:'Instantiate() ×N' },
+  { f:'jengaGen',    t:'blockMats',   tp:'use',     lb:'asigna aleatoriamente' },
+  { f:'jengaBlock',  t:'physMat',     tp:'use',     lb:'PhysicMaterial' },
+
+  // mirror
+  { f:'mirrorSys',   t:'planarMirror',tp:'use',     lb:'attached' },
+  { f:'planarMirror',t:'xrInput',     tp:'use',     lb:'playerCamera ref' },
+  { f:'planarMirror',t:'mirrorCam',   tp:'use',     lb:'controla transform' },
+  { f:'planarMirror',t:'mirrorPlane', tp:'use',     lb:'mirrorPlane ref' },
+  { f:'mirrorCam',   t:'mirrorRT',    tp:'use',     lb:'renderiza a' },
+  { f:'mirrorPlane', t:'matMirror',   tp:'use',     lb:'usa' },
+  { f:'mirrorRT',    t:'matMirror',   tp:'use',     lb:'asignada como tex' },
+];
+
+// ── SWIM LANE REGIONS ────────────────────────────────────────────────
+const LANES = [
+  { lb:'Habitación',          x:18,  y:22,  w:480, h:360, col: dark?'rgba(8,80,65,0.12)':'rgba(29,158,117,0.05)' },
+  { lb:'Multijugador (NGO)',  x:518, y:22,  w:480, h:410, col: dark?'rgba(8,80,65,0.14)':'rgba(29,158,117,0.08)' },
+  { lb:'XR Input / Locomoción', x:18, y:448, w:300, h:250, col: dark?'rgba(12,68,124,0.14)':'rgba(55,138,221,0.07)' },
+  { lb:'Hand Tracking',       x:320, y:448, w:400, h:250, col: dark?'rgba(63,56,137,0.14)':'rgba(127,119,221,0.07)' },
+  { lb:'Debug Visual de manos', x:165, y:810, w:740, h:260, col: dark?'rgba(99,56,6,0.14)':'rgba(186,117,23,0.06)' },
+  { lb:'Jenga / Física',      x:715, y:448, w:290, h:500, col: dark?'rgba(113,43,19,0.14)':'rgba(216,90,48,0.06)' },
+  { lb:'Espejo (inactivo)',   x:905, y:448, w:105, h:470, col: dark?'rgba(44,44,42,0.22)':'rgba(136,135,128,0.07)' },
+];
+
+// ── HELPERS ──────────────────────────────────────────────────────────
+function nById(id){ return N.find(n=>n.id===id); }
+
+function edgesOf(node){
+  return E.filter(e=>e.f===node.id||e.t===node.id);
+}
+
+function edgeColor(tp){
+  return {use:'#378ADD', inst:'#1D9E75', inherit:'#D85A30', child:'#888780'}[tp]||'#888';
+}
+
+function rr(x,y,w,h,r,fill,stroke,alpha=1){
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.arcTo(x+w,y,x+w,y+r,r);
+  ctx.lineTo(x+w,y+h-r); ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r,y+h); ctx.arcTo(x,y+h,x,y+h-r,r);
+  ctx.lineTo(x,y+r); ctx.arcTo(x,y,x+r,y,r);
+  ctx.closePath();
+  if(fill){ctx.fillStyle=fill;ctx.fill();}
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=0.7;ctx.stroke();}
+  ctx.restore();
+}
+
+function arrowAt(x,y,angle,color,alpha=1){
+  ctx.save();
+  ctx.globalAlpha=alpha;
+  ctx.translate(x,y); ctx.rotate(angle);
+  ctx.beginPath();
+  ctx.moveTo(0,0); ctx.lineTo(-7,-3.5); ctx.lineTo(-7,3.5);
+  ctx.closePath();
+  ctx.fillStyle=color; ctx.fill();
+  ctx.restore();
+}
+
+function edgePoint(n, toward){
+  const dx=toward.x-n.x, dy=toward.y-n.y;
+  const ang=Math.atan2(dy,dx);
+  const hw=n.w/2, hh=n.h/2;
+  const tx=Math.abs(hw/(Math.cos(ang)||1e-9));
+  const ty=Math.abs(hh/(Math.sin(ang)||1e-9));
+  const t=Math.min(Math.abs(tx),Math.abs(ty));
+  return {x: n.x+Math.cos(ang)*t, y: n.y+Math.sin(ang)*t, ang};
+}
+
+// ── DRAW ─────────────────────────────────────────────────────────────
+let hov = null;
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+
+  // lanes
+  LANES.forEach(l=>{
+    rr(l.x,l.y,l.w,l.h,14,l.col,dark?'rgba(255,255,255,0.05)':'rgba(0,0,0,0.05)');
+    ctx.save();
+    ctx.font='500 9.5px var(--font-sans,sans-serif)';
+    ctx.fillStyle=TS;
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillText(l.lb.toUpperCase(), l.x+9, l.y+6);
+    ctx.restore();
+  });
+
+  // edges
+  const activeEdges = hov ? edgesOf(hov) : null;
+  E.forEach(e=>{
+    const A=nById(e.f), B=nById(e.t);
+    if(!A||!B) return;
+    const isActive = activeEdges && activeEdges.includes(e);
+    const alpha = activeEdges ? (isActive ? 1 : 0.08) : 0.45;
+    const col = edgeColor(e.tp);
+
+    const pA=edgePoint(A,B), pB=edgePoint(B,A);
+    ctx.save();
+    ctx.globalAlpha=alpha;
+    ctx.strokeStyle=col;
+    ctx.lineWidth = isActive ? 1.8 : 1.1;
+    if(e.tp==='inst') ctx.setLineDash([5,4]);
+    ctx.beginPath(); ctx.moveTo(pA.x,pA.y); ctx.lineTo(pB.x,pB.y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+    arrowAt(pB.x,pB.y,pA.ang+Math.PI,col,alpha+0.1);
+
+    // edge label when active
+    if(isActive && e.lb){
+      const mx=(pA.x+pB.x)/2, my=(pA.y+pB.y)/2;
+      ctx.save();
+      ctx.font='400 9.5px var(--font-sans,sans-serif)';
+      const tw=ctx.measureText(e.lb).width;
+      ctx.fillStyle=dark?'rgba(20,20,20,0.9)':'rgba(255,255,255,0.92)';
+      ctx.fillRect(mx-tw/2-4, my-7, tw+8, 14);
+      ctx.fillStyle=TP; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(e.lb, mx, my);
+      ctx.restore();
+    }
+  });
+
+  // nodes
+  N.forEach(n=>{
+    const pal=PAL[n.type]||PAL.go;
+    const isHov=n===hov;
+    const isConn=hov && edgesOf(hov).some(e=>e.f===n.id||e.t===n.id);
+    const alpha = n.inactive ? 0.45 : 1;
+    const dimAlpha = (hov && !isHov && !isConn) ? 0.18 : alpha;
+
+    const x=n.x-n.w/2, y=n.y-n.h/2;
+    rr(x,y,n.w,n.h,8,pal.f, isHov||isConn ? pal.s : pal.s+'66', dimAlpha);
+
+    if(dimAlpha>0.18){
+      ctx.save();
+      ctx.globalAlpha=dimAlpha;
+      ctx.font=`500 12px var(--font-sans,sans-serif)`;
+      ctx.fillStyle=pal.t;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(n.label, n.x, n.sub? n.y-8 : n.y);
+      if(n.sub){
+        ctx.font=`400 10px var(--font-sans,sans-serif)`;
+        ctx.fillStyle=TS;
+        ctx.fillText(n.sub, n.x, n.y+8);
+      }
+      if(n.inactive){
+        ctx.font=`400 9px var(--font-sans,sans-serif)`;
+        ctx.fillStyle='#D85A30';
+        ctx.fillText('OFF', n.x+n.w/2-14, n.y-n.h/2+8);
+      }
+      ctx.restore();
+    }
+  });
+}
+
+// ── INTERACTION ───────────────────────────────────────────────────────
+function pos(ev){
+  const r=CVS.getBoundingClientRect();
+  const sx=W/r.width, sy=H/(r.width*H/W);
+  return {x:(ev.clientX-r.left)*sx, y:(ev.clientY-r.top)*sy};
+}
+
+function hitN(x,y){
+  for(let i=N.length-1;i>=0;i--){
+    const n=N[i];
+    if(x>=n.x-n.w/2&&x<=n.x+n.w/2&&y>=n.y-n.h/2&&y<=n.y+n.h/2) return n;
+  }
+  return null;
+}
+
+CVS.addEventListener('mousemove',ev=>{
+  const {x,y}=pos(ev);
+  const n=hitN(x,y);
+  hov=n;
+  if(n){
+    CVS.style.cursor='pointer';
+    tip.style.opacity='1';
+    tip.innerHTML=`<strong>${n.label}</strong><span>${n.info||''}</span>`;
+    const r=CVS.getBoundingClientRect();
+    const sx=r.width/W;
+    let tx=(x+18)*sx, ty=(y-10)*sx;
+    if(tx+230>r.width) tx=(x-240)*sx;
+    if(ty+120>r.width*H/W) ty=(y-130)*sx;
+    tip.style.left=tx+'px'; tip.style.top=ty+'px';
+  } else {
+    CVS.style.cursor='default';
+    tip.style.opacity='0';
+  }
+  draw();
+});
+CVS.addEventListener('mouseleave',()=>{hov=null;tip.style.opacity='0';draw();});
+
+draw();
+</script>
+</body>
+</html>
