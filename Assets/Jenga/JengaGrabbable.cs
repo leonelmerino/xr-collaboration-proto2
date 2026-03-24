@@ -28,18 +28,18 @@ public class JengaGrabbable : MonoBehaviour
 
         initialGrabOffset = transform.position - grabPoint.position;
 
-        Vector3 right = transform.right;
-        Vector3 forward = transform.forward;
+        //Vector3 right = transform.right;
+        //Vector3 forward = transform.forward;
 
-        if (Mathf.Abs(Vector3.Dot(right, Vector3.right)) >
-            Mathf.Abs(Vector3.Dot(forward, Vector3.right)))
-        {
-            allowedAxisWorld = right.normalized;
-        }
-        else
-        {
-            allowedAxisWorld = forward.normalized;
-        }
+        //if (Mathf.Abs(Vector3.Dot(right, Vector3.right)) >
+        //    Mathf.Abs(Vector3.Dot(forward, Vector3.right)))
+       // {
+            allowedAxisWorld = transform.right.normalized;
+       // }
+        //else
+        //{
+        //    allowedAxisWorld = forward.normalized;
+        //}
 
         rb.velocity = Vector3.zero;
         rb.angularVelocity = Vector3.zero;

@@ -119,22 +119,41 @@ public class PinchDebugVisualizer : MonoBehaviour
         }
 
         var thumb = hand.GetJoint(XRHandJointID.ThumbTip);
-        var index = hand.GetJoint(XRHandJointID.IndexTip);
+        var indexTip = hand.GetJoint(XRHandJointID.IndexTip);
+        var indexProximal = hand.GetJoint(XRHandJointID.IndexProximal);
+        var wrist = hand.GetJoint(XRHandJointID.Wrist);
 
         if (!thumb.TryGetPose(out Pose thumbPose) ||
-            !index.TryGetPose(out Pose indexPose))
+            !indexTip.TryGetPose(out Pose indexTipPose))
         {
             return;
         }
 
-        // Convertir a world space usando el XR Origin
         Vector3 thumbWorld = thumbPose.position;
-        Vector3 indexWorld = indexPose.position;
+        Vector3 indexWorld = indexTipPose.position;
+        Vector3 rayReferenceWorld = indexWorld;
 
         if (trackingRoot != null)
         {
             thumbWorld = trackingRoot.TransformPoint(thumbPose.position);
-            indexWorld = trackingRoot.TransformPoint(indexPose.position);
+            indexWorld = trackingRoot.TransformPoint(indexTipPose.position);
+        }
+
+        // Try to use index proximal for finger direction
+        bool hasProximal = indexProximal.TryGetPose(out Pose indexProximalPose);
+        bool hasWrist = wrist.TryGetPose(out Pose wristPose);
+
+        if (hasProximal)
+        {
+            rayReferenceWorld = trackingRoot != null
+                ? trackingRoot.TransformPoint(indexProximalPose.position)
+                : indexProximalPose.position;
+        }
+        else if (hasWrist)
+        {
+            rayReferenceWorld = trackingRoot != null
+                ? trackingRoot.TransformPoint(wristPose.position)
+                : wristPose.position;
         }
 
         thumbMarker.gameObject.SetActive(true);
@@ -164,15 +183,53 @@ public class PinchDebugVisualizer : MonoBehaviour
             pinchMarker.gameObject.SetActive(false);
         }
 
-        // Ray origin sale desde la punta del índice
-        if (rayOrigin != null)
+        // Ray origin and direction
+        /*if (rayOrigin != null)
         {
             rayOrigin.gameObject.SetActive(true);
             rayOrigin.position = indexWorld;
 
-            if (Camera.main != null)
+            Vector3 fingerDir = (indexWorld - rayReferenceWorld).normalized;
+
+            if (fingerDir.sqrMagnitude > 0.0001f)
             {
-                rayOrigin.rotation = Camera.main.transform.rotation;
+                rayOrigin.rotation = Quaternion.LookRotation(fingerDir, Vector3.up);
+            }
+        }*/
+        var palm = hand.GetJoint(XRHandJointID.Palm);
+        var indexProx = hand.GetJoint(XRHandJointID.IndexProximal);
+        var thumbProx = hand.GetJoint(XRHandJointID.ThumbProximal);
+
+        if (palm.TryGetPose(out Pose palmPose))
+        {
+            Vector3 palmWorld = trackingRoot != null
+                ? trackingRoot.TransformPoint(palmPose.position)
+                : palmPose.position;
+
+            Vector3 indexWorld = indexProx.TryGetPose(out Pose ipPose)
+                ? (trackingRoot != null ? trackingRoot.TransformPoint(ipPose.position) : ipPose.position)
+                : palmWorld + Vector3.forward;
+
+            Vector3 thumbWorld = thumbProx.TryGetPose(out Pose tpPose)
+                ? (trackingRoot != null ? trackingRoot.TransformPoint(tpPose.position) : tpPose.position)
+                : palmWorld + Vector3.right;
+
+            // vectors on the palm plane
+            Vector3 v1 = (indexWorld - palmWorld).normalized;
+            Vector3 v2 = (thumbWorld - palmWorld).normalized;
+
+            // palm normal (this is the ray direction)
+            Vector3 palmNormal = Vector3.Cross(v1, v2).normalized;
+
+            // IMPORTANT: flip if pointing backwards
+            if (Vector3.Dot(palmNormal, (indexWorld - palmWorld)) < 0)
+                palmNormal = -palmNormal;
+
+            if (rayOrigin != null)
+            {
+                rayOrigin.gameObject.SetActive(true);
+                rayOrigin.position = palmWorld;
+                rayOrigin.rotation = Quaternion.LookRotation(palmNormal, Vector3.up);
             }
         }
 
