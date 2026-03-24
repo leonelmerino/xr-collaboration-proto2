@@ -206,17 +206,17 @@ public class PinchDebugVisualizer : MonoBehaviour
                 ? trackingRoot.TransformPoint(palmPose.position)
                 : palmPose.position;
 
-            Vector3 indexWorld = indexProx.TryGetPose(out Pose ipPose)
+            Vector3 indexProxWorld = indexProx.TryGetPose(out Pose ipPose)
                 ? (trackingRoot != null ? trackingRoot.TransformPoint(ipPose.position) : ipPose.position)
                 : palmWorld + Vector3.forward;
 
-            Vector3 thumbWorld = thumbProx.TryGetPose(out Pose tpPose)
+            Vector3 thumbProxWorld = thumbProx.TryGetPose(out Pose tpPose)
                 ? (trackingRoot != null ? trackingRoot.TransformPoint(tpPose.position) : tpPose.position)
                 : palmWorld + Vector3.right;
 
             // vectors on the palm plane
-            Vector3 v1 = (indexWorld - palmWorld).normalized;
-            Vector3 v2 = (thumbWorld - palmWorld).normalized;
+            Vector3 v1 = (indexProxWorld - palmWorld).normalized;
+            Vector3 v2 = (thumbProxWorld - palmWorld).normalized;
 
             // palm normal (this is the ray direction)
             Vector3 palmNormal = Vector3.Cross(v1, v2).normalized;
