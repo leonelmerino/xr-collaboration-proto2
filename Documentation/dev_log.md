@@ -294,3 +294,129 @@
 
 vive-focus-preview
 
+### Actualización (31 de marzo – sesión eye tracking)
+
+#### Git / estructura del proyecto
+- Se creó el branch `eye-tracking-prototype` a partir de `main` para aislar el desarrollo del sistema de seguimiento ocular.
+- Se mantuvo la estrategia de branches separadas:
+  - `vive-focus-preview` → migración de hardware
+  - `eye-tracking-prototype` → instrumentación de datos
+
+---
+
+#### Integración de Eye Tracking (HTC Vive Focus Vision)
+- Se reemplazó el enfoque inicial basado en OpenXR genérico por el uso directo del SDK de HTC (`XR_HTC_eye_tracker`).
+- Se confirmó que:
+  - el eye tracking funciona correctamente a nivel de sistema (menús del visor)
+  - requiere calibración previa en el headset
+- Se detectó que:
+  - en modo streaming (PCVR) el tracking puede perder datos si la sesión no está completamente inicializada
+
+---
+
+#### Implementación del proveedor de datos
+- Se implementó `ViveEyeTrackingProvider` para capturar:
+  - gaze por ojo (left/right)
+  - gaze combinado
+  - pupil diameter
+  - pupil position
+  - eye openness
+- Se agregaron mecanismos de robustez:
+  - manejo de excepciones (`XR_ERROR_SESSION_LOST`)
+  - throttling de logs para evitar saturación de consola
+
+---
+
+#### Métricas geométricas adicionales
+- Se incorporaron nuevas métricas derivadas directamente de datos raw:
+  - `vergenceAngleDeg`
+  - `interocularDistance`
+- Estas métricas permiten estimar profundidad de atención sin depender de raycast
+
+---
+
+#### Sistema de logging (CSV)
+- Se implementó `EyeTrackingSessionLogger`
+- Características:
+  - escritura continua por frame
+  - timestamps duales:
+    - relativo (`timestamp_rel_s`)
+    - absoluto (`timestamp_utc_iso`)
+  - estructura extensible para experimentos
+
+---
+
+#### Mejora en almacenamiento de datos
+- Se implementó generación de archivos incrementales:
+  - evita sobreescritura
+  - permite múltiples trials por sesión
+- Estructura final:
+
+```
+
+EyeTrackingLogs/<participant>/<session>/
+
+```
+
+- Ejemplo:
+
+```
+
+task_01_trial_01_001_gaze.csv
+task_01_trial_01_002_gaze.csv
+
+```
+
+---
+
+#### Integración con AOIs (Jenga)
+- Se integró automáticamente `AOITag` en `JengaTowerGenerator`
+- Cada bloque ahora contiene:
+  - identificador único estructurado
+  - metadata (nivel, posición)
+- Se implementó `GazeTargetRaycaster` para:
+  - detectar intersecciones gaze → objeto
+  - registrar AOI hit en el dataset
+
+---
+
+#### Validación del sistema
+- Se verificó que:
+  - los archivos CSV se generan correctamente
+  - los datos de cabeza y gaze combinado son válidos
+  - los AOIs se registran correctamente
+- Problemas observados:
+  - pupil diameter constante (posible limitación del SDK o condiciones de iluminación)
+  - errores intermitentes `XR_ERROR_SESSION_LOST` no bloqueantes
+
+---
+
+#### Decisión metodológica clave
+- Se decidió explícitamente:
+  - registrar únicamente **datos raw**
+  - no calcular métricas como fixations o saccades en Unity
+- Todo el procesamiento se realizará **offline (Python / análisis posterior)**
+
+---
+
+#### Estado del sistema
+- Pipeline completo operativo:
+  - captura gaze ✔
+  - captura pupil ✔ (con limitaciones)
+  - AOI tracking ✔
+  - logging CSV ✔
+- Sistema listo para:
+  - recolección de datos experimentales
+  - integración con eventos de interacción (siguiente paso)
+
+---
+
+#### Próximos pasos
+- Incorporar logging de eventos:
+  - pinch
+  - grab
+- Evaluar calidad real de pupil data
+- Resolver warnings de streaming (missing frames)
+- Preparar pipeline de análisis offline
+
+
