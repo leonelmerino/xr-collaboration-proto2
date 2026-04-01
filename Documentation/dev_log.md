@@ -1,422 +1,293 @@
-\# 🧪 XR Collaboration Prototype – Development Log
+# XR Collaboration Prototype – Development Log
 
+## 31 de marzo
 
+### Git y estructura del proyecto
 
-\## 📅 6 de marzo
+* Se creó el branch `eye-tracking-prototype` a partir de `main` para aislar el desarrollo del sistema de seguimiento ocular.
+* Se consolidó la estrategia de branches:
 
+  * `vive-focus-preview`: migración de hardware
+  * `eye-tracking-prototype`: instrumentación de datos
 
+### Integración de eye tracking (HTC Vive Focus Vision)
 
-\### Estado inicial
+* Se reemplazó el enfoque OpenXR genérico por el uso directo del SDK de HTC (`XR_HTC_eye_tracker`).
+* Se confirmó que:
 
-\- Estado inicial de la red multijugador y sincronización de avatares.
+  * el eye tracking funciona correctamente a nivel de sistema
+  * requiere calibración previa en el visor
+* Se observó que:
 
-\- La conexión de red estaba casi funcionando.
+  * en modo streaming (PCVR) pueden perderse datos si la sesión no está completamente inicializada
 
-\- Los avatares aparecían en la escena para ambos usuarios.
+### Implementación del proveedor de datos
 
+* Se implementó `ViveEyeTrackingProvider` para capturar:
 
+  * gaze por ojo (left/right)
+  * gaze combinado
+  * pupil diameter
+  * pupil position
+  * eye openness
+* Se agregaron mecanismos de robustez:
 
-\### Problemas detectados
+  * manejo de excepciones (`XR_ERROR_SESSION_LOST`)
+  * reducción de logs repetitivos
 
-\- En el host:
+### Métricas geométricas adicionales
 
-&#x20; - Se veían dos avatares, pero no se movían correctamente.
+* Se incorporaron:
 
-&#x20; - Solo se observaba movimiento vertical (eje Y) del propio usuario.
+  * `vergenceAngleDeg`
+  * `interocularDistance`
+* Permiten estimar profundidad de atención sin depender de raycast
 
-\- En el cliente:
+### Sistema de logging (CSV)
 
-&#x20; - El avatar del host se movía correctamente.
+* Se implementó `EyeTrackingSessionLogger`
+* Características:
 
-&#x20; - No se observaban correctamente algunos movimientos del host.
+  * escritura por frame
+  * timestamps duales:
 
+    * `timestamp_rel_s`
+    * `timestamp_utc_iso`
+  * estructura extensible para experimentos
 
+### Almacenamiento de datos
 
-\### Solución
+* Generación automática de archivos incrementales
 
-\- Se identificó un problema de configuración de red.
+* Estructura:
 
-\- Se corrigió mediante:
+  EyeTrackingLogs/<participant>/<session>/
 
-&#x20; - Desactivación temporal de Windows Defender Firewall
+* Ejemplo:
 
-&#x20; - Activación de `Allow Remote Connections` en Unity
+  task_01_trial_01_001_gaze.csv
+  task_01_trial_01_002_gaze.csv
 
+### Integración con AOIs (Jenga)
 
+* Integración automática de `AOITag` en `JengaTowerGenerator`
+* Cada bloque incluye:
 
-\### Resultado
+  * identificador único
+  * metadata (nivel y posición)
+* Se implementó `GazeTargetRaycaster` para registrar intersecciones gaze–objeto
 
-\- Comunicación host-cliente funcionando correctamente.
+### Validación del sistema
 
+* Se verificó:
 
+  * generación correcta de CSV
+  * datos de cabeza y gaze válidos
+  * detección de AOIs correcta
+* Problemas observados:
 
-\---
+  * pupil diameter constante (posible limitación del SDK o iluminación)
+  * errores intermitentes `XR_ERROR_SESSION_LOST` no bloqueantes
 
+### Decisión metodológica
 
+* Se definió registrar únicamente datos raw
+* El procesamiento (fixations, saccades, etc.) se realizará offline
 
-\## 📅 8 de marzo
+### Estado actual
 
+* Captura gaze operativa
+* AOI tracking operativo
+* Logging CSV operativo
+* Sistema listo para recolección de datos experimentales
 
+### Próximos pasos
 
-\### Corrección de sincronización de avatares
+* Incorporar eventos de interacción (pinch, grab)
+* Evaluar calidad de pupil data
+* Resolver warnings de streaming (missing frames)
+* Preparar pipeline de análisis offline
 
-\- Problemas:
+## 24 de marzo
 
-&#x20; - Host no veía correctamente al cliente
+### Migración a HTC Vive Focus Vision
 
-&#x20; - Cliente no veía su propio avatar moverse
+#### Cambio estratégico
 
+* Transición desde Meta Quest 3 hacia Vive Focus Vision
+* Objetivos:
 
+  * acceso a eye tracking
+  * mayor control vía OpenXR
 
-\### Intervención
+#### Git workflow
 
-\- Revisión de:
+* Creación del branch:
 
-&#x20; - Ownership (`NetworkObject`)
+  vive-focus-preview
 
-&#x20; - Script `AvatarFollowXROrigin`
+#### Setup técnico
 
+* Uso de:
 
+  * VIVE Streaming (wired)
+  * SteamVR
+  * OpenXR en Unity
 
-\### Cambios
+#### Problemas encontrados
 
-\- Solo el owner actualiza su posición
+* USB no reconocido
+* Streaming no disponible
+* Uso incorrecto de GPU (iGPU en lugar de RTX)
 
-\- Otros clientes reciben sincronización por red
+#### Soluciones
 
+* Cambio de puerto USB
+* Configuración correcta de streaming
+* Forzar GPU dedicada
 
+#### Resultado
 
-\### Resultado
+* Sistema funcionando en Vive Focus Vision:
 
-\- Sincronización completa:
+  * head tracking OK
+  * hand tracking OK
+  * streaming estable
 
-&#x20; - Host ↔ Cliente correctos
+## 17 de marzo
 
-&#x20; - Auto-avatar sincronizado
+### Interacción por raycast
 
+* Implementación de `JengaRayGrabInteractor`
+* Visualización mediante `LineRenderer`
 
+### Integración
 
-\---
+* Activación del raycast mediante gesto pinch
 
+### Problemas pendientes
 
+* Dirección del rayo no natural (basado en cámara)
+* Falta de orientación basada en la mano
+* Raycast siempre activo
+* Posible conflicto entre poke y raycast
 
-\## 📅 11 de marzo
+## 12 de marzo
 
+### Estabilización de torre Jenga
 
+* Generación progresiva de bloques
+* Implementación de `WaitUntilSettled`
 
-\### Hand Tracking (Quest 3)
+### Ajustes
 
-\- Implementación con XR Hands
+* Spacing
+* Drop height
+* Configuración de Rigidbody
 
-\- Detección de pinch funcional
+### Nueva interacción
 
+* Diseño de interacción tipo poke
 
+### Próximo paso
 
-\### Sistema de depuración
+* Implementar empuje con dedo índice
 
-\- Script: `PinchDebugVisualizer`
+## 11 de marzo (Jenga)
 
-\- Objeto: `HandDebug`
+### Implementación inicial
 
-\- Marcadores:
+* Prefab `JengaBlock`
+* Script `JengaTowerGenerator`
 
-&#x20; - Thumb
+### Problema
 
-&#x20; - Index
+* Inestabilidad física (explosión de bloques)
 
-&#x20; - Pinch
+### Diagnóstico
 
+* Collider mal dimensionado
 
+### Solución
 
-\### Problema
+* Corrección del `BoxCollider`
+* Separación entre física y visual
 
-\- Desfase entre tracking y visualización
+### Resultado
 
+* Torre estable
 
+## 11 de marzo
 
-\### Solución
+### Hand tracking (Quest 3)
 
-\- Corrección de espacio de coordenadas (XR Origin)
+* Implementación con XR Hands
+* Detección de pinch funcional
 
+### Sistema de depuración
 
+* Script `PinchDebugVisualizer`
+* Objeto `HandDebug`
+* Marcadores:
 
-\### Resultado
+  * Thumb
+  * Index
+  * Pinch
 
-\- Tracking preciso y visualización correcta
+### Problema
 
+* Desfase entre tracking y visualización
 
+### Solución
 
-\---
+* Corrección de espacio de coordenadas (XR Origin)
 
+### Resultado
 
+* Tracking consistente y preciso
 
-\## 📅 11 de marzo (Jenga)
+## 8 de marzo
 
+### Sincronización de avatares
 
+* Problemas:
 
-\### Implementación inicial
+  * Host no veía correctamente al cliente
+  * Cliente no veía su propio avatar moverse
 
-\- Prefab `JengaBlock`
+### Intervención
 
-\- Script `JengaTowerGenerator`
+* Revisión de ownership (`NetworkObject`)
+* Ajuste de `AvatarFollowXROrigin`
 
+### Cambios
 
+* Solo el owner actualiza posición
+* Sincronización vía red para otros clientes
 
-\### Problema crítico
+### Resultado
 
-\- Explosión física de bloques
+* Sincronización completa entre usuarios
 
+## 6 de marzo
 
+### Estado inicial
 
-\### Diagnóstico
+* Sistema multijugador parcialmente funcional
+* Avatares visibles en ambos clientes
 
-\- Collider mal dimensionado
+### Problemas
 
+* Movimiento incorrecto de avatares
+* Inconsistencias entre host y cliente
 
+### Solución
 
-\### Solución
+* Ajustes de red:
 
-\- Ajuste correcto del `BoxCollider`
+  * desactivación de firewall
+  * habilitación de conexiones remotas
 
-\- Separación física/visual del prefab
+### Resultado
 
-
-
-\### Resultado
-
-\- Torre estable
-
-
-
-\---
-
-
-
-\## 📅 12 de marzo
-
-
-
-\### Mejora de estabilidad
-
-\- Generación progresiva de bloques
-
-\- Implementación de `WaitUntilSettled`
-
-
-
-\### Ajustes
-
-\- Spacing
-
-\- Drop height
-
-\- Rigidbody config
-
-
-
-\### Nueva interacción
-
-\- Diseño de interacción tipo \*\*poke\*\*
-
-
-
-\### Próximo paso
-
-\- Implementar empuje con dedo índice
-
-
-
-\---
-
-
-
-\## 📅 17 de marzo
-
-
-
-\### Interacción por raycast
-
-\- Sistema `JengaRayGrabInteractor`
-
-\- Visualización con `LineRenderer`
-
-
-
-\### Integración
-
-\- Pinch → activación de raycast
-
-
-
-\### Problemas pendientes
-
-\- Dirección del rayo poco natural
-
-\- Ray basado en cámara (no mano)
-
-\- Ray siempre activo
-
-\- Conflicto poke vs raycast
-
-
-
-\---
-
-
-
-\## 📅 24 de marzo
-
-
-
-\### Migración a HTC Vive Focus Vision
-
-
-
-\#### Cambio estratégico
-
-\- Se inicia transición desde \*\*Meta Quest 3 → Vive Focus Vision\*\*
-
-\- Objetivo:
-
-&#x20; - Mejor soporte de eye tracking
-
-&#x20; - Pipeline OpenXR más controlado
-
-
-
-\#### Git workflow
-
-\- Creación de branch:
-
-
-
-```bash
-
-vive-focus-preview
-
-### Actualización (31 de marzo – sesión eye tracking)
-
-#### Git / estructura del proyecto
-- Se creó el branch `eye-tracking-prototype` a partir de `main` para aislar el desarrollo del sistema de seguimiento ocular.
-- Se mantuvo la estrategia de branches separadas:
-  - `vive-focus-preview` → migración de hardware
-  - `eye-tracking-prototype` → instrumentación de datos
-
----
-
-#### Integración de Eye Tracking (HTC Vive Focus Vision)
-- Se reemplazó el enfoque inicial basado en OpenXR genérico por el uso directo del SDK de HTC (`XR_HTC_eye_tracker`).
-- Se confirmó que:
-  - el eye tracking funciona correctamente a nivel de sistema (menús del visor)
-  - requiere calibración previa en el headset
-- Se detectó que:
-  - en modo streaming (PCVR) el tracking puede perder datos si la sesión no está completamente inicializada
-
----
-
-#### Implementación del proveedor de datos
-- Se implementó `ViveEyeTrackingProvider` para capturar:
-  - gaze por ojo (left/right)
-  - gaze combinado
-  - pupil diameter
-  - pupil position
-  - eye openness
-- Se agregaron mecanismos de robustez:
-  - manejo de excepciones (`XR_ERROR_SESSION_LOST`)
-  - throttling de logs para evitar saturación de consola
-
----
-
-#### Métricas geométricas adicionales
-- Se incorporaron nuevas métricas derivadas directamente de datos raw:
-  - `vergenceAngleDeg`
-  - `interocularDistance`
-- Estas métricas permiten estimar profundidad de atención sin depender de raycast
-
----
-
-#### Sistema de logging (CSV)
-- Se implementó `EyeTrackingSessionLogger`
-- Características:
-  - escritura continua por frame
-  - timestamps duales:
-    - relativo (`timestamp_rel_s`)
-    - absoluto (`timestamp_utc_iso`)
-  - estructura extensible para experimentos
-
----
-
-#### Mejora en almacenamiento de datos
-- Se implementó generación de archivos incrementales:
-  - evita sobreescritura
-  - permite múltiples trials por sesión
-- Estructura final:
-
-```
-
-EyeTrackingLogs/<participant>/<session>/
-
-```
-
-- Ejemplo:
-
-```
-
-task_01_trial_01_001_gaze.csv
-task_01_trial_01_002_gaze.csv
-
-```
-
----
-
-#### Integración con AOIs (Jenga)
-- Se integró automáticamente `AOITag` en `JengaTowerGenerator`
-- Cada bloque ahora contiene:
-  - identificador único estructurado
-  - metadata (nivel, posición)
-- Se implementó `GazeTargetRaycaster` para:
-  - detectar intersecciones gaze → objeto
-  - registrar AOI hit en el dataset
-
----
-
-#### Validación del sistema
-- Se verificó que:
-  - los archivos CSV se generan correctamente
-  - los datos de cabeza y gaze combinado son válidos
-  - los AOIs se registran correctamente
-- Problemas observados:
-  - pupil diameter constante (posible limitación del SDK o condiciones de iluminación)
-  - errores intermitentes `XR_ERROR_SESSION_LOST` no bloqueantes
-
----
-
-#### Decisión metodológica clave
-- Se decidió explícitamente:
-  - registrar únicamente **datos raw**
-  - no calcular métricas como fixations o saccades en Unity
-- Todo el procesamiento se realizará **offline (Python / análisis posterior)**
-
----
-
-#### Estado del sistema
-- Pipeline completo operativo:
-  - captura gaze ✔
-  - captura pupil ✔ (con limitaciones)
-  - AOI tracking ✔
-  - logging CSV ✔
-- Sistema listo para:
-  - recolección de datos experimentales
-  - integración con eventos de interacción (siguiente paso)
-
----
-
-#### Próximos pasos
-- Incorporar logging de eventos:
-  - pinch
-  - grab
-- Evaluar calidad real de pupil data
-- Resolver warnings de streaming (missing frames)
-- Preparar pipeline de análisis offline
-
-
+* Comunicación funcional entre equipos
