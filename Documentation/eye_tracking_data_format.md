@@ -4,11 +4,11 @@
 
 This document describes the structure, semantics, and storage of the eye tracking data collected in the XR Jenga experiment using:
 
-- Unity + OpenXR
-- HTC Vive Focus Vision
-- VIVE XR Eye Tracker
+* Unity (OpenXR)
+* HTC Vive Focus Vision
+* VIVE XR Eye Tracker
 
-The system records **raw eye tracking data**, head pose, and gaze-based interaction with objects (AOIs), enabling full offline analysis.
+The dataset contains **raw eye tracking signals**, head pose, and gaze-based interaction with objects (AOIs). It is intended for offline analysis.
 
 ---
 
@@ -16,21 +16,13 @@ The system records **raw eye tracking data**, head pose, and gaze-based interact
 
 All CSV files are stored at:
 
-```
-
 Application.persistentDataPath/EyeTrackingLogs/<participant_id>/<session_id>/
 
-```
-
 ### Example
-
-```
 
 .../EyeTrackingLogs/P001/S001/
 task_01_trial_01_001_gaze.csv
 task_01_trial_01_002_gaze.csv
-
-```
 
 ---
 
@@ -38,40 +30,34 @@ task_01_trial_01_002_gaze.csv
 
 Each recording generates a new file using an incremental index:
 
-```
-
 <task_id>*<trial_id>*<index>_gaze.csv
-
-```
 
 ### Example
 
-```
-
 task_01_trial_01_001_gaze.csv
 
-```
+### Notes
 
-### Rationale
-
-- Prevents overwriting previous recordings
-- Allows multiple trials per session
-- Ensures reproducibility and traceability
+* The index is automatically incremented per trial
+* Files are never overwritten
+* Multiple recordings can exist for the same task and trial
 
 ---
 
 ## Temporal Information
 
-Each row represents one sample (frame) and includes:
+Each row corresponds to a single sample (frame).
 
-- `timestamp_rel_s`: seconds since application start (high precision)
-- `timestamp_utc_iso`: absolute time in ISO 8601 format
-- `sample_index`: sequential frame counter
+The dataset includes:
 
-### Why both timestamps?
+* `sample_index`: sequential sample counter
+* `timestamp_rel_s`: time in seconds since application start
+* `timestamp_utc_iso`: absolute timestamp in ISO 8601 format
 
-- `timestamp_rel_s` → precise temporal analysis (latency, fixations)
-- `timestamp_utc_iso` → synchronization across systems/logs
+### Usage
+
+* `timestamp_rel_s` should be used for temporal analysis
+* `timestamp_utc_iso` enables synchronization with external systems
 
 ---
 
@@ -79,35 +65,35 @@ Each row represents one sample (frame) and includes:
 
 ### 1. Metadata
 
-| Field | Description |
-|------|------------|
-| sample_index | Sequential sample number |
-| timestamp_rel_s | Time since app start (seconds) |
-| timestamp_utc_iso | Absolute timestamp |
-| participant_id | Participant identifier |
-| session_id | Session identifier |
-| task_id | Task identifier |
-| trial_id | Trial identifier |
-| condition | Experimental condition |
+| Field             | Description                            |
+| ----------------- | -------------------------------------- |
+| sample_index      | Sequential sample number               |
+| timestamp_rel_s   | Time since application start (seconds) |
+| timestamp_utc_iso | Absolute timestamp (ISO 8601)          |
+| participant_id    | Participant identifier                 |
+| session_id        | Session identifier                     |
+| task_id           | Task identifier                        |
+| trial_id          | Trial identifier                       |
+| condition         | Experimental condition                 |
 
 ---
 
-### 2. Combined Gaze (Primary Signal)
+### 2. Combined Gaze
 
-| Field | Description |
-|------|------------|
-| combined_valid | 1 if valid |
-| combined_origin_* | Ray origin |
-| combined_dir_* | Ray direction |
+| Field                 | Description             |
+| --------------------- | ----------------------- |
+| combined_valid        | 1 if valid, 0 otherwise |
+| combined_origin_x/y/z | Gaze ray origin         |
+| combined_dir_x/y/z    | Gaze ray direction      |
 
 ---
 
 ### 3. Depth-Related Metrics
 
-| Field | Description |
-|------|------------|
-| vergence_angle_deg | Angle between both gaze rays |
-| interocular_distance | Distance between eye origins |
+| Field                | Description                                  |
+| -------------------- | -------------------------------------------- |
+| vergence_angle_deg   | Angle between left and right gaze directions |
+| interocular_distance | Distance between eye origins                 |
 
 ---
 
@@ -115,189 +101,112 @@ Each row represents one sample (frame) and includes:
 
 #### Left Eye
 
-| Field | Description |
-|------|------------|
-| left_valid | Validity flag |
-| left_origin_* | Origin |
-| left_dir_* | Direction |
+| Field             | Description    |
+| ----------------- | -------------- |
+| left_valid        | Validity flag  |
+| left_origin_x/y/z | Gaze origin    |
+| left_dir_x/y/z    | Gaze direction |
 
 #### Right Eye
 
-| Field | Description |
-|------|------------|
-| right_valid | Validity flag |
-| right_origin_* | Origin |
-| right_dir_* | Direction |
+| Field              | Description    |
+| ------------------ | -------------- |
+| right_valid        | Validity flag  |
+| right_origin_x/y/z | Gaze origin    |
+| right_dir_x/y/z    | Gaze direction |
 
 ---
 
 ### 5. Pupil Data
 
-| Field | Description |
-|------|------------|
-| left_pupil_diameter | Diameter (mm) |
-| right_pupil_diameter | Diameter (mm) |
-| left_pupil_pos_x/y | Normalized position |
-| right_pupil_pos_x/y | Normalized position |
+| Field                | Description               |
+| -------------------- | ------------------------- |
+| left_pupil_diameter  | Pupil diameter (mm)       |
+| right_pupil_diameter | Pupil diameter (mm)       |
+| left_pupil_pos_x/y   | Normalized pupil position |
+| right_pupil_pos_x/y  | Normalized pupil position |
 
 ---
 
 ### 6. Eye Openness
 
-| Field | Description |
-|------|------------|
-| left_eye_openness | Eye openness (0–1) |
+| Field              | Description        |
+| ------------------ | ------------------ |
+| left_eye_openness  | Eye openness (0–1) |
 | right_eye_openness | Eye openness (0–1) |
-
-Used as a proxy for:
-- blinks
-- tracking reliability
 
 ---
 
 ### 7. Head Pose
 
-| Field | Description |
-|------|------------|
-| head_x/y/z | Position |
-| head_qx/qy/qz/qw | Rotation (quaternion) |
+| Field            | Description                |
+| ---------------- | -------------------------- |
+| head_x/y/z       | Head position              |
+| head_qx/qy/qz/qw | Head rotation (quaternion) |
 
 ---
 
 ### 8. Gaze-Based Interaction (AOI)
 
-| Field | Description |
-|------|------------|
-| hit_valid | 1 if raycast hit |
-| hit_object_name | Unity object name |
-| hit_aoi | AOI identifier |
-| hit_aoi_type | AOI category |
-| hit_x/y/z | Intersection point |
+| Field           | Description                        |
+| --------------- | ---------------------------------- |
+| hit_valid       | 1 if gaze ray intersects an object |
+| hit_object_name | Unity object name                  |
+| hit_aoi         | AOI identifier                     |
+| hit_aoi_type    | AOI category                       |
+| hit_x/y/z       | Intersection point                 |
 
 ---
 
 ## AOI Definition (Jenga Blocks)
 
-Each block is assigned an `AOITag`:
-
-```
+Each block in the scene is assigned an `AOITag` with the following format:
 
 jenga_l<level>*<side>*<orientation>
 
-```
-
 ### Example
-
-```
 
 jenga_l02_left_z
 
-```
-
 ### Components
 
-| Part | Meaning |
-|------|--------|
-| level | Tower level |
-| side | left / center / right |
-| orientation | x or z axis |
+| Component   | Description                                     |
+| ----------- | ----------------------------------------------- |
+| level       | Vertical level of the tower                     |
+| side        | Position within the level (left, center, right) |
+| orientation | Block orientation (x or z axis)                 |
 
 ---
 
 ## Data Validity Rules
 
-- Numeric values are **empty when invalid** (not zero)
-- Validity flags (`*_valid`) must be checked before use
-- Eye-specific data may be partially available
+* Numeric fields are empty when data is invalid (not zero)
+* Validity flags (`*_valid`) must be checked before using associated values
+* Data may be partially available (e.g., only one eye valid)
 
 ---
 
-## Important Notes
+## Sampling Characteristics
 
-### 1. Raw Data Philosophy
+* Sampling frequency depends on:
 
-This system records **raw signals only**:
-
-- No fixation detection
-- No saccade classification
-- No dwell time computation
-
-All higher-level metrics should be computed offline.
+  * headset tracking rate
+  * Unity frame rate
+* Sampling is not guaranteed to be uniform
+* Use `timestamp_rel_s` for precise temporal analysis
 
 ---
 
-### 2. Sampling Rate
+## Tracking Limitations
 
-Dependent on:
+Tracking data may be missing or invalid due to:
 
-- headset tracking frequency
-- Unity frame rate
+* eye blinks
+* occlusions
+* calibration issues
+* hardware constraints
 
-Use `timestamp_rel_s` for accurate timing.
+These cases are represented by:
 
----
-
-### 3. Tracking Loss
-
-Possible causes:
-
-- blinking
-- occlusion
-- hardware limitations
-
-Handled via:
-- validity flags
-- missing (empty) values
-
----
-
-## Recommended Offline Analysis
-
-From this dataset you can compute:
-
-### Gaze Metrics
-- fixations (I-VT / I-DT)
-- saccades
-- scanpaths
-
-### AOI Metrics
-- dwell time per block
-- transition matrices
-- visual strategies
-
-### Depth Analysis
-- vergence-based distance
-- near vs far attention
-
-### Pupil Analysis
-- cognitive load (relative changes)
-- task difficulty
-
----
-
-## Optional Extensions (Future Work)
-
-Consider adding:
-
-- interaction events (grab, pinch)
-- controller data
-- physiological signals (EDA, HRV)
-- scene state snapshots
-
----
-
-## Summary
-
-This logging system provides:
-
-- high-fidelity raw eye tracking data
-- spatial context (AOIs)
-- temporal precision
-- reproducible file structure
-
-It is designed for:
-
-- XR research
-- behavioral analysis
-- human-computer interaction studies
-```
+* validity flags set to 0
+* empty values in numeric fields
