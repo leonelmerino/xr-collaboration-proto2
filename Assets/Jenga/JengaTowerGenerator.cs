@@ -23,6 +23,11 @@ public class JengaTowerGenerator : MonoBehaviour
     public float settleAngularVelocity = 0.01f;
     public float maxSettleTime = 1.0f;
 
+    [Header("AOI Tagging")]
+    public bool addAOITags = true;
+    public string aoiType = "jenga_block";
+    public bool renameBlocksToAOI = true;
+
     private bool isBuilding = false;
 
     void Start()
@@ -37,7 +42,6 @@ public class JengaTowerGenerator : MonoBehaviour
         for (int level = 0; level < levels; level++)
         {
             bool rotate = (level % 2 == 1);
-
             float y = level * (blockHeight + verticalSpacing) + (blockHeight * 0.5f);
 
             for (int i = -1; i <= 1; i++)
@@ -67,11 +71,8 @@ public class JengaTowerGenerator : MonoBehaviour
                     transform
                 );
 
-                Renderer r = block.GetComponentInChildren<Renderer>();
-                if (r != null && blockMaterials.Length > 0)
-                {
-                    r.material = blockMaterials[Random.Range(0, blockMaterials.Length)];
-                }
+                ConfigureBlockMaterial(block);
+                ConfigureBlockAOI(block, level, i);
 
                 Rigidbody rb = block.GetComponent<Rigidbody>();
 
@@ -88,6 +89,64 @@ public class JengaTowerGenerator : MonoBehaviour
         }
 
         isBuilding = false;
+    }
+
+    private void ConfigureBlockMaterial(GameObject block)
+    {
+        Renderer r = block.GetComponentInChildren<Renderer>();
+
+        if (r != null && blockMaterials != null && blockMaterials.Length > 0)
+        {
+            r.material = blockMaterials[Random.Range(0, blockMaterials.Length)];
+        }
+    }
+
+    private void ConfigureBlockAOI(GameObject block, int level, int i)
+    {
+        if (!addAOITags || block == null)
+            return;
+
+        AOITag tag = block.GetComponent<AOITag>();
+        if (tag == null)
+        {
+            tag = block.AddComponent<AOITag>();
+        }
+
+        string side = GetSideLabel(i);
+        string orientation = (level % 2 == 0) ? "z" : "x";
+        string aoiId = $"jenga_l{level:00}_{side}_{orientation}";
+
+        tag.aoiId = aoiId;
+        tag.aoiType = aoiType;
+        tag.level = level;
+        tag.indexInLevel = SideIndexToZeroBased(i);
+
+        if (renameBlocksToAOI)
+        {
+            block.name = aoiId;
+        }
+    }
+
+    private string GetSideLabel(int i)
+    {
+        switch (i)
+        {
+            case -1: return "left";
+            case 0: return "center";
+            case 1: return "right";
+            default: return "unknown";
+        }
+    }
+
+    private int SideIndexToZeroBased(int i)
+    {
+        switch (i)
+        {
+            case -1: return 0;
+            case 0: return 1;
+            case 1: return 2;
+            default: return -1;
+        }
     }
 
     IEnumerator WaitUntilSettled(Rigidbody rb)

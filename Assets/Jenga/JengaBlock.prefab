@@ -13,6 +13,7 @@ GameObject:
   - component: {fileID: 5455298381079598215}
   - component: {fileID: -1257038230711148130}
   - component: {fileID: 284153896150984869}
+  - component: {fileID: 4905044299224996142}
   m_Layer: 0
   m_Name: JengaBlock
   m_TagString: Untagged
@@ -108,6 +109,20 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 26e7e96cf52956147addc1a8c8e3486e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+--- !u!114 &4905044299224996142
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5077624559600400925}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a781909d91dfce0429345e59e393c717, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  aoiId: undefined_aoi
+  aoiType: generic
 --- !u!1 &5996739235252616761
 GameObject:
   m_ObjectHideFlags: 0
