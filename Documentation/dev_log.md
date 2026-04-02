@@ -1,5 +1,34 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-04-02 — Multiplayer Mock Prototype (Triad Setup)
+
+Created a new branch `multiplayer-prototype` to isolate the development of multiplayer support and avoid interfering with the current stable setup.
+
+Implemented an initial triad-based mock multiplayer system to enable development and testing with a single XR device. Defined three fixed roles (`Host`, `Client`, `Helper`) and introduced a `PresenceMode` per role (`Real`, `Mock`, `Disabled`), allowing selective simulation of remote users.
+
+Added `TriadSessionManager` to manage player slots. The manager is responsible for spawning mock avatars, assigning role-based colors, and positioning them in the scene. Introduced a `tableCenter` reference to automatically orient all mock avatars towards the interaction area, removing the need for manual rotation tuning.
+
+Created a `MockAvatar` prefab by duplicating the existing avatar and removing all networking and XR tracking components. This ensures visual consistency between real and simulated users while keeping mocks fully local.
+
+Implemented `RoleAvatarPresenter` to handle visual configuration of avatars, including:
+
+* applying role-based colors,
+* displaying role labels,
+* billboard behavior for labels.
+
+Introduced a `LabelAnchor` transform to decouple label positioning from the avatar geometry. This simplifies alignment and ensures stable label orientation in VR.
+
+Validated the setup in runtime:
+
+* mock avatars spawn correctly,
+* roles and colors are assigned as expected,
+* avatars are oriented towards the shared workspace,
+* labels remain readable from the user’s perspective.
+
+This establishes a controlled triad environment and prepares the system for the next phase: extending multiplayer presence to hand proxies (thumb, index, pinch, ray) before integrating shared interaction with Jenga.
+
+
+
 ## 31 de marzo
 
 ### Git y estructura del proyecto
