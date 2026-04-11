@@ -1,72 +1,83 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR.Hands;
-using Unity.XR.CoreUtils;
+using UnityEngine.SubsystemsImplementation;
 
 public class PinchDebugVisualizer : MonoBehaviour
 {
-    private XRHandSubsystem handSubsystem;
-    private XROrigin xrOrigin;
-    private Transform trackingRoot;
-
     [Header("Right Hand")]
-    public Transform rightThumb;
-    public Transform rightIndex;
-    public Transform rightPinch;
-    public LineRenderer rightPinchLine;
-    public Transform rightRayOrigin;
-    public JengaRayGrabInteractor rightRayGrabInteractor;
+    [SerializeField] private Transform rightThumb;
+    [SerializeField] private Transform rightIndex;
+    [SerializeField] private Transform rightPinch;
+    [SerializeField] private LineRenderer rightPinchLine;
+    [SerializeField] private Transform rightRayOrigin;
+    [SerializeField] private JengaRayGrabInteractor rightRayGrabInteractor;
 
     [Header("Left Hand")]
-    public Transform leftThumb;
-    public Transform leftIndex;
-    public Transform leftPinch;
-    public LineRenderer leftPinchLine;
-    public Transform leftRayOrigin;
-    public JengaRayGrabInteractor leftRayGrabInteractor;
+    [SerializeField] private Transform leftThumb;
+    [SerializeField] private Transform leftIndex;
+    [SerializeField] private Transform leftPinch;
+    [SerializeField] private LineRenderer leftPinchLine;
+    [SerializeField] private Transform leftRayOrigin;
+    [SerializeField] private JengaRayGrabInteractor leftRayGrabInteractor;
 
     [Header("Pinch Settings")]
-    public float pinchThreshold = 0.025f;
+    [SerializeField] private float pinchThreshold = 0.025f;
 
-    void Start()
+    [Header("Debug")]
+    [SerializeField] private bool logTrackingWarnings = true;
+
+    private XRHandSubsystem handSubsystem;
+
+    private void Awake()
+    {
+        ConfigureLineRenderer(rightPinchLine);
+        ConfigureLineRenderer(leftPinchLine);
+    }
+
+    private void Start()
     {
         List<XRHandSubsystem> subsystems = new List<XRHandSubsystem>();
         SubsystemManager.GetSubsystems(subsystems);
 
-        if (subsystems.Count > 0)
+        if (subsystems.Count == 0)
         {
-            handSubsystem = subsystems[0];
-            handSubsystem.updatedHands += OnHandsUpdated;
-            Debug.Log("XRHandSubsystem connected.");
-        }
-        else
-        {
-            Debug.LogWarning("No XRHandSubsystem found.");
+            Debug.LogWarning("[PinchDebugVisualizer] No XRHandSubsystem found.");
+            return;
         }
 
-        xrOrigin = FindObjectOfType<XROrigin>();
-        if (xrOrigin != null)
-        {
-            trackingRoot = xrOrigin.transform;
-            Debug.Log("XROrigin found: " + xrOrigin.name);
-        }
-        else
-        {
-            Debug.LogWarning("No XROrigin found.");
-        }
+        handSubsystem = subsystems[0];
+        handSubsystem.updatedHands += OnHandsUpdated;
+
+        Debug.Log("[PinchDebugVisualizer] XRHandSubsystem connected.");
+        Debug.Log("[PinchDebugVisualizer] This script expects its marker hierarchy to be under XR Origin / Camera Offset.");
     }
 
-    void OnDestroy()
+    private void OnDestroy()
     {
         if (handSubsystem != null)
             handSubsystem.updatedHands -= OnHandsUpdated;
     }
 
-    void OnHandsUpdated(
+    private void ConfigureLineRenderer(LineRenderer line)
+    {
+        if (line == null)
+            return;
+
+        line.useWorldSpace = false;
+        line.positionCount = 2;
+        line.enabled = false;
+    }
+
+    private void OnHandsUpdated(
         XRHandSubsystem subsystem,
         XRHandSubsystem.UpdateSuccessFlags flags,
         XRHandSubsystem.UpdateType updateType)
     {
+        // Unity reports hand updates twice per frame; Dynamic is the right one for physics/colliders.
+        if (updateType != XRHandSubsystem.UpdateType.Dynamic)
+            return;
+
         UpdateSingleHand(
             subsystem.rightHand,
             rightThumb,
@@ -74,8 +85,8 @@ public class PinchDebugVisualizer : MonoBehaviour
             rightPinch,
             rightPinchLine,
             rightRayOrigin,
-            rightRayGrabInteractor
-        );
+            rightRayGrabInteractor,
+            "Right");
 
         UpdateSingleHand(
             subsystem.leftHand,
@@ -84,33 +95,32 @@ public class PinchDebugVisualizer : MonoBehaviour
             leftPinch,
             leftPinchLine,
             leftRayOrigin,
-            leftRayGrabInteractor
-        );
+            leftRayGrabInteractor,
+            "Left");
     }
 
-    void UpdateSingleHand(
+    private void UpdateSingleHand(
         XRHand hand,
         Transform thumbMarker,
         Transform indexMarker,
         Transform pinchMarker,
         LineRenderer pinchLine,
         Transform rayOrigin,
-        JengaRayGrabInteractor rayGrabInteractor)
+        JengaRayGrabInteractor rayGrabInteractor,
+        string handLabel)
     {
         if (thumbMarker == null || indexMarker == null || pinchMarker == null)
             return;
 
         if (!hand.isTracked)
         {
-            thumbMarker.gameObject.SetActive(false);
-            indexMarker.gameObject.SetActive(false);
-            pinchMarker.gameObject.SetActive(false);
-
-            if (pinchLine != null)
-                pinchLine.enabled = false;
-
-            if (rayOrigin != null)
-                rayOrigin.gameObject.SetActive(false);
+            SetHandActive(
+                thumbMarker,
+                indexMarker,
+                pinchMarker,
+                pinchLine,
+                rayOrigin,
+                false);
 
             if (rayGrabInteractor != null)
                 rayGrabInteractor.SetPinchState(false);
@@ -118,122 +128,134 @@ public class PinchDebugVisualizer : MonoBehaviour
             return;
         }
 
-        var thumb = hand.GetJoint(XRHandJointID.ThumbTip);
-        var indexTip = hand.GetJoint(XRHandJointID.IndexTip);
-        var indexProximal = hand.GetJoint(XRHandJointID.IndexProximal);
-        var wrist = hand.GetJoint(XRHandJointID.Wrist);
+        XRHandJoint thumbTip = hand.GetJoint(XRHandJointID.ThumbTip);
+        XRHandJoint indexTip = hand.GetJoint(XRHandJointID.IndexTip);
+        XRHandJoint palm = hand.GetJoint(XRHandJointID.Palm);
+        XRHandJoint indexProximal = hand.GetJoint(XRHandJointID.IndexProximal);
+        XRHandJoint thumbProximal = hand.GetJoint(XRHandJointID.ThumbProximal);
 
-        if (!thumb.TryGetPose(out Pose thumbPose) ||
-            !indexTip.TryGetPose(out Pose indexTipPose))
+        if (!thumbTip.TryGetPose(out Pose thumbPose) || !indexTip.TryGetPose(out Pose indexPose))
         {
+            if (logTrackingWarnings)
+                Debug.LogWarning($"[PinchDebugVisualizer] Missing tip pose for {handLabel} hand.");
             return;
         }
 
-        Vector3 thumbWorld = thumbPose.position;
-        Vector3 indexWorld = indexTipPose.position;
-        Vector3 rayReferenceWorld = indexWorld;
+        SetHandActive(
+            thumbMarker,
+            indexMarker,
+            pinchMarker,
+            pinchLine,
+            rayOrigin,
+            true);
 
-        if (trackingRoot != null)
-        {
-            thumbWorld = trackingRoot.TransformPoint(thumbPose.position);
-            indexWorld = trackingRoot.TransformPoint(indexTipPose.position);
-        }
+        // Local-space assignment: this assumes the hierarchy is under XR Origin / Camera Offset.
+        thumbMarker.localPosition = thumbPose.position;
+        thumbMarker.localRotation = thumbPose.rotation;
 
-        // Try to use index proximal for finger direction
-        bool hasProximal = indexProximal.TryGetPose(out Pose indexProximalPose);
-        bool hasWrist = wrist.TryGetPose(out Pose wristPose);
-
-        if (hasProximal)
-        {
-            rayReferenceWorld = trackingRoot != null
-                ? trackingRoot.TransformPoint(indexProximalPose.position)
-                : indexProximalPose.position;
-        }
-        else if (hasWrist)
-        {
-            rayReferenceWorld = trackingRoot != null
-                ? trackingRoot.TransformPoint(wristPose.position)
-                : wristPose.position;
-        }
-
-        thumbMarker.gameObject.SetActive(true);
-        indexMarker.gameObject.SetActive(true);
-
-        thumbMarker.position = thumbWorld;
-        indexMarker.position = indexWorld;
+        indexMarker.localPosition = indexPose.position;
+        indexMarker.localRotation = indexPose.rotation;
 
         if (pinchLine != null)
         {
             pinchLine.enabled = true;
-            pinchLine.positionCount = 2;
-            pinchLine.SetPosition(0, thumbWorld);
-            pinchLine.SetPosition(1, indexWorld);
+            pinchLine.SetPosition(0, thumbPose.position);
+            pinchLine.SetPosition(1, indexPose.position);
         }
 
-        float dist = Vector3.Distance(thumbWorld, indexWorld);
-        bool isPinching = dist < pinchThreshold;
+        float pinchDistance = Vector3.Distance(thumbPose.position, indexPose.position);
+        bool isPinching = pinchDistance < pinchThreshold;
 
         if (isPinching)
         {
             pinchMarker.gameObject.SetActive(true);
-            pinchMarker.position = (thumbWorld + indexWorld) * 0.5f;
+            pinchMarker.localPosition = (thumbPose.position + indexPose.position) * 0.5f;
+            pinchMarker.localRotation = Quaternion.identity;
         }
         else
         {
             pinchMarker.gameObject.SetActive(false);
         }
 
-        // Ray origin and direction
-        /*if (rayOrigin != null)
-        {
-            rayOrigin.gameObject.SetActive(true);
-            rayOrigin.position = indexWorld;
-
-            Vector3 fingerDir = (indexWorld - rayReferenceWorld).normalized;
-
-            if (fingerDir.sqrMagnitude > 0.0001f)
-            {
-                rayOrigin.rotation = Quaternion.LookRotation(fingerDir, Vector3.up);
-            }
-        }*/
-        var palm = hand.GetJoint(XRHandJointID.Palm);
-        var indexProx = hand.GetJoint(XRHandJointID.IndexProximal);
-        var thumbProx = hand.GetJoint(XRHandJointID.ThumbProximal);
-
-        if (palm.TryGetPose(out Pose palmPose))
-        {
-            Vector3 palmWorld = trackingRoot != null
-                ? trackingRoot.TransformPoint(palmPose.position)
-                : palmPose.position;
-
-            Vector3 indexProxWorld = indexProx.TryGetPose(out Pose ipPose)
-                ? (trackingRoot != null ? trackingRoot.TransformPoint(ipPose.position) : ipPose.position)
-                : palmWorld + Vector3.forward;
-
-            Vector3 thumbProxWorld = thumbProx.TryGetPose(out Pose tpPose)
-                ? (trackingRoot != null ? trackingRoot.TransformPoint(tpPose.position) : tpPose.position)
-                : palmWorld + Vector3.right;
-
-            // vectors on the palm plane
-            Vector3 v1 = (indexProxWorld - palmWorld).normalized;
-            Vector3 v2 = (thumbProxWorld - palmWorld).normalized;
-
-            // palm normal (this is the ray direction)
-            Vector3 palmNormal = Vector3.Cross(v1, v2).normalized;
-
-            // IMPORTANT: flip if pointing backwards
-            if (Vector3.Dot(palmNormal, (indexWorld - palmWorld)) < 0)
-                palmNormal = -palmNormal;
-
-            if (rayOrigin != null)
-            {
-                rayOrigin.gameObject.SetActive(true);
-                rayOrigin.position = palmWorld;
-                rayOrigin.rotation = Quaternion.LookRotation(palmNormal, Vector3.up);
-            }
-        }
+        UpdateRayOrigin(
+            hand,
+            palm,
+            indexProximal,
+            thumbProximal,
+            indexPose.position,
+            rayOrigin);
 
         if (rayGrabInteractor != null)
             rayGrabInteractor.SetPinchState(isPinching);
+    }
+
+    private void UpdateRayOrigin(
+        XRHand hand,
+        XRHandJoint palmJoint,
+        XRHandJoint indexProximalJoint,
+        XRHandJoint thumbProximalJoint,
+        Vector3 indexTipLocal,
+        Transform rayOrigin)
+    {
+        if (rayOrigin == null)
+            return;
+
+        if (!palmJoint.TryGetPose(out Pose palmPose))
+        {
+            rayOrigin.gameObject.SetActive(false);
+            return;
+        }
+
+        Vector3 palmLocal = palmPose.position;
+
+        Vector3 indexProxLocal = palmLocal + Vector3.forward;
+        if (indexProximalJoint.TryGetPose(out Pose indexProxPose))
+            indexProxLocal = indexProxPose.position;
+
+        Vector3 thumbProxLocal = palmLocal + Vector3.right;
+        if (thumbProximalJoint.TryGetPose(out Pose thumbProxPose))
+            thumbProxLocal = thumbProxPose.position;
+
+        Vector3 v1 = (indexProxLocal - palmLocal).normalized;
+        Vector3 v2 = (thumbProxLocal - palmLocal).normalized;
+
+        Vector3 palmNormal = Vector3.Cross(v1, v2).normalized;
+
+        if (palmNormal.sqrMagnitude < 0.0001f)
+        {
+            rayOrigin.gameObject.SetActive(false);
+            return;
+        }
+
+        if (Vector3.Dot(palmNormal, (indexTipLocal - palmLocal)) < 0f)
+            palmNormal = -palmNormal;
+
+        rayOrigin.gameObject.SetActive(true);
+        rayOrigin.localPosition = palmLocal;
+        rayOrigin.localRotation = Quaternion.LookRotation(palmNormal, Vector3.up);
+    }
+
+    private void SetHandActive(
+        Transform thumbMarker,
+        Transform indexMarker,
+        Transform pinchMarker,
+        LineRenderer pinchLine,
+        Transform rayOrigin,
+        bool active)
+    {
+        if (thumbMarker != null)
+            thumbMarker.gameObject.SetActive(active);
+
+        if (indexMarker != null)
+            indexMarker.gameObject.SetActive(active);
+
+        if (pinchMarker != null && !active)
+            pinchMarker.gameObject.SetActive(false);
+
+        if (pinchLine != null)
+            pinchLine.enabled = active;
+
+        if (rayOrigin != null)
+            rayOrigin.gameObject.SetActive(active);
     }
 }
