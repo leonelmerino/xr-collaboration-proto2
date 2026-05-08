@@ -57,12 +57,12 @@ public class PinchDetector : MonoBehaviour
 
         if (isPinching && !wasPinching)
         {
-            Debug.Log(label + " PINCH START");
+            //Debug.Log(label + " PINCH START");
         }
 
         if (!isPinching && wasPinching)
         {
-            Debug.Log(label + " PINCH END");
+           // Debug.Log(label + " PINCH END");
         }
 
         wasPinching = isPinching;

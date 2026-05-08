@@ -30,9 +30,13 @@ public class JengaTowerGenerator : MonoBehaviour
 
     private bool isBuilding = false;
 
-    void Start()
+    IEnumerator Start()
     {
-        StartCoroutine(BuildTower());
+        yield return null;
+        yield return new WaitForFixedUpdate();
+        yield return new WaitForSeconds(0.25f);
+
+        yield return StartCoroutine(ResetCoroutine());
     }
 
     IEnumerator BuildTower()

@@ -8,6 +8,14 @@ public class AcquisitionEventManager : MonoBehaviour
     public ExperimentEventLogger eventLogger;
     public AcquisitionMockServer mockServer;
 
+    [Header("Auto Flow")]
+    public bool autoStartSession = true;
+    public float autoStartDelaySeconds = 2f;
+
+    [Header("Heartbeat")]
+    public bool sendTaskHeartbeat = true;
+    public float heartbeatIntervalSeconds = 60f;
+
     [Header("Runtime State")]
     public bool acquisitionReachable;
     public bool acquisitionRunning;
@@ -16,6 +24,7 @@ public class AcquisitionEventManager : MonoBehaviour
     public string currentTaskId = "";
 
     private BioLabUdpClient udpClient;
+    private Coroutine heartbeatCoroutine;
 
     private void Awake()
     {
@@ -40,17 +49,22 @@ public class AcquisitionEventManager : MonoBehaviour
 
         if (config.IsMockOnly)
         {
+            Debug.Log("[AcquisitionEventManager] Running in MOCK ONLY mode.");
+
             if (mockServer == null)
                 mockServer = gameObject.AddComponent<AcquisitionMockServer>();
 
             mockServer.listenPort = config.acquisitionPort;
             mockServer.autoStart = false;
             mockServer.StartServer();
+
             return;
         }
 
         if (config.IsHost && config.useEmbeddedAcquisitionMock)
         {
+            Debug.Log("[AcquisitionEventManager] Starting embedded acquisition mock.");
+
             if (mockServer == null)
                 mockServer = gameObject.AddComponent<AcquisitionMockServer>();
 
@@ -61,11 +75,27 @@ public class AcquisitionEventManager : MonoBehaviour
             config.acquisitionIp = "127.0.0.1";
         }
 
-        udpClient = new BioLabUdpClient(config.acquisitionIp, config.acquisitionPort, config.responseTimeoutMs);
+        udpClient = new BioLabUdpClient(
+            config.acquisitionIp,
+            config.acquisitionPort,
+            config.responseTimeoutMs
+        );
+    }
+
+    private IEnumerator Start()
+    {
+        if (!autoStartSession)
+            yield break;
+
+        yield return new WaitForSeconds(autoStartDelaySeconds);
+
+        BeginExperimentalSession();
     }
 
     public void BeginExperimentalSession()
     {
+        Debug.Log("[AcquisitionEventManager] BeginExperimentalSession requested.");
+
         if (!config.IsHost)
         {
             LogLocal("SESSION_CONTROL", "SESSION_START_IGNORED_NON_HOST");
@@ -83,6 +113,8 @@ public class AcquisitionEventManager : MonoBehaviour
 
     public void EndExperimentalSession()
     {
+        Debug.Log("[AcquisitionEventManager] EndExperimentalSession requested.");
+
         if (!config.IsHost)
         {
             LogLocal("SESSION_CONTROL", "SESSION_END_IGNORED_NON_HOST");
@@ -94,6 +126,8 @@ public class AcquisitionEventManager : MonoBehaviour
 
     public void BeginTask(string taskId)
     {
+        Debug.Log($"[AcquisitionEventManager] BeginTask: {taskId}");
+
         if (!sessionStarted)
         {
             LogLocal("TASK_CONTROL", $"TASK_START_REJECTED_{taskId}", "Session not started");
@@ -108,25 +142,31 @@ public class AcquisitionEventManager : MonoBehaviour
 
         taskRunning = true;
         currentTaskId = taskId;
-        LogAndMaybeForward("TASK_START", taskId);
+
+        LogAndMaybeForward("TASK_START", BuildMetadataPayload("TASK_START"));
     }
 
     public void EndTask()
     {
+        Debug.Log("[AcquisitionEventManager] EndTask requested.");
+
         if (!taskRunning)
         {
             LogLocal("TASK_CONTROL", "TASK_END_REJECTED_NO_ACTIVE_TASK");
             return;
         }
 
-        string taskId = currentTaskId;
         taskRunning = false;
+
+        LogAndMaybeForward("TASK_END", BuildMetadataPayload("TASK_END"));
+
         currentTaskId = "";
-        LogAndMaybeForward("TASK_END", taskId);
     }
 
     private IEnumerator BeginExperimentalSessionRoutine()
     {
+        Debug.Log("[AcquisitionEventManager] Starting experimental session routine.");
+
         LogLocal("SESSION_CONTROL", "SESSION_START_REQUEST");
 
         var pingTask = udpClient.PingAsync();
@@ -134,10 +174,14 @@ public class AcquisitionEventManager : MonoBehaviour
 
         string pingResponse = pingTask.Result;
         acquisitionReachable = pingResponse == "PONG";
+
+        Debug.Log($"[AcquisitionEventManager] Ping response: {pingResponse}");
         LogLocal("SESSION_CONTROL", "PING_RESULT", pingResponse);
 
         if (!acquisitionReachable)
         {
+            Debug.LogWarning("[AcquisitionEventManager] Acquisition not reachable.");
+
             if (config.requireAcquisitionForSessionStart)
             {
                 LogLocal("SESSION_CONTROL", "SESSION_ABORTED_NO_ACQUISITION");
@@ -145,7 +189,25 @@ public class AcquisitionEventManager : MonoBehaviour
             }
 
             sessionStarted = true;
+
             LogLocal("SESSION_START", "SESSION_START_NO_ACQ");
+
+            yield return StartCoroutine(
+                ForwardEventRoutine(
+                    "SESSION_START",
+                    BuildMetadataPayload("SESSION_START_NO_ACQ")
+                )
+            );
+
+            yield return StartCoroutine(
+                ForwardEventRoutine(
+                    "TASK_CONTEXT",
+                    BuildMetadataPayload("TASK_CONTEXT_NO_ACQ")
+                )
+            );
+
+            StartHeartbeatIfNeeded();
+
             yield break;
         }
 
@@ -154,29 +216,53 @@ public class AcquisitionEventManager : MonoBehaviour
 
         string startResponse = startTask.Result;
         acquisitionRunning = startResponse == "OK";
+
+        Debug.Log($"[AcquisitionEventManager] Acquisition START response: {startResponse}");
         LogLocal("SESSION_CONTROL", "START_RESULT", startResponse);
 
         if (!acquisitionRunning && config.requireAcquisitionForSessionStart)
             yield break;
 
         sessionStarted = true;
-        yield return StartCoroutine(ForwardEventRoutine("SESSION_START", "SESSION_START"));
+
+        yield return StartCoroutine(
+            ForwardEventRoutine(
+                "SESSION_START",
+                BuildMetadataPayload("SESSION_START")
+            )
+        );
+
+        yield return StartCoroutine(
+            ForwardEventRoutine(
+                "TASK_CONTEXT",
+                BuildMetadataPayload("TASK_CONTEXT")
+            )
+        );
+
+        StartHeartbeatIfNeeded();
     }
 
     private IEnumerator EndExperimentalSessionRoutine()
     {
+        Debug.Log("[AcquisitionEventManager] Ending experimental session routine.");
+
         if (!sessionStarted)
         {
             LogLocal("SESSION_CONTROL", "SESSION_END_IGNORED_NOT_STARTED");
             yield break;
         }
 
-        if (taskRunning)
-        {
-            LogLocal("SESSION_CONTROL", "SESSION_END_WITH_ACTIVE_TASK", currentTaskId);
-        }
+        StopHeartbeat();
 
-        yield return StartCoroutine(ForwardEventRoutine("SESSION_END", "SESSION_END"));
+        if (taskRunning)
+            LogLocal("SESSION_CONTROL", "SESSION_END_WITH_ACTIVE_TASK", currentTaskId);
+
+        yield return StartCoroutine(
+            ForwardEventRoutine(
+                "SESSION_END",
+                BuildMetadataPayload("SESSION_END")
+            )
+        );
 
         if (acquisitionReachable && acquisitionRunning)
         {
@@ -184,7 +270,10 @@ public class AcquisitionEventManager : MonoBehaviour
             yield return new WaitUntil(() => stopTask.IsCompleted);
 
             string stopResponse = stopTask.Result;
+
+            Debug.Log($"[AcquisitionEventManager] Acquisition STOP response: {stopResponse}");
             LogLocal("SESSION_CONTROL", "STOP_RESULT", stopResponse);
+
             acquisitionRunning = false;
         }
 
@@ -193,8 +282,75 @@ public class AcquisitionEventManager : MonoBehaviour
         currentTaskId = "";
     }
 
+    private void StartHeartbeatIfNeeded()
+    {
+        if (!sendTaskHeartbeat)
+            return;
+
+        if (heartbeatCoroutine != null)
+            return;
+
+        Debug.Log($"[AcquisitionEventManager] Starting heartbeat every {heartbeatIntervalSeconds} seconds.");
+        heartbeatCoroutine = StartCoroutine(HeartbeatRoutine());
+    }
+
+    private void StopHeartbeat()
+    {
+        if (heartbeatCoroutine == null)
+            return;
+
+        Debug.Log("[AcquisitionEventManager] Stopping heartbeat.");
+
+        StopCoroutine(heartbeatCoroutine);
+        heartbeatCoroutine = null;
+    }
+
+    private IEnumerator HeartbeatRoutine()
+    {
+        while (true)
+        {
+            yield return new WaitForSeconds(heartbeatIntervalSeconds);
+
+            if (!sessionStarted)
+                yield break;
+
+            yield return StartCoroutine(
+                ForwardEventRoutine(
+                    "TASK_CONTEXT_HEARTBEAT",
+                    BuildMetadataPayload("TASK_CONTEXT_HEARTBEAT")
+                )
+            );
+        }
+    }
+
+    private string BuildMetadataPayload(string eventLabel)
+    {
+        string participantId = "UNKNOWN_PARTICIPANT";
+        string sessionId = "UNKNOWN_SESSION";
+        string taskId = "UNKNOWN_TASK";
+        string trialId = "UNKNOWN_TRIAL";
+
+        if (eventLogger != null)
+        {
+            participantId = eventLogger.participantId;
+            sessionId = eventLogger.sessionId;
+            taskId = eventLogger.taskId;
+            trialId = eventLogger.trialId;
+        }
+
+        return
+            $"{eventLabel}" +
+            $"|participant={participantId}" +
+            $"|session={sessionId}" +
+            $"|task={taskId}" +
+            $"|trial={trialId}" +
+            $"|node={config.nodeId}";
+    }
+
     private void LogAndMaybeForward(string eventType, string eventValue)
     {
+        Debug.Log($"[AcquisitionEventManager] Local event: {eventType} -> {eventValue}");
+
         LogLocal(eventType, eventValue);
 
         if (config.IsHost)
@@ -203,12 +359,21 @@ public class AcquisitionEventManager : MonoBehaviour
 
     private IEnumerator ForwardEventRoutine(string eventType, string eventValue)
     {
-        if (!acquisitionReachable)
-            yield break;
+        string encoded = eventValue;
 
-        string encoded = $"{eventType}_{eventValue}";
+        Debug.Log($"[AcquisitionEventManager] Forwarding event: {encoded}");
+
+        if (!acquisitionReachable)
+        {
+            Debug.Log($"[AcquisitionEventManager] Acquisition unreachable. Event kept local: {encoded}");
+            yield break;
+        }
+
         var task = udpClient.SendEventAsync(config.nodeId, encoded);
+
         yield return new WaitUntil(() => task.IsCompleted);
+
+        Debug.Log($"[AcquisitionEventManager] Forward result: {encoded} -> {task.Result}");
 
         LogLocal("FORWARD_RESULT", encoded, task.Result);
     }

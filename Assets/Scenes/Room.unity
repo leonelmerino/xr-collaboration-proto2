@@ -310,6 +310,7 @@ MonoBehaviour:
   rayMask:
     serializedVersion: 2
     m_Bits: 4294967295
+  debugLogs: 0
 --- !u!1 &60719535
 GameObject:
   m_ObjectHideFlags: 0
@@ -4260,7 +4261,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &707809799
 Transform:
   m_ObjectHideFlags: 0
@@ -4513,6 +4514,7 @@ MonoBehaviour:
   rayMask:
     serializedVersion: 2
     m_Bits: 4294967295
+  debugLogs: 0
 --- !u!4 &741387630
 Transform:
   m_ObjectHideFlags: 0
@@ -5051,6 +5053,10 @@ MonoBehaviour:
   config: {fileID: 0}
   eventLogger: {fileID: 0}
   mockServer: {fileID: 0}
+  autoStartSession: 1
+  autoStartDelaySeconds: 2
+  sendTaskHeartbeat: 1
+  heartbeatIntervalSeconds: 60
   acquisitionReachable: 0
   acquisitionRunning: 0
   sessionStarted: 0

@@ -1,5 +1,41 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-05-08 — Simplificación del flujo experimental, estabilización de logging y correcciones de interacción XR
+
+### Simplificación del flujo experimental
+
+Se decidió simplificar temporalmente el pipeline experimental eliminando la dependencia de interacción manual mediante botones VR. El objetivo fue estabilizar el flujo de adquisición y logging antes de continuar depurando problemas de interacción XR.
+
+Como parte de esta decisión:
+
+* se desactivó el uso operativo de botones VR físicos,
+* se mantuvieron los prefabs y scripts en la escena para posible reutilización futura,
+* se migró el control experimental hacia un flujo automático centralizado.
+
+La motivación principal fue desacoplar:
+
+* adquisición BioLab,
+* logging experimental,
+* eye tracking,
+* sincronización temporal,
+
+de los problemas de interacción física y hand tracking.
+
+---
+
+### Reestructuración del flujo de adquisición
+
+Se identificó que el sistema activo de integración no utilizaba `BioLabSessionCoordinator`, sino `AcquisitionEventManager`.
+
+Se revisó y consolidó la arquitectura actual:
+
+``text
+AcquisitionIntegration
+├── AcquisitionNodeConfig
+├── ExperimentEventLogger
+├── AcquisitionMockServer
+└── AcquisitionEventManager
+
 ## 2026-04-11 — Integración BioLab, corrección de marcadores de mano y sistema inicial de botones VR
 
 Se implementó una primera capa de integración entre el prototipo XR y BioLab para permitir el registro sincronizado de eventos experimentales durante la ejecución. Se definió como decisión de diseño mantener las señales de alta frecuencia (por ejemplo, eye tracking) localmente en Unity, y enviar únicamente eventos semánticos de baja frecuencia hacia BioLab. Esto evita sobrecargar el sistema de adquisición y asegura la calidad de los datos fisiológicos.
@@ -147,6 +183,16 @@ Esto mejora la estabilidad de detección y la reproducibilidad de interacción.
 * sincronizar estado experimental entre host, client y helper
 * preparar pipeline de fusión offline (eye tracking + eventos)
 * documentar configuración final de jerarquía y componentes en Unity
+
+## 2026-04-09 — BioLab Integration  
+
+En el PC de adquisición, según el manual, debes hacer esto antes de probar nada:
+
+Abrir BioLab.
+Ir a la configuración de eventos de red y habilitar UDP Events. El manual ubica este switch en Network Events.
+En la pantalla de adquisición, seleccionar la ruta/archivo de salida de la corrida. BioLab solo empieza a escuchar en el puerto 1776 después de que se selecciona un file path en la Acquisition screen.
+Verificar que Trigger Mode = Off, porque START solo funciona en ese modo.
+Dejar BioLab en la pantalla de adquisición, listo para recibir comandos.
 
 ## 2026-04-02 — Multiplayer Mock Prototype (Triad Setup)
 
