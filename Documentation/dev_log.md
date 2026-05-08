@@ -1,5 +1,388 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-05-08 — Refinamiento del flujo experimental y corrección de interacción XR basada en hand rays
+
+### Simplificación del flujo experimental
+
+Se decidió simplificar temporalmente el pipeline experimental eliminando la dependencia de interacción manual mediante botones VR. El objetivo fue estabilizar:
+
+* adquisición BioLab,
+* logging experimental,
+* eye tracking,
+* sincronización temporal,
+
+antes de continuar depurando interacción XR compleja.
+
+Como parte de esta decisión:
+
+* los botones VR fueron desactivados operativamente,
+* los prefabs y scripts se mantuvieron en escena para reutilización futura,
+* el control experimental fue migrado a un flujo automático centralizado.
+
+---
+
+### Consolidación de la arquitectura de adquisición
+
+Se identificó que el flujo activo del proyecto no utilizaba `BioLabSessionCoordinator`, sino `AcquisitionEventManager`.
+
+Se consolidó la arquitectura actual:
+
+```text
+AcquisitionIntegration
+├── AcquisitionNodeConfig
+├── ExperimentEventLogger
+├── AcquisitionMockServer
+└── AcquisitionEventManager
+```
+
+A partir de esto, `AcquisitionEventManager` fue modificado para implementar un flujo experimental automático desacoplado de UI XR.
+
+---
+
+### Inicio automático de sesión experimental
+
+Se incorporó soporte para:
+
+* inicio automático de sesión,
+* heartbeat periódico de metadata,
+* logging explícito,
+* compatibilidad transparente con acquisition mock.
+
+Se añadieron parámetros configurables:
+
+* `autoStartSession`
+* `autoStartDelaySeconds`
+* `sendTaskHeartbeat`
+* `heartbeatIntervalSeconds`
+
+El flujo actual ejecuta automáticamente:
+
+1. `PING`
+2. `START`
+3. `SESSION_START`
+4. `TASK_CONTEXT`
+5. heartbeat periódico
+
+sin requerir interacción manual.
+
+---
+
+### Integración consistente de metadata experimental
+
+Se consolidó el uso de `ExperimentEventLogger` como fuente primaria de metadata experimental.
+
+Los eventos enviados ahora incluyen consistentemente:
+
+* `participant`
+* `session`
+* `task`
+* `trial`
+* `node`
+
+Ejemplo:
+
+```text
+SESSION_START|participant=P001|session=S001|task=task_01|trial=trial_01|node=VR_HOST
+```
+
+Esto garantiza coherencia entre:
+
+* CSV de eventos,
+* CSV de eye tracking,
+* BioLab UDP,
+* acquisition mock log.
+
+---
+
+### Heartbeat automático de metadata experimental
+
+Se implementó un mecanismo periódico (`TASK_CONTEXT_HEARTBEAT`) para mantener metadata contextual sincronizada durante sesiones largas.
+
+Características:
+
+* configurable por intervalo,
+* reutiliza metadata experimental existente,
+* prepara soporte para futuras condiciones dinámicas.
+
+El heartbeat se detiene automáticamente al finalizar la sesión experimental.
+
+---
+
+### Logging explícito y depuración
+
+Se añadieron mensajes detallados vía `Debug.Log` para facilitar depuración en tiempo real.
+
+Se incorporó logging explícito para:
+
+* inicio y fin de sesión,
+* resultados de `PING`,
+* resultados de `START` y `STOP`,
+* forwarding UDP,
+* heartbeat,
+* sincronización local.
+
+Esto facilita validar:
+
+* conectividad,
+* acquisition pipeline,
+* consistencia de metadata,
+* comportamiento del mock server.
+
+---
+
+### Validación del Acquisition Mock Server
+
+Se confirmó el correcto funcionamiento del servidor mock (`AcquisitionMockServer`) para desarrollo local.
+
+El sistema actualmente puede ejecutarse completamente sin BioLab real.
+
+El mock responde correctamente a:
+
+* `PING`
+* `START`
+* `STOP`
+* eventos experimentales UDP.
+
+---
+
+### Corrección de payload duplicado
+
+Se identificó un problema donde los payloads duplicaban el nombre del evento.
+
+Ejemplo incorrecto:
+
+```text
+SESSION_START_SESSION_START|participant=...
+```
+
+La causa era:
+
+```csharp
+string encoded = $"{eventType}_{eventValue}";
+```
+
+cuando `eventValue` ya contenía el nombre del evento.
+
+Se corrigió reemplazando por:
+
+```csharp
+string encoded = eventValue;
+```
+
+Tras la corrección, los payloads quedaron consistentes y limpios.
+
+---
+
+### Desactivación temporal de logging de pinch gestures
+
+Se decidió desactivar temporalmente el logging de pinch y hand gestures debido a:
+
+* contaminación excesiva de consola,
+* generación masiva de eventos irrelevantes,
+* dificultad para depuración experimental.
+
+Se deshabilitaron temporalmente:
+
+* `PinchDetector`
+* `PinchDebugVisualizer`
+
+Esto no afecta:
+
+* eye tracking,
+* raycast,
+* grab interaction,
+* acquisition pipeline.
+
+---
+
+### Corrección de generación inicial de torre Jenga
+
+Se diagnosticó un problema donde la torre Jenga aparecía flotando sobre la mesa únicamente al iniciar la escena.
+
+Se observó que:
+
+* el reset manual reconstruía correctamente la torre,
+* el flujo inicial ejecutaba `BuildTower()` demasiado temprano.
+
+El problema estaba relacionado con:
+
+* inicialización prematura de física,
+* estabilización tardía del XR rig,
+* sincronización de colliders y transforms.
+
+Se corrigió reutilizando el mismo pipeline estable del reset manual durante el inicio de escena.
+
+Se reemplazó:
+
+```csharp
+StartCoroutine(BuildTower());
+```
+
+por:
+
+```csharp
+yield return null;
+yield return new WaitForFixedUpdate();
+yield return new WaitForSeconds(0.25f);
+yield return StartCoroutine(ResetCoroutine());
+```
+
+Resultados:
+
+* torre correctamente apoyada sobre la mesa,
+* eliminación de bloques flotando,
+* comportamiento consistente entre inicio y reset.
+
+---
+
+### Diagnóstico del desplazamiento del raycast XR
+
+Se investigó un problema donde los rayos utilizados para grab de bloques Jenga aparecían desplazados aproximadamente un metro hacia adelante respecto a las manos.
+
+Inicialmente se sospechó:
+
+* uso incorrecto de `forward`,
+* problemas de world/local space,
+* offsets introducidos por jerarquías XR.
+
+Tras revisar:
+
+* scripts,
+* referencias de escena,
+* configuración de `LineRenderer`,
+* branch principal funcional,
+
+se concluyó que el problema NO estaba en `JengaRayGrabInteractor.cs`.
+
+---
+
+### Identificación del problema real de ray origins
+
+Se descubrió que:
+
+* `RightRayOrigin`
+* `LeftRayOrigin`
+
+existían como GameObjects independientes bajo:
+
+```text
+Interaction
+```
+
+con posiciones absolutas no nulas.
+
+Ejemplo observado:
+
+```text
+Position:
+X 0.17
+Y 0.99
+Z 0.78
+```
+
+Esto provocaba que:
+
+* el raycast siguiera correctamente la orientación de la mano,
+* pero el origen espacial estuviera desacoplado del tracking XR.
+
+---
+
+### Corrección arquitectónica de ray origins
+
+Se reparentaron los ray origins bajo marcadores de mano XR válidos.
+
+Nueva jerarquía:
+
+```text
+RightThumbMarker
+├── RightRayOrigin
+└── RightHandRayAnchor
+
+LeftThumbMarker
+├── LeftRayOrigin
+└── LeftHandRayAnchor
+```
+
+Los transforms locales fueron normalizados:
+
+```text
+Position = 0,0,0
+Rotation = 0,0,0
+Scale = 1,1,1
+```
+
+Esto eliminó el desplazamiento espacial excesivo del raycast.
+
+---
+
+### Introducción de arquitectura tipo Meta Horizon para hand rays
+
+Se identificó un problema de usabilidad importante:
+
+* cuando el raycast dependía directamente del índice,
+* el gesto pinch alteraba la dirección del rayo,
+* dificultando la selección de objetos.
+
+Se decidió adoptar una arquitectura más cercana a Meta Horizon / Quest System UI:
+
+* dirección del ray desacoplada del pinch,
+* selección activada por pinch,
+* orientación controlada desde palma/pulgar.
+
+Para esto se introdujeron:
+
+```text
+RightHandRayAnchor
+LeftHandRayAnchor
+```
+
+como anchors independientes para raycasting.
+
+Configuración inicial recomendada:
+
+### RightHandRayAnchor
+
+```text
+Local Position = 0,0,0
+Local Rotation = 0,25,0
+Local Scale = 1,1,1
+```
+
+### LeftHandRayAnchor
+
+```text
+Local Position = 0,0,0
+Local Rotation = 0,-25,0
+Local Scale = 1,1,1
+```
+
+Esto prepara una interacción más estable y ergonómica.
+
+---
+
+### Estado actual
+
+* acquisition pipeline estable,
+* acquisition mock funcional,
+* metadata experimental consistente,
+* heartbeat automático operativo,
+* eye tracking funcional,
+* torre Jenga correctamente alineada,
+* ray origins corregidos,
+* arquitectura tipo Meta Horizon parcialmente integrada,
+* interacción raycast funcional pero aún en refinamiento ergonómico.
+
+---
+
+### Próximos pasos
+
+* refinar orientación de `RightHandRayAnchor` y `LeftHandRayAnchor`,
+* estabilizar ergonomía del raycast XR,
+* desacoplar completamente raycast de movimientos finos del índice,
+* limpiar arquitectura de helpers XR redundantes,
+* reintegrar interacción XR progresivamente,
+* sincronizar interacción XR con eventos experimentales reales.
+
 ## 2026-05-08 — Simplificación del flujo experimental, estabilización de logging y correcciones de interacción XR
 
 ### Simplificación del flujo experimental
