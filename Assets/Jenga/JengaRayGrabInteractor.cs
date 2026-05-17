@@ -26,7 +26,6 @@ public class JengaRayGrabInteractor : MonoBehaviour
         if (Physics.Raycast(start, dir, out RaycastHit hit, rayLength, rayMask))
         {
             end = hit.point;
-            Debug.Log("Ray hit: " + hit.collider.name);
         }
 
         if (rayLine != null)

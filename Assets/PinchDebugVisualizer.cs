@@ -37,20 +37,28 @@ public class PinchDebugVisualizer : MonoBehaviour
 
     private void Start()
     {
+        TryAttachHandSubsystem();
+    }
+
+    private void Update()
+    {
+        if (handSubsystem == null)
+            TryAttachHandSubsystem();
+    }
+
+    private void TryAttachHandSubsystem()
+    {
+        if (handSubsystem != null) return;
+
         List<XRHandSubsystem> subsystems = new List<XRHandSubsystem>();
         SubsystemManager.GetSubsystems(subsystems);
 
         if (subsystems.Count == 0)
-        {
-            Debug.LogWarning("[PinchDebugVisualizer] No XRHandSubsystem found.");
             return;
-        }
 
         handSubsystem = subsystems[0];
         handSubsystem.updatedHands += OnHandsUpdated;
-
         Debug.Log("[PinchDebugVisualizer] XRHandSubsystem connected.");
-        Debug.Log("[PinchDebugVisualizer] This script expects its marker hierarchy to be under XR Origin / Camera Offset.");
     }
 
     private void OnDestroy()
