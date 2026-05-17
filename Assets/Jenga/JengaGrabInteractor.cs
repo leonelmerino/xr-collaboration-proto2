@@ -42,7 +42,7 @@ public class JengaGrabInteractor : MonoBehaviour
         {
             JengaGrabbable g = hit.GetComponentInParent<JengaGrabbable>();
             if (g == null) continue;
-            if (g.IsGrabbed()) continue;
+            if (IsBlockTaken(g)) continue;
 
             float d = Vector3.Distance(hit.ClosestPoint(pinchPoint.position),
                                        pinchPoint.position);
@@ -57,7 +57,13 @@ public class JengaGrabInteractor : MonoBehaviour
         if (best != null)
         {
             currentGrabbed = best;
-            currentGrabbed.BeginGrab(pinchPoint);
+            var net = best.GetComponent<NetworkedJengaBlock>();
+            if (net != null)
+                net.RequestGrab(pinchPoint);
+            else
+                best.BeginGrab(pinchPoint);
+
+            EmitInteractionEvent("GRAB_BEGIN_PINCH", best.gameObject.name);
         }
     }
 
@@ -65,9 +71,31 @@ public class JengaGrabInteractor : MonoBehaviour
     {
         if (currentGrabbed != null)
         {
-            currentGrabbed.EndGrab();
+            string blockName = currentGrabbed.gameObject.name;
+            var net = currentGrabbed.GetComponent<NetworkedJengaBlock>();
+            if (net != null)
+                net.RequestRelease();
+            else
+                currentGrabbed.EndGrab();
             currentGrabbed = null;
+
+            EmitInteractionEvent("GRAB_END_PINCH", blockName);
         }
+    }
+
+    private static void EmitInteractionEvent(string label, string blockId)
+    {
+        var mgr = AcquisitionEventManager.Instance;
+        if (mgr != null)
+            mgr.EmitInteractionEvent(label, "block", blockId);
+    }
+
+    private static bool IsBlockTaken(JengaGrabbable g)
+    {
+        if (g.IsGrabbed()) return true;
+        var net = g.GetComponent<NetworkedJengaBlock>();
+        if (net != null && net.IsGrabbedAnywhere) return true;
+        return false;
     }
 
     void OnDrawGizmos()

@@ -810,6 +810,7 @@ MonoBehaviour:
   leftRaySourceName: LeftGrabRay
   rightRaySourceName: RightGrabRay
   pinchThreshold: 0.025
+  lineWidth: 0.003
   overrideOriginForConversion: {fileID: 0}
 --- !u!1 &4458789287140476807
 GameObject:
@@ -1033,13 +1034,13 @@ LineRenderer:
   - {x: 0, y: 0, z: 1}
   m_Parameters:
     serializedVersion: 3
-    widthMultiplier: 1
+    widthMultiplier: 0.25174567
     widthCurve:
       serializedVersion: 2
       m_Curve:
       - serializedVersion: 3
-        time: 0.021275304
-        value: 0
+        time: 0.023209356
+        value: 1
         inSlope: 0
         outSlope: 0
         tangentMode: 0
@@ -1169,13 +1170,13 @@ LineRenderer:
   - {x: 0, y: 0, z: 1}
   m_Parameters:
     serializedVersion: 3
-    widthMultiplier: 1
+    widthMultiplier: 0.02823216
     widthCurve:
       serializedVersion: 2
       m_Curve:
       - serializedVersion: 3
-        time: 0.021275304
-        value: 0
+        time: 0.023209356
+        value: 1
         inSlope: 0
         outSlope: 0
         tangentMode: 0
@@ -1305,13 +1306,13 @@ LineRenderer:
   - {x: 0, y: 0, z: 1}
   m_Parameters:
     serializedVersion: 3
-    widthMultiplier: 1
+    widthMultiplier: 0.02412034
     widthCurve:
       serializedVersion: 2
       m_Curve:
       - serializedVersion: 3
-        time: 0.017414093
-        value: 0
+        time: 0.0232168
+        value: 1
         inSlope: 0
         outSlope: 0
         tangentMode: 0
@@ -1690,13 +1691,13 @@ LineRenderer:
   - {x: 0, y: 0, z: 1}
   m_Parameters:
     serializedVersion: 3
-    widthMultiplier: 1
+    widthMultiplier: 0.028091839
     widthCurve:
       serializedVersion: 2
       m_Curve:
       - serializedVersion: 3
-        time: 0.021280412
-        value: 0
+        time: 0.023214463
+        value: 1
         inSlope: 0
         outSlope: 0
         tangentMode: 0

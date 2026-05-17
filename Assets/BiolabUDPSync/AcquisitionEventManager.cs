@@ -3,6 +3,8 @@ using UnityEngine;
 
 public class AcquisitionEventManager : MonoBehaviour
 {
+    public static AcquisitionEventManager Instance { get; private set; }
+
     [Header("References")]
     public AcquisitionNodeConfig config;
     public ExperimentEventLogger eventLogger;
@@ -28,6 +30,8 @@ public class AcquisitionEventManager : MonoBehaviour
 
     private void Awake()
     {
+        if (Instance == null) Instance = this;
+
         if (config == null)
             config = GetComponent<AcquisitionNodeConfig>();
 
@@ -82,6 +86,11 @@ public class AcquisitionEventManager : MonoBehaviour
         );
     }
 
+    private void OnDestroy()
+    {
+        if (Instance == this) Instance = null;
+    }
+
     private IEnumerator Start()
     {
         if (!autoStartSession)
@@ -94,13 +103,7 @@ public class AcquisitionEventManager : MonoBehaviour
 
     public void BeginExperimentalSession()
     {
-        Debug.Log("[AcquisitionEventManager] BeginExperimentalSession requested.");
-
-        if (!config.IsHost)
-        {
-            LogLocal("SESSION_CONTROL", "SESSION_START_IGNORED_NON_HOST");
-            return;
-        }
+        Debug.Log($"[AcquisitionEventManager] BeginExperimentalSession requested (node={config.nodeId}, role={config.role}).");
 
         if (sessionStarted)
         {
@@ -113,20 +116,14 @@ public class AcquisitionEventManager : MonoBehaviour
 
     public void EndExperimentalSession()
     {
-        Debug.Log("[AcquisitionEventManager] EndExperimentalSession requested.");
-
-        if (!config.IsHost)
-        {
-            LogLocal("SESSION_CONTROL", "SESSION_END_IGNORED_NON_HOST");
-            return;
-        }
+        Debug.Log($"[AcquisitionEventManager] EndExperimentalSession requested (node={config.nodeId}).");
 
         StartCoroutine(EndExperimentalSessionRoutine());
     }
 
     public void BeginTask(string taskId)
     {
-        Debug.Log($"[AcquisitionEventManager] BeginTask: {taskId}");
+        Debug.Log($"[AcquisitionEventManager] BeginTask: {taskId} (node={config.nodeId})");
 
         if (!sessionStarted)
         {
@@ -143,12 +140,12 @@ public class AcquisitionEventManager : MonoBehaviour
         taskRunning = true;
         currentTaskId = taskId;
 
-        LogAndMaybeForward("TASK_START", BuildMetadataPayload("TASK_START"));
+        LogAndForward("TASK_START", BuildMetadataPayload("TASK_START"));
     }
 
     public void EndTask()
     {
-        Debug.Log("[AcquisitionEventManager] EndTask requested.");
+        Debug.Log($"[AcquisitionEventManager] EndTask requested (node={config.nodeId}).");
 
         if (!taskRunning)
         {
@@ -158,17 +155,37 @@ public class AcquisitionEventManager : MonoBehaviour
 
         taskRunning = false;
 
-        LogAndMaybeForward("TASK_END", BuildMetadataPayload("TASK_END"));
+        LogAndForward("TASK_END", BuildMetadataPayload("TASK_END"));
 
         currentTaskId = "";
     }
 
+    /// <summary>
+    /// Punto de entrada para eventos discretos de interaccion (grab, release, etc.).
+    /// Cada nodo loggea y reenvia su propio evento tagueado con su node_id.
+    /// </summary>
+    public void EmitInteractionEvent(string eventLabel, string detailKey = null, string detailValue = null)
+    {
+        if (!sessionStarted)
+        {
+            LogLocal("INTERACTION_REJECTED", eventLabel, "Session not started");
+            return;
+        }
+
+        string payload = BuildMetadataPayload(eventLabel);
+        if (!string.IsNullOrEmpty(detailKey))
+            payload += $"|{detailKey}={detailValue}";
+
+        LogAndForward("INTERACTION", payload);
+    }
+
     private IEnumerator BeginExperimentalSessionRoutine()
     {
-        Debug.Log("[AcquisitionEventManager] Starting experimental session routine.");
+        Debug.Log($"[AcquisitionEventManager] Starting experimental session routine (node={config.nodeId}).");
 
         LogLocal("SESSION_CONTROL", "SESSION_START_REQUEST");
 
+        // PING: cada nodo verifica conectividad por su cuenta.
         var pingTask = udpClient.PingAsync();
         yield return new WaitUntil(() => pingTask.IsCompleted);
 
@@ -211,20 +228,31 @@ public class AcquisitionEventManager : MonoBehaviour
             yield break;
         }
 
-        var startTask = udpClient.StartAcquisitionAsync();
-        yield return new WaitUntil(() => startTask.IsCompleted);
+        // START: SOLO el host le dice a BioLab que arranque la grabacion.
+        if (config.IsHost)
+        {
+            var startTask = udpClient.StartAcquisitionAsync();
+            yield return new WaitUntil(() => startTask.IsCompleted);
 
-        string startResponse = startTask.Result;
-        acquisitionRunning = startResponse == "OK";
+            string startResponse = startTask.Result;
+            acquisitionRunning = startResponse == "OK";
 
-        Debug.Log($"[AcquisitionEventManager] Acquisition START response: {startResponse}");
-        LogLocal("SESSION_CONTROL", "START_RESULT", startResponse);
+            Debug.Log($"[AcquisitionEventManager] Acquisition START response: {startResponse}");
+            LogLocal("SESSION_CONTROL", "START_RESULT", startResponse);
 
-        if (!acquisitionRunning && config.requireAcquisitionForSessionStart)
-            yield break;
+            if (!acquisitionRunning && config.requireAcquisitionForSessionStart)
+                yield break;
+        }
+        else
+        {
+            // Client/Helper asumen que el host ya inicio (o lo hara) la adquisicion.
+            acquisitionRunning = true;
+            LogLocal("SESSION_CONTROL", "START_SKIPPED_NON_HOST");
+        }
 
         sessionStarted = true;
 
+        // SESSION_START tagueado con node_id (cada nodo envia el suyo).
         yield return StartCoroutine(
             ForwardEventRoutine(
                 "SESSION_START",
@@ -244,7 +272,7 @@ public class AcquisitionEventManager : MonoBehaviour
 
     private IEnumerator EndExperimentalSessionRoutine()
     {
-        Debug.Log("[AcquisitionEventManager] Ending experimental session routine.");
+        Debug.Log($"[AcquisitionEventManager] Ending experimental session routine (node={config.nodeId}).");
 
         if (!sessionStarted)
         {
@@ -257,6 +285,7 @@ public class AcquisitionEventManager : MonoBehaviour
         if (taskRunning)
             LogLocal("SESSION_CONTROL", "SESSION_END_WITH_ACTIVE_TASK", currentTaskId);
 
+        // SESSION_END por nodo.
         yield return StartCoroutine(
             ForwardEventRoutine(
                 "SESSION_END",
@@ -264,7 +293,8 @@ public class AcquisitionEventManager : MonoBehaviour
             )
         );
 
-        if (acquisitionReachable && acquisitionRunning)
+        // STOP: SOLO el host le dice a BioLab que pare la grabacion.
+        if (config.IsHost && acquisitionReachable && acquisitionRunning)
         {
             var stopTask = udpClient.StopAcquisitionAsync();
             yield return new WaitUntil(() => stopTask.IsCompleted);
@@ -275,6 +305,10 @@ public class AcquisitionEventManager : MonoBehaviour
             LogLocal("SESSION_CONTROL", "STOP_RESULT", stopResponse);
 
             acquisitionRunning = false;
+        }
+        else if (!config.IsHost)
+        {
+            LogLocal("SESSION_CONTROL", "STOP_SKIPPED_NON_HOST");
         }
 
         sessionStarted = false;
@@ -290,7 +324,7 @@ public class AcquisitionEventManager : MonoBehaviour
         if (heartbeatCoroutine != null)
             return;
 
-        Debug.Log($"[AcquisitionEventManager] Starting heartbeat every {heartbeatIntervalSeconds} seconds.");
+        Debug.Log($"[AcquisitionEventManager] Starting heartbeat every {heartbeatIntervalSeconds} seconds (node={config.nodeId}).");
         heartbeatCoroutine = StartCoroutine(HeartbeatRoutine());
     }
 
@@ -347,14 +381,12 @@ public class AcquisitionEventManager : MonoBehaviour
             $"|node={config.nodeId}";
     }
 
-    private void LogAndMaybeForward(string eventType, string eventValue)
+    private void LogAndForward(string eventType, string eventValue)
     {
         Debug.Log($"[AcquisitionEventManager] Local event: {eventType} -> {eventValue}");
 
         LogLocal(eventType, eventValue);
-
-        if (config.IsHost)
-            StartCoroutine(ForwardEventRoutine(eventType, eventValue));
+        StartCoroutine(ForwardEventRoutine(eventType, eventValue));
     }
 
     private IEnumerator ForwardEventRoutine(string eventType, string eventValue)
@@ -366,6 +398,12 @@ public class AcquisitionEventManager : MonoBehaviour
         if (!acquisitionReachable)
         {
             Debug.Log($"[AcquisitionEventManager] Acquisition unreachable. Event kept local: {encoded}");
+            yield break;
+        }
+
+        if (udpClient == null)
+        {
+            Debug.LogWarning("[AcquisitionEventManager] udpClient is null; skipping forward.");
             yield break;
         }
 

@@ -1,8 +1,12 @@
 using System.Collections;
+using System.Collections.Generic;
+using Unity.Netcode;
 using UnityEngine;
 
 public class JengaTowerGenerator : MonoBehaviour
 {
+    public static JengaTowerGenerator Instance { get; private set; }
+
     [Header("References")]
     public GameObject blockPrefab;
     public Material[] blockMaterials;
@@ -29,18 +33,73 @@ public class JengaTowerGenerator : MonoBehaviour
     public bool renameBlocksToAOI = true;
 
     private bool isBuilding = false;
+    private readonly List<NetworkObject> spawnedBlocks = new();
+    private bool serverHandlerRegistered;
 
-    IEnumerator Start()
+    private void Awake()
+    {
+        if (Instance == null) Instance = this;
+    }
+
+    private void Start()
+    {
+        var nm = NetworkManager.Singleton;
+        if (nm != null)
+        {
+            // Esperamos a que el server arranque para construir.
+            nm.OnServerStarted += HandleServerStarted;
+            serverHandlerRegistered = true;
+
+            // Si por alguna razon ya esta corriendo (recarga de escena), arrancamos ya.
+            if (nm.IsServer)
+                StartCoroutine(InitialBuildRoutine());
+        }
+        else
+        {
+            // Sin NGO en escena: comportamiento local original.
+            StartCoroutine(InitialBuildRoutine());
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance == this) Instance = null;
+        if (serverHandlerRegistered && NetworkManager.Singleton != null)
+        {
+            NetworkManager.Singleton.OnServerStarted -= HandleServerStarted;
+        }
+    }
+
+    public Material GetMaterial(int idx)
+    {
+        if (blockMaterials == null) return null;
+        if (idx < 0 || idx >= blockMaterials.Length) return null;
+        return blockMaterials[idx];
+    }
+
+    private void HandleServerStarted()
+    {
+        StartCoroutine(InitialBuildRoutine());
+    }
+
+    private IEnumerator InitialBuildRoutine()
     {
         yield return null;
         yield return new WaitForFixedUpdate();
         yield return new WaitForSeconds(0.25f);
-
         yield return StartCoroutine(ResetCoroutine());
     }
 
+    private bool IsServerOrStandalone =>
+        NetworkManager.Singleton == null || NetworkManager.Singleton.IsServer;
+
+    private bool IsNetworked =>
+        NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening;
+
     IEnumerator BuildTower()
     {
+        if (!IsServerOrStandalone) yield break;
+
         isBuilding = true;
 
         for (int level = 0; level < levels; level++)
@@ -68,15 +127,37 @@ public class JengaTowerGenerator : MonoBehaviour
 
                 Vector3 spawnPos = transform.position + localPos + Vector3.up * dropHeight;
 
-                GameObject block = Instantiate(
-                    blockPrefab,
-                    spawnPos,
-                    rot,
-                    transform
-                );
+                // Cuando hay NGO, no parenteamos (los hijos de un Transform de escena no se sincronizan a clientes).
+                Transform parent = IsNetworked ? null : transform;
 
-                ConfigureBlockMaterial(block);
+                GameObject block = Instantiate(blockPrefab, spawnPos, rot, parent);
+
+                int matIdx = ComputeMaterialIndex(level, i);
                 ConfigureBlockAOI(block, level, i);
+
+                if (IsNetworked)
+                {
+                    var netObj = block.GetComponent<NetworkObject>();
+                    if (netObj != null)
+                    {
+                        netObj.Spawn(true);
+                        spawnedBlocks.Add(netObj);
+
+                        // El indice del material se sincroniza via NetworkVariable.
+                        var netBlock = block.GetComponent<NetworkedJengaBlock>();
+                        if (netBlock != null)
+                            netBlock.SetMaterialIndex(matIdx);
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[JengaTowerGenerator] blockPrefab no tiene NetworkObject; el bloque no se va a sincronizar.");
+                    }
+                }
+                else
+                {
+                    // Standalone: aplicar material localmente.
+                    ApplyMaterialDirect(block, matIdx);
+                }
 
                 Rigidbody rb = block.GetComponent<Rigidbody>();
 
@@ -95,14 +176,18 @@ public class JengaTowerGenerator : MonoBehaviour
         isBuilding = false;
     }
 
-    private void ConfigureBlockMaterial(GameObject block)
+    private int ComputeMaterialIndex(int level, int i)
     {
-        Renderer r = block.GetComponentInChildren<Renderer>();
+        if (blockMaterials == null || blockMaterials.Length == 0) return -1;
+        return ((level * 3) + (i + 1)) % blockMaterials.Length;
+    }
 
-        if (r != null && blockMaterials != null && blockMaterials.Length > 0)
-        {
-            r.material = blockMaterials[Random.Range(0, blockMaterials.Length)];
-        }
+    private void ApplyMaterialDirect(GameObject block, int matIdx)
+    {
+        if (matIdx < 0) return;
+        Renderer r = block.GetComponentInChildren<Renderer>();
+        if (r != null && blockMaterials != null && matIdx < blockMaterials.Length)
+            r.sharedMaterial = blockMaterials[matIdx];
     }
 
     private void ConfigureBlockAOI(GameObject block, int level, int i)
@@ -177,7 +262,11 @@ public class JengaTowerGenerator : MonoBehaviour
     public void ResetTower()
     {
         if (!Application.isPlaying || isBuilding) return;
-
+        if (!IsServerOrStandalone)
+        {
+            Debug.LogWarning("[JengaTowerGenerator] Solo el server puede reset.");
+            return;
+        }
         StartCoroutine(ResetCoroutine());
     }
 
@@ -191,6 +280,18 @@ public class JengaTowerGenerator : MonoBehaviour
     [ContextMenu("Clear Tower")]
     public void ClearTower()
     {
+        if (!IsServerOrStandalone)
+            return;
+
+        // Despawn de los bloques networked.
+        foreach (var netObj in spawnedBlocks)
+        {
+            if (netObj != null && netObj.IsSpawned)
+                netObj.Despawn(true);
+        }
+        spawnedBlocks.Clear();
+
+        // Limpiar tambien posibles hijos directos (modo standalone sin NGO).
         for (int i = transform.childCount - 1; i >= 0; i--)
         {
             Destroy(transform.GetChild(i).gameObject);

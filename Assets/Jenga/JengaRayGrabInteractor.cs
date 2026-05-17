@@ -64,11 +64,16 @@ public class JengaRayGrabInteractor : MonoBehaviour
         {
             JengaGrabbable g = hit.collider.GetComponentInParent<JengaGrabbable>();
 
-            if (g != null && !g.IsGrabbed())
+            if (g != null && !IsBlockTaken(g))
             {
                 currentGrabbed = g;
-                currentGrabbed.BeginGrab(pinchPoint);
-                Debug.Log("Grab started on " + g.name);
+                var net = g.GetComponent<NetworkedJengaBlock>();
+                if (net != null)
+                    net.RequestGrab(pinchPoint);
+                else
+                    g.BeginGrab(pinchPoint);
+
+                EmitInteractionEvent("GRAB_BEGIN_RAY", g.gameObject.name);
             }
         }
     }
@@ -77,12 +82,33 @@ public class JengaRayGrabInteractor : MonoBehaviour
     {
         if (currentGrabbed != null)
         {
-            currentGrabbed.EndGrab();
+            string blockName = currentGrabbed.gameObject.name;
+            var net = currentGrabbed.GetComponent<NetworkedJengaBlock>();
+            if (net != null)
+                net.RequestRelease();
+            else
+                currentGrabbed.EndGrab();
             currentGrabbed = null;
-            Debug.Log("Grab released");
+
+            EmitInteractionEvent("GRAB_END_RAY", blockName);
         }
 
         if (pokeInteractor != null)
             pokeInteractor.SetPokeEnabled(true);
+    }
+
+    private static bool IsBlockTaken(JengaGrabbable g)
+    {
+        if (g.IsGrabbed()) return true;
+        var net = g.GetComponent<NetworkedJengaBlock>();
+        if (net != null && net.IsGrabbedAnywhere) return true;
+        return false;
+    }
+
+    private static void EmitInteractionEvent(string label, string blockId)
+    {
+        var mgr = AcquisitionEventManager.Instance;
+        if (mgr != null)
+            mgr.EmitInteractionEvent(label, "block", blockId);
     }
 }

@@ -43,6 +43,8 @@ public class NetworkedAvatarHands : NetworkBehaviour
 
     [Header("Settings")]
     [SerializeField] private float pinchThreshold = 0.025f;
+    [Tooltip("Ancho de las LineRenderers (PinchLine y RayDisplay) aplicado en runtime. Evita pelearse con la curva Width del Inspector.")]
+    [SerializeField] private float lineWidth = 0.003f;
     [Tooltip("Si se deja vacio, busca FindObjectOfType<XROrigin>() en el owner para convertir poses a world space.")]
     [SerializeField] private XROrigin overrideOriginForConversion;
 
@@ -57,6 +59,7 @@ public class NetworkedAvatarHands : NetworkBehaviour
 
     public override void OnNetworkSpawn()
     {
+        EnsureLineMaterials();
         LogWiringStatus();
         LeftHand.OnValueChanged += OnLeftChanged;
         RightHand.OnValueChanged += OnRightChanged;
@@ -94,12 +97,42 @@ public class NetworkedAvatarHands : NetworkBehaviour
         string role = IsOwner ? "owner" : "remote";
         Debug.Log(
             $"[NetworkedAvatarHands] OnNetworkSpawn ({role}) wiring: " +
-            $"leftPinchLine={(leftPinchLine ? "OK" : "MISS")}, " +
-            $"rightPinchLine={(rightPinchLine ? "OK" : "MISS")}, " +
-            $"leftRayDisplay={(leftRayDisplay ? "OK" : "MISS")}, " +
-            $"rightRayDisplay={(rightRayDisplay ? "OK" : "MISS")}, " +
+            $"leftPinchLine={LineDiag(leftPinchLine)}, " +
+            $"rightPinchLine={LineDiag(rightPinchLine)}, " +
+            $"leftRayDisplay={LineDiag(leftRayDisplay)}, " +
+            $"rightRayDisplay={LineDiag(rightRayDisplay)}, " +
             $"leftThumb={(leftThumbMarker ? "OK" : "MISS")}, " +
             $"rightThumb={(rightThumbMarker ? "OK" : "MISS")}");
+    }
+
+    private string LineDiag(LineRenderer lr)
+    {
+        if (lr == null) return "MISS";
+        bool hasMaterial = lr.sharedMaterial != null;
+        return $"OK(mat={(hasMaterial ? "y" : "NULL")},w={lr.startWidth:F3})";
+    }
+
+    private void EnsureLineMaterials()
+    {
+        EnsureLineDefaults(leftPinchLine);
+        EnsureLineDefaults(rightPinchLine);
+        EnsureLineDefaults(leftRayDisplay);
+        EnsureLineDefaults(rightRayDisplay);
+    }
+
+    private void EnsureLineDefaults(LineRenderer lr)
+    {
+        if (lr == null) return;
+
+        if (lr.sharedMaterial == null)
+        {
+            lr.material = new Material(Shader.Find("Sprites/Default"));
+            Debug.LogWarning($"[NetworkedAvatarHands] {lr.gameObject.name} sin material; se asigno Sprites/Default en runtime.");
+        }
+
+        // El script siempre fuerza el ancho desde lineWidth, ignorando la curva del prefab.
+        lr.startWidth = lineWidth;
+        lr.endWidth = lineWidth;
     }
 
     private LineRenderer FindLineRendererByName(string name)

@@ -6453,6 +6453,14 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 0}
     m_Modifications:
+    - target: {fileID: 3506887290385538677, guid: 4c869e2769b3c604db321d87299a2301, type: 3}
+      propertyPath: GlobalObjectIdHash
+      value: 1857071681
+      objectReference: {fileID: 0}
+    - target: {fileID: 3506887290385538677, guid: 4c869e2769b3c604db321d87299a2301, type: 3}
+      propertyPath: InScenePlacedSourceGlobalObjectIdHash
+      value: 3784602614
+      objectReference: {fileID: 0}
     - target: {fileID: 5077624559600400925, guid: 4c869e2769b3c604db321d87299a2301, type: 3}
       propertyPath: m_Name
       value: JengaBlock
@@ -7793,7 +7801,6 @@ GameObject:
   - component: {fileID: 1459945897}
   - component: {fileID: 1459945900}
   - component: {fileID: 1459945899}
-  - component: {fileID: 1459945898}
   m_Layer: 0
   m_Name: LeftPinchMarker
   m_TagString: Untagged
@@ -7816,27 +7823,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 990564059}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!135 &1459945898
-SphereCollider:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1459945896}
-  m_Material: {fileID: 0}
-  m_IncludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_ExcludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_LayerOverridePriority: 0
-  m_IsTrigger: 0
-  m_ProvidesContacts: 0
-  m_Enabled: 1
-  serializedVersion: 3
-  m_Radius: 0.5
-  m_Center: {x: 0, y: 0, z: 0}
 --- !u!23 &1459945899
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -8121,7 +8107,6 @@ GameObject:
   - component: {fileID: 1540878614}
   - component: {fileID: 1540878617}
   - component: {fileID: 1540878616}
-  - component: {fileID: 1540878615}
   m_Layer: 0
   m_Name: RightThumbMarker
   m_TagString: Untagged
@@ -8146,27 +8131,6 @@ Transform:
   - {fileID: 1016292919}
   m_Father: {fileID: 990564059}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!135 &1540878615
-SphereCollider:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1540878613}
-  m_Material: {fileID: 0}
-  m_IncludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_ExcludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_LayerOverridePriority: 0
-  m_IsTrigger: 0
-  m_ProvidesContacts: 0
-  m_Enabled: 1
-  serializedVersion: 3
-  m_Radius: 0.5
-  m_Center: {x: 0, y: 0, z: 0}
 --- !u!23 &1540878616
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -8228,7 +8192,6 @@ GameObject:
   - component: {fileID: 1604341562}
   - component: {fileID: 1604341565}
   - component: {fileID: 1604341564}
-  - component: {fileID: 1604341563}
   m_Layer: 0
   m_Name: RightIndexMarker
   m_TagString: Untagged
@@ -8252,27 +8215,6 @@ Transform:
   - {fileID: 1427097174}
   m_Father: {fileID: 990564059}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!135 &1604341563
-SphereCollider:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1604341561}
-  m_Material: {fileID: 0}
-  m_IncludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_ExcludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_LayerOverridePriority: 0
-  m_IsTrigger: 0
-  m_ProvidesContacts: 0
-  m_Enabled: 1
-  serializedVersion: 3
-  m_Radius: 0.5
-  m_Center: {x: 0, y: 0, z: 0}
 --- !u!23 &1604341564
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -9128,7 +9070,6 @@ GameObject:
   - component: {fileID: 1836880594}
   - component: {fileID: 1836880597}
   - component: {fileID: 1836880596}
-  - component: {fileID: 1836880595}
   m_Layer: 0
   m_Name: LeftIndexMarker
   m_TagString: Untagged
@@ -9151,27 +9092,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 990564059}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!135 &1836880595
-SphereCollider:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1836880593}
-  m_Material: {fileID: 0}
-  m_IncludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_ExcludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_LayerOverridePriority: 0
-  m_IsTrigger: 0
-  m_ProvidesContacts: 0
-  m_Enabled: 1
-  serializedVersion: 3
-  m_Radius: 0.5
-  m_Center: {x: 0, y: 0, z: 0}
 --- !u!23 &1836880596
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -9824,7 +9744,6 @@ GameObject:
   - component: {fileID: 2006030322}
   - component: {fileID: 2006030325}
   - component: {fileID: 2006030324}
-  - component: {fileID: 2006030323}
   m_Layer: 0
   m_Name: LeftThumbMarker
   m_TagString: Untagged
@@ -9849,27 +9768,6 @@ Transform:
   - {fileID: 1109764078}
   m_Father: {fileID: 990564059}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!135 &2006030323
-SphereCollider:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2006030321}
-  m_Material: {fileID: 0}
-  m_IncludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_ExcludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_LayerOverridePriority: 0
-  m_IsTrigger: 0
-  m_ProvidesContacts: 0
-  m_Enabled: 1
-  serializedVersion: 3
-  m_Radius: 0.5
-  m_Center: {x: 0, y: 0, z: 0}
 --- !u!23 &2006030324
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -10152,7 +10050,6 @@ GameObject:
   - component: {fileID: 2101037878}
   - component: {fileID: 2101037881}
   - component: {fileID: 2101037880}
-  - component: {fileID: 2101037879}
   m_Layer: 0
   m_Name: RightPinchMarker
   m_TagString: Untagged
@@ -10175,27 +10072,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 990564059}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!135 &2101037879
-SphereCollider:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2101037877}
-  m_Material: {fileID: 0}
-  m_IncludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_ExcludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_LayerOverridePriority: 0
-  m_IsTrigger: 0
-  m_ProvidesContacts: 0
-  m_Enabled: 1
-  serializedVersion: 3
-  m_Radius: 0.5
-  m_Center: {x: 0, y: 0, z: 0}
 --- !u!23 &2101037880
 MeshRenderer:
   m_ObjectHideFlags: 0
