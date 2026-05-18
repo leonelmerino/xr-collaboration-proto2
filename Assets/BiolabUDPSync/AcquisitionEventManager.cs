@@ -14,6 +14,11 @@ public class AcquisitionEventManager : MonoBehaviour
     public bool autoStartSession = true;
     public float autoStartDelaySeconds = 2f;
 
+    [Header("Clock Sync")]
+    [Tooltip("Si esta activo, los clientes esperan al handshake de NetworkClockSync antes de iniciar la sesion (con timeout).")]
+    public bool waitForClockSync = true;
+    public float clockSyncWaitTimeoutSec = 5f;
+
     [Header("Heartbeat")]
     public bool sendTaskHeartbeat = true;
     public float heartbeatIntervalSeconds = 60f;
@@ -97,6 +102,28 @@ public class AcquisitionEventManager : MonoBehaviour
             yield break;
 
         yield return new WaitForSeconds(autoStartDelaySeconds);
+
+        // Si no soy host, espero a que el handshake de clock sync termine (o timeout).
+        if (waitForClockSync && config != null && !config.IsHost)
+        {
+            float startedAt = Time.realtimeSinceStartup;
+            while (NetworkClockSync.Instance != null
+                   && !NetworkClockSync.Instance.IsSynced
+                   && (Time.realtimeSinceStartup - startedAt) < clockSyncWaitTimeoutSec)
+            {
+                yield return null;
+            }
+
+            if (NetworkClockSync.Instance != null && NetworkClockSync.Instance.IsSynced)
+            {
+                Debug.Log($"[AcquisitionEventManager] Clock sync OK antes de SESSION_START. offset_ms={NetworkClockSync.Instance.OffsetToHost * 1000:F3}");
+            }
+            else
+            {
+                Debug.LogWarning("[AcquisitionEventManager] Clock sync NO confirmado. Continuamos con offset=0; los eventos quedan tagueados como CLOCK_NOT_SYNCED.");
+                LogLocal("CLOCK_SYNC", "TIMEOUT_PROCEED_WITHOUT_SYNC");
+            }
+        }
 
         BeginExperimentalSession();
     }
@@ -372,13 +399,39 @@ public class AcquisitionEventManager : MonoBehaviour
             trialId = eventLogger.trialId;
         }
 
+        double tLocal = Time.realtimeSinceStartupAsDouble;
+        double tHost = tLocal;
+        string syncStatus = "host";
+        if (NetworkClockSync.Instance != null)
+        {
+            tHost = NetworkClockSync.Instance.GetHostTime();
+            syncStatus = NetworkClockSync.Instance.IsSynced ? "synced" : "unsynced";
+        }
+
         return
             $"{eventLabel}" +
             $"|participant={participantId}" +
             $"|session={sessionId}" +
             $"|task={taskId}" +
             $"|trial={trialId}" +
-            $"|node={config.nodeId}";
+            $"|node={config.nodeId}" +
+            $"|t_local={tLocal:F6}" +
+            $"|t_host={tHost:F6}" +
+            $"|sync={syncStatus}";
+    }
+
+    // Punto de entrada publico para que otros componentes (ej. NetworkClockSync)
+    // loggeen un evento solo localmente sin forwardear a BioLab.
+    public void LogLocalExternal(string eventType, string detail)
+    {
+        LogLocal(eventType, detail);
+    }
+
+    // Punto de entrada publico para que otros componentes loggeen + forwardeen
+    // a BioLab (usado por el host para SYNC_MARKERs).
+    public void LogAndForwardExternal(string eventType, string detail)
+    {
+        LogAndForward(eventType, detail);
     }
 
     private void LogAndForward(string eventType, string eventValue)

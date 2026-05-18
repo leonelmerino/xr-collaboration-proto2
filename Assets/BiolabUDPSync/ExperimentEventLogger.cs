@@ -54,7 +54,7 @@ public class ExperimentEventLogger : MonoBehaviour
         filePath = Path.Combine(folder, $"{prefix}{nextIndex:000}_events.csv");
         writer = new StreamWriter(filePath, false, Encoding.UTF8);
 
-        writer.WriteLine("event_index,timestamp_rel_s,timestamp_utc_iso,node_id,event_type,event_value,notes");
+        writer.WriteLine("event_index,timestamp_rel_s,t_host_s,sync_status,timestamp_utc_iso,node_id,event_type,event_value,notes");
         isLogging = true;
 
         Debug.Log($"[ExperimentEventLogger] Logging to: {filePath}");
@@ -65,12 +65,23 @@ public class ExperimentEventLogger : MonoBehaviour
         if (!isLogging) return;
 
         eventIndex++;
-        string timestampRel = Time.realtimeSinceStartupAsDouble.ToString(CultureInfo.InvariantCulture);
+        double tLocal = Time.realtimeSinceStartupAsDouble;
+        double tHost = tLocal;
+        string syncStatus = "host";
+        if (NetworkClockSync.Instance != null)
+        {
+            tHost = NetworkClockSync.Instance.GetHostTime();
+            syncStatus = NetworkClockSync.Instance.IsSynced ? "synced" : "unsynced";
+        }
+        string timestampRel = tLocal.ToString("F6", CultureInfo.InvariantCulture);
+        string tHostStr = tHost.ToString("F6", CultureInfo.InvariantCulture);
         string timestampUtc = DateTime.UtcNow.ToString("o");
 
         writer.WriteLine(string.Join(",",
             eventIndex.ToString(CultureInfo.InvariantCulture),
             timestampRel,
+            tHostStr,
+            Csv(syncStatus),
             Csv(timestampUtc),
             Csv(nodeId),
             Csv(eventType),
