@@ -1,5 +1,267 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-05-21 — Representación de manos por esqueleto (local y networked) para mejorar presencia
+
+Branch activo: `multiplayer-prototype-fixed` (mismo día, sesión continuada).
+
+Motivación: los avatares previos sólo mostraban tres marcadores por mano (thumb tip, index tip, palm) más un `LineRenderer` de pinch y otro de ray. Visualmente se sentía "puntos flotantes en el aire", insuficiente para presencia compartida en una tarea de colaboración. Se introduce un esqueleto de mano completo (20 joints por mano + 5 huesos por mano), priorizando bajo costo de render y nula intrusión sobre los sistemas existentes de poke / drag / raycast.
+
+Estrategia decidida después de evaluar opciones:
+
+| Opción | Joints | Costo render | Costo network | Decisión |
+|---|---|---|---|---|
+| Tips reducido | 6 / mano | Muy bajo | Muy bajo | Descartada (poca presencia) |
+| Knuckles + tips | 11 / mano | Bajo | Bajo | Descartada (intermedia, no aporta sobre la siguiente) |
+| **Esqueleto sin metacarpales** | **20 / mano** | **Bajo con instancing** | **Medio** | **Elegida** |
+| Hand mesh skinned | n/a | Alto | Complicado | Descartada (decorativo, no vale la complejidad) |
+
+Implementación incremental en cuatro pasos:
+
+* Paso 1: render local del esqueleto.
+* Paso 1.5: huesos (LineRenderers).
+* Paso 1.6: color del rol aplicado al esqueleto local.
+* Paso 2: sincronización por red para que los esqueletos de los demás participantes sean visibles.
+
+---
+
+### Paso 1 — `HandSkeletonRenderer` local con `Graphics.DrawMeshInstanced`
+
+Archivo nuevo:
+
+```text
+Assets/Multiplayer/HandSkeletonRenderer.cs
+```
+
+Componente standalone de escena (no NetworkBehaviour). Cada nodo renderiza sus propias manos leyendo `XRHandSubsystem` directamente, sin pasar por la red. Esto da latencia 0 para el avatar local.
+
+Subconjunto de joints elegido (20 por mano, se omiten Palm y los 5 metacarpales por estar dentro de la palma y aportar poco visualmente):
+
+```text
+0:  Wrist
+1-3:   ThumbProximal, ThumbDistal, ThumbTip                                  (pulgar sin Intermediate)
+4-7:   IndexProximal, IndexIntermediate, IndexDistal, IndexTip
+8-11:  MiddleProximal, MiddleIntermediate, MiddleDistal, MiddleTip
+12-15: RingProximal, RingIntermediate, RingDistal, RingTip
+16-19: LittleProximal, LittleIntermediate, LittleDistal, LittleTip
+```
+
+Pipeline de render para las esferas:
+
+* `Graphics.DrawMeshInstanced(sphereMesh, 0, jointMaterial, _matrices, _activeCount, _mpb, ShadowCastingMode.Off, false, layer, null, LightProbeUsage.Off)`.
+* `_matrices = new Matrix4x4[40]` preasignado (20 joints × 2 manos). Cero alloc por frame.
+* **Una sola draw call** para las hasta 40 esferas de ambas manos.
+* `ShadowCastingMode.Off` + `receiveShadows: false` + `LightProbeUsage.Off` para minimizar costo.
+
+Joints en local space del tracking origin se transforman a world space vía `XROrigin.CameraFloorOffsetObject.transform.TransformPoint`, mismo enfoque que `NetworkedAvatarHands` y `HandRayDriver`.
+
+Fallbacks runtime para no requerir setup en Inspector:
+
+* Mesh: si `sphereMesh` está vacío, se toma prestado el `sharedMesh` del primitive `Sphere` (768 tris, suficiente para validar; documentado como reemplazable por un icosphere low-poly de 20-80 tris).
+* Material: si `jointMaterial` está vacío, se crea un `new Material(Shader.Find("Standard"))` con `enableInstancing = true` y `Glossiness/Metallic = 0`. Marcado como `_materialOwned = true` para destruirlo en `OnDestroy`.
+
+Garantías de no-interferencia con sistemas existentes:
+
+* No agrega colliders (DrawMeshInstanced es pura GPU).
+* No spawnea GameObjects por joint.
+* No toca el `XR Origin`, los markers existentes, los anchors de ray del Jenga ni la lógica de NGO.
+* Corre en `LateUpdate` (después de Update/FixedUpdate, no afecta physics ni input).
+
+Defaults afinados empíricamente:
+
+* `jointRadius = 0.004` (4 mm — usuario validó 6 mm era demasiado grande).
+* `fallbackColor = (1, 1, 1, 0.9)` (blanco semitransparente como base, se sobreescribe al bindear al rol).
+
+---
+
+### Paso 1.5 — Huesos vía `LineRenderer`
+
+Sobre `HandSkeletonRenderer` se añaden 5 `LineRenderer` por mano (10 totales), uno por dedo, conectando wrist → proximal → intermediate → distal → tip. Para el pulgar es wrist → proximal → distal → tip (sin Intermediate).
+
+Topología codificada en tabla estática:
+
+```csharp
+private static readonly int[][] s_fingerChains = new int[][]
+{
+    new int[] { 0, 1, 2, 3 },         // Pulgar (4 puntos)
+    new int[] { 0, 4, 5, 6, 7 },      // Índice (5 puntos)
+    new int[] { 0, 8, 9, 10, 11 },    // Medio
+    new int[] { 0, 12, 13, 14, 15 },  // Anular
+    new int[] { 0, 16, 17, 18, 19 },  // Meñique
+};
+```
+
+Decisiones de implementación:
+
+* Los LineRenderer se crean perezosamente en el primer `LateUpdate` (lazy init), no en `Awake`. Razón: si el usuario desactiva `drawBones` en el Inspector el componente no consume GameObjects extra.
+* Anidados como hijos del componente bajo `Bones / {Left,Right} / Finger{0..4}`. Si el GameObject del componente está en un layer dedicado (recomendado: layer `HandPresence` sin colisiones), los hijos heredan.
+* `useWorldSpace = true` → no se ven afectados si la jerarquía padre se mueve.
+* Material compartido con el de los joints por default (`boneMaterial == null → reusa jointMaterial`), lo que permite que dynamic batching agrupe los draw calls.
+* `shadowCastingMode = Off`, `receiveShadows = false`, `lightProbeUsage = Off`, `numCornerVertices = 0`, `numCapVertices = 0` (líneas planas, mínimo costo).
+* `boneWidth = 0.0025` default (2.5 mm — proporcional al `jointRadius = 4 mm`).
+
+Costo total del esqueleto local del usuario: **1 (joints) + hasta 10 (bones) = 11 draw calls**. Validado en `PerformanceHUD`, impacto despreciable.
+
+---
+
+### Paso 1.6 — Color del esqueleto enlazado al rol del usuario local
+
+Objetivo: que el esqueleto se vea rojo para Host, verde para Client, azul para Helper, leyendo del mismo `RoleConfig.asset` que usa el resto del sistema.
+
+Implementación en `HandSkeletonRenderer`:
+
+* Nuevo campo `bool bindColorToRole` (default `true`) + `float roleLookupIntervalSec` (default `1f`).
+* En cada `LateUpdate`, si todavía no se enlazó: `FindObjectsOfType<NetworkedAvatarRole>()` y se busca el que tenga `IsOwner == true`. Cuando aparece, se suscribe a `Role.OnValueChanged` y se aplica el color.
+* Poll a 1 Hz, no por frame — el avatar local no aparece hasta después de `StartHost` / `StartClient` y aproximación de connection approval, así que conviene esperar.
+
+#### Bug crítico encontrado: `MaterialPropertyBlock.SetColor` no funciona con shader Standard instanced
+
+**Síntoma**: con la primera versión del código, el binding se ejecutaba (`Debug.Log` lo confirmaba) pero las esferas seguían blancas. Los huesos (LineRenderers) sí cambiaban de color porque usan `startColor` / `endColor`, properties del componente, no del material.
+
+**Causa raíz**: en shaders Unity-aware de instancing (como Standard), la propiedad `_Color` vive dentro del **instancing buffer** del shader (`UNITY_INSTANCING_BUFFER`), no en el constant buffer global. Cuando se hace `Graphics.DrawMeshInstanced(... , mpb, ...)` con `mpb.SetColor("_Color", c)`, Unity pone el color en el constant buffer global pero el shader lo lee del instancing buffer y por lo tanto **ignora silenciosamente** el override del MPB. El render usa el `material.color` que existía al crearlo (en nuestro caso, el `fallbackColor` blanco).
+
+**Fix**: como nosotros somos dueños del material fallback (`_materialOwned == true`), mutar `jointMaterial.color` directamente. Eso sí surte efecto porque el shader recoge el nuevo valor del material en el siguiente draw. Para el caso de materiales aportados por el usuario en Inspector, se mantiene el path MPB con un comentario inline avisando que puede no funcionar con shaders instanced; se documenta la recomendación de usar Unlit/Color custom con `_Color` fuera del instancing buffer si necesitan compartir material entre instancias.
+
+```csharp
+if (_materialOwned && jointMaterial != null)
+{
+    jointMaterial.color = _currentColor;        // funciona siempre
+}
+else if (_mpb != null)
+{
+    _mpb.SetColor(s_ColorProperty, _currentColor);  // mejor esfuerzo (no funciona con Standard instanced)
+}
+```
+
+Diagnóstico adicional añadido: logs explícitos en `TryBindLocalRole` cuando el poll encuentra `NetworkedAvatarRole` pero ninguno tiene `IsOwner=true`, y en `ApplyRoleColor` cuando el `RoleAssignmentService.Instance` o su `Config` no están disponibles. Esto permitió aislar que el problema era el render, no el binding.
+
+Validación final en log:
+
+```text
+[HandSkeletonRenderer] Bound to local NetworkedAvatarRole on 'Avatar(Clone)'. Role=Host clientId=3
+[HandSkeletonRenderer] Color aplicado para rol Host: RGBA=(1.00,0.00,0.00,0.90)
+```
+
+Esqueleto local → rojo confirmado en VR.
+
+---
+
+### Paso 2 — Sincronización por red del esqueleto remoto
+
+Archivos nuevos:
+
+```text
+Assets/Multiplayer/HandSkeletonState.cs
+Assets/Multiplayer/NetworkedAvatarSkeleton.cs
+```
+
+#### `HandSkeletonState` (struct sincronizado)
+
+Estructura:
+
+```text
+bool leftTracked, rightTracked
+Vector3 l00 .. l19   (20 joints mano izquierda, world space)
+Vector3 r00 .. r19   (20 joints mano derecha)
+```
+
+Implementa `INetworkSerializable + IEquatable<HandSkeletonState>`.
+
+**Por qué campos explícitos (`l00..l19`) en vez de arrays o unsafe fixed**:
+
+* **Arrays**: `Vector3[] left, right` → `NetworkVariable<T>` copia por valor pero el array es referencia, así que las copias `previous` y `new` que NGO mantiene para diff-detection comparten el mismo backing buffer; mutar el "actual" también muta el "previous" y `Equals` devuelve `true` aunque cambiaron los joints → no broadcasta. Workarounds (allocar nuevo array por frame, o double-buffering) son frágiles o agregan GC pressure.
+* **Unsafe fixed** (`fixed float leftJoints[60]`): es la opción más limpia técnicamente pero requiere `<AllowUnsafeBlocks>true</AllowUnsafeBlocks>` en el csproj y "Allow 'unsafe' Code" en Player Settings; el proyecto no tenía habilitado y se quiso evitar cambiar settings del proyecto por un single feature.
+* **Explícito**: verboso (40 fields + 40 `SerializeValue` + comparación grande en `Equals`) pero blittable, sin allocations, sin sharing, sin unsafe. Se elige esta opción.
+
+`NetworkSerialize` y `Equals` desplegan los 40 fields explícitamente. El verbosity está concentrado en un solo archivo y no se vuelve a tocar.
+
+#### `NetworkedAvatarSkeleton` (NetworkBehaviour sobre el Avatar.prefab)
+
+Coloca en el Avatar.prefab junto a `NetworkedAvatarHands` y `NetworkedAvatarRole`. Una `NetworkVariable<HandSkeletonState>` por avatar:
+
+```csharp
+private readonly NetworkVariable<HandSkeletonState> _state = new NetworkVariable<HandSkeletonState>(
+    default,
+    NetworkVariableReadPermission.Everyone,
+    NetworkVariableWritePermission.Owner);
+```
+
+Comportamiento dual según `IsOwner`:
+
+**Owner (cada instancia local sobre su propio avatar)**:
+
+* `OnNetworkSpawn` no inicializa render (lo hace el `HandSkeletonRenderer` de escena con latencia 0).
+* `Update` cada frame:
+  1. Resuelve `XRHandSubsystem` + `XROrigin.CameraFloorOffsetObject` (auto-detect lazy).
+  2. Itera los 20 joints por mano, transforma a world space.
+  3. Escribe al field `_scratch` (struct reutilizado, sin alloc).
+  4. `_state.Value = _scratch;` → NGO compara con previous via `HandSkeletonState.Equals` y broadcastea solo si cambió.
+
+**Remote (cada instancia sobre los avatares de los demás)**:
+
+* `OnNetworkSpawn`:
+  * `EnsureSphereMesh` (toma prestado el built-in si no se asignó).
+  * `EnsureMaterial` (crea Standard runtime con `enableInstancing=true` si no se asignó; marca `_materialOwned`).
+  * Suscribe a `roleSource.Role.OnValueChanged` y aplica el color del rol del owner del avatar (rojo si Host owns, verde si Client owns, etc).
+* `LateUpdate` cada frame:
+  * Lee `_state.Value`.
+  * Construye `_matrices` con las hasta 40 posiciones tracked.
+  * `Graphics.DrawMeshInstanced` → una sola draw call para las dos manos del avatar remoto.
+  * `EnsureBoneRenderers` (lazy lazy create de los 10 LineRenderer por avatar bajo `RemoteBones/{Left,Right}/Finger{0..4}`).
+  * `UpdateBones` setea positions de cada chain y enable/disable según `leftTracked` / `rightTracked`.
+
+Decisión arquitectónica clave: **el owner NO renderiza desde `NetworkedAvatarSkeleton`**, sólo samplea y escribe a la NetworkVariable. El render del esqueleto propio sigue siendo responsabilidad del `HandSkeletonRenderer` de escena (latencia 0, sin round-trip por red). Esto evita doble-render del esqueleto propio y mantiene la sensación de mano local "pegada al hardware".
+
+Cada avatar remoto tiene su propio `Material` runtime (cuando se usa el fallback) — esto permite que dos avatares remotos tengan diferentes colores de rol sin compartir state. El alpha del material se preserva del `fallbackColor` del componente para mantener transparencia consistente.
+
+#### Análisis de bandwidth
+
+Tamaño por update de `HandSkeletonState`:
+
+```text
+2 bools  =  2 bytes
+40 × Vector3  = 480 bytes
+Total ≈ 482 bytes
+```
+
+A 30 Hz del tick rate NGO: **~14.5 KB/s** por avatar activo.
+
+Triada completa (3 nodos × 1 hand-skeleton-stream cada uno hacia los otros 2) ≈ **43 KB/s** agregado. Trivial sobre LAN (incluso wifi 2.4 GHz). No se justifica cuantización a int16 para esta primera iteración; queda pendiente si en el futuro se agregan más avatares simultáneos o si el wireless del visor se vuelve un cuello de botella.
+
+NGO deduplica: si una mano está estática (joints idénticos), `Equals` devuelve `true` y no hay broadcast. Si una mano deja de estar tracked (`tracked = false`), el siguiente update difiere del previo y se broadcastea un solo frame con `tracked=false`; los siguientes frames con la misma mano off no broadcastean.
+
+#### Caveats conocidos
+
+* **Sin interpolación**: a 30 Hz, los joints remotos saltan visiblemente entre updates. Para una segunda iteración se planea buffer de 2 muestras + delay fijo de ~100 ms con interpolación lineal entre joints. No implementado en Paso 2 (KISS).
+* **Markers viejos en remote**: `NetworkedAvatarHands` (sistema previo) sigue sincronizando los markers Thumb/Index/Palm y las líneas Pinch/Ray. En remote ahora se ven el esqueleto + los markers viejos superpuestos. Es funcional pero visualmente ruidoso; cuando se valide el esqueleto en VR se puede esconder los markers viejos via `Renderer.enabled = false` sin removerlos (preserva backward compat).
+* **DrawMeshInstanced + Standard shader instanced**: mismo gotcha del Paso 1.6. Se aplica el mismo fix (`_materialOwned ? mutate : MPB`), pero como cada avatar remoto crea su propio material runtime, `_materialOwned == true` siempre que no se aporte material custom desde Inspector. El path MPB queda como fallback documentado.
+* **Layer**: los bones quedan en el layer del componente padre (típicamente `Default`). Si el proyecto tiene un layer dedicado tipo `HandPresence`, se hereda automáticamente. Recomendable excluirlo de cualquier raycast del Jenga.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| Esqueleto local (20 joints + 5 bones por mano) | ✅ DrawMeshInstanced + 10 LineRenderers, ~11 draw calls totales |
+| Color por rol en esqueleto local | ✅ Bound via `NetworkedAvatarRole.OnValueChanged`, fix de Standard-instancing-MPB documentado |
+| Sincronización por red de los 20 joints por mano | ✅ `NetworkVariable<HandSkeletonState>` owner-write everyone-read |
+| Esqueleto remoto renderizado en avatares de los demás | ✅ Componente `NetworkedAvatarSkeleton` sobre Avatar.prefab |
+| Color por rol en esqueletos remotos | ✅ Cada avatar remoto lee el rol de su `NetworkedAvatarRole` co-locado |
+| Bandwidth ≤ 15 KB/s por avatar | ✅ 482 bytes × 30 Hz ≈ 14.5 KB/s |
+| No-interferencia con poke / drag / raycast | ✅ Sin colliders, sin GameObjects por joint, sin tocar XR Origin / markers / NGO existentes |
+
+---
+
+### Próximos pasos
+
+* **Paso 3**: interpolación en `NetworkedAvatarSkeleton` remote — buffer de 2 muestras con timestamp y delay de ~100 ms, blending lineal entre joints. Eliminaría el snapping visible a 30 Hz.
+* **Limpieza visual**: esconder los markers viejos (`ThumbMarker`, `IndexMarker`, `PinchMarker`) en el Avatar.prefab cuando el esqueleto remoto esté validado en VR real; preserve `PinchLine` y `RayDisplay` por su semántica (gesto de pinch y feedback de raycast son distintos del esqueleto).
+* **Cuantización opcional**: si se agregan más de 3 participantes, evaluar quantización de los joints a int16 relativos a wrist para bajar a ~6 KB/s por avatar.
+* **Material Unlit custom**: reemplazar el fallback Standard por un Unlit/Color shader propio con `_Color` fuera del instancing buffer (permite usar MPB y compartir material entre todos los skeletons sin owning).
+* **Configuración de `jointRadius` y `boneWidth`** persistente: hoy se ajustan por componente; si distintos participantes quieren tamaños diferentes (mano grande vs pequeña), se puede bindear a `RoleConfig`.
+
+---
+
 ## 2026-05-21 — Refinamiento operacional: LAN discovery, HUDs de runtime y raycast Meta-style con anclaje anatómico
 
 Branch activo: `multiplayer-prototype-fixed` (continuación de la sesión anterior).

@@ -640,6 +640,7 @@ GameObject:
   - component: {fileID: -5374739967418200848}
   - component: {fileID: 3342640058066831303}
   - component: {fileID: 8534574118941599020}
+  - component: {fileID: 9183315449130253048}
   m_Layer: 0
   m_Name: Avatar
   m_TagString: Untagged
@@ -812,6 +813,26 @@ MonoBehaviour:
   pinchThreshold: 0.025
   lineWidth: 0.003
   overrideOriginForConversion: {fileID: 0}
+--- !u!114 &9183315449130253048
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 3264568759483076407}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7c6d93a9e16257d47a9dac7467ee58c7, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  sphereMesh: {fileID: 0}
+  jointMaterial: {fileID: 0}
+  jointRadius: 0.004
+  fallbackColor: {r: 1, g: 1, b: 1, a: 0.9}
+  drawBones: 1
+  boneMaterial: {fileID: 0}
+  boneWidth: 0.0025
+  roleSource: {fileID: 0}
 --- !u!1 &4458789287140476807
 GameObject:
   m_ObjectHideFlags: 0

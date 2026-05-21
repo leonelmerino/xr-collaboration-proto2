@@ -5253,6 +5253,7 @@ Transform:
   - {fileID: 1836880594}
   - {fileID: 1459945897}
   - {fileID: 174037}
+  - {fileID: 1536663307}
   m_Father: {fileID: 1104507691}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &995026281
@@ -8151,6 +8152,62 @@ Transform:
   m_Children: []
   m_Father: {fileID: 1261631046}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1536663306
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1536663307}
+  - component: {fileID: 1536663308}
+  m_Layer: 0
+  m_Name: HandSkeleton
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1536663307
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1536663306}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 990564059}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1536663308
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1536663306}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 85b86de63b5be7f4d95325b66ec296c0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  sphereMesh: {fileID: 0}
+  jointMaterial: {fileID: 0}
+  jointRadius: 0.006
+  fallbackColor: {r: 1, g: 1, b: 1, a: 0.9}
+  drawBones: 1
+  boneMaterial: {fileID: 0}
+  boneWidth: 0.0025
+  xrOrigin: {fileID: 0}
+  renderLeft: 1
+  renderRight: 1
+  bindColorToRole: 1
+  roleLookupIntervalSec: 1
 --- !u!1 &1540878613
 GameObject:
   m_ObjectHideFlags: 0
@@ -8512,6 +8569,9 @@ MonoBehaviour:
   shoulderLateralOffset: 0.17
   shoulderDownOffset: 0.15
   shoulderBackOffset: 0.05
+  originForwardOffset: 0.0451
+  originLateralOffset: -0.075
+  originVerticalOffset: 0.075
   rotationSmoothK: 0
   positionSmoothK: 0
   headTransform: {fileID: 0}
