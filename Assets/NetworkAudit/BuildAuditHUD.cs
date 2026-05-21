@@ -12,13 +12,21 @@ public class BuildAuditHUD : MonoBehaviour
     [SerializeField] private bool showInBuild = true;
     [SerializeField] private int fontSize = 16;
     [SerializeField] private Vector2 margin = new Vector2(12f, 12f);
+    [Tooltip("Ancho fijo del overlay (pixeles). Evita que la caja cambie de tamano con el contenido.")]
+    [SerializeField] private float fixedWidth = 420f;
+    [Tooltip("Toggle visible-no visible en runtime con esta tecla.")]
+    [SerializeField] private KeyCode toggleKey = KeyCode.F4;
 
     private string lastKey = "(ninguna)";
     private float lastKeyTime = -10f;
     private GUIStyle style;
+    private bool visible = true;
 
     private void Update()
     {
+        if (Input.GetKeyDown(toggleKey))
+            visible = !visible;
+
         if (Input.anyKeyDown)
         {
             foreach (var code in System.Enum.GetValues(typeof(KeyCode)))
@@ -35,6 +43,7 @@ public class BuildAuditHUD : MonoBehaviour
 
     private void OnGUI()
     {
+        if (!visible) return;
 #if UNITY_EDITOR
         if (!showInEditor) return;
 #else
@@ -79,14 +88,36 @@ public class BuildAuditHUD : MonoBehaviour
             }
         }
 
+        // LAN discovery summary
+        var disc = LanDiscoveryService.Instance;
+        if (disc != null && disc.UseLanDiscovery)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"LAN Discovery (puerto {disc.DiscoveryPort})");
+            var hosts = disc.DiscoveredHosts;
+            if (hosts == null || hosts.Count == 0)
+            {
+                sb.AppendLine("  (sin hosts visibles)");
+            }
+            else
+            {
+                float now = Time.realtimeSinceStartup;
+                for (int i = 0; i < hosts.Count; i++)
+                {
+                    var h = hosts[i];
+                    sb.AppendLine($"  [{i + 1}] {h.hostName}@{h.ip}:{h.gamePort} session={h.sessionId} age={now - h.lastSeenLocalTime:F1}s");
+                }
+            }
+        }
+
         sb.AppendLine();
         sb.AppendLine($"Ultima tecla: {lastKey} ({Time.realtimeSinceStartup - lastKeyTime:F1}s ago)");
         sb.AppendLine("F1 freeze cam | F2 snapshot");
 
         string text = sb.ToString();
 
-        Vector2 size = style.CalcSize(new GUIContent(text));
-        Rect rect = new Rect(margin.x, margin.y, size.x + 20f, size.y + 16f);
+        float height = style.CalcHeight(new GUIContent(text), fixedWidth);
+        Rect rect = new Rect(margin.x, margin.y, fixedWidth, height + 16f);
 
         GUI.color = new Color(0f, 0f, 0f, 0.7f);
         GUI.Box(rect, GUIContent.none);

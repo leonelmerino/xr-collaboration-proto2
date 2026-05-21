@@ -1,5 +1,266 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-05-21 — Refinamiento operacional: LAN discovery, HUDs de runtime y raycast Meta-style con anclaje anatómico
+
+Branch activo: `multiplayer-prototype-fixed` (continuación de la sesión anterior).
+
+Esta iteración no introduce nuevos sistemas networkeados; consolida la operatividad del prototipo en escenarios reales:
+
+* eliminación de IPs fijas para el bootstrap NGO (LAN discovery),
+* visibilidad en runtime del estado de red, performance y sincronización (HUDs),
+* refinamiento ergonómico del raycast de selección (aim ray estilo Meta Horizon con anclaje shoulder-virtual + corrección anatómica del origen visible),
+* limpieza de ruido en consola del proveedor de eye tracking,
+* hardening del mock server de adquisición frente a recargas / Play Mode repetido.
+
+---
+
+### LAN Discovery — descubrimiento automático del host
+
+Se introdujo el servicio de descubrimiento en LAN para eliminar la dependencia de IPs estáticas configuradas en el Inspector del `UnityTransport`. Sigue siendo 100% offline (sólo UDP broadcast en la subred local, sin servicios cloud).
+
+Archivos nuevos:
+
+```text
+Assets/Multiplayer/Discovery/LanDiscoveryService.cs
+Assets/Multiplayer/Discovery/DiscoveryRecord.cs
+```
+
+`LanDiscoveryService` (en GameObject `Network` de escena):
+
+* Puerto UDP **7778** dedicado a discovery (distinto del game port 7777 y del puerto BioLab 1776).
+* Protocol magic `XRCOLLAB` + version `1`. Cualquier paquete que no empiece con el magic se descarta.
+* **Host mode** (`StartServer(gamePort)`): broadcast cada `serverBroadcastIntervalSec` (default 1.5 s) con payload `magic|v|session|host|game_port|ts`.
+* **Multi-NIC**: itera `NetworkInterface.GetAllNetworkInterfaces()`, calcula la subnet broadcast de cada NIC activa (`ip OR ~mask`) y envía a cada una. Filtra heurísticamente NICs virtuales (Hyper-V, WSL, VMware, VirtualBox). Fallback adicional a `255.255.255.255` para cubrir el NIC default del SO.
+* **Client mode** (`StartClientListener()`): `UdpClient` con `ReuseAddress = true` bindeado a `0.0.0.0:7778`. Thread background recibe paquetes; `Update` drena la queue thread-safe.
+* **Lista deduplicada con timeout**: cada `(ip, gamePort)` se guarda como `DiscoveryRecord` con `lastSeenLocalTime`. Pruning automático tras `clientHostTimeoutSec` (default 5 s).
+* `PickPreferredHost()` retorna el host más antiguo en la lista (FIFO de descubrimiento) → conveniente para auto-conexión.
+* El listener arranca en `Start` aunque el usuario todavía no haya elegido rol, de modo que el HUD muestra candidatos antes de que se pulse `C`.
+
+Modificaciones a `NetworkLauncher.cs`:
+
+* `StartHost`: tras `StartHost()` exitoso, llama `LanDiscoveryService.Instance.StartServer(gamePort)` para anunciar el rol en la subred.
+* `StartClientWithDiscovery`: consulta `PickPreferredHost()`. Si hay candidato, sobreescribe `UnityTransport.ConnectionData.Address` y `.Port` antes de llamar `StartClient()`. Si no hay candidatos, cae a la IP estática configurada en el Inspector del `UnityTransport` (modo legacy preservado).
+* Log explícito por caso: auto-connect, fallback estático, discovery deshabilitado.
+
+Resultado operacional: el cliente puede arrancar contra un host en cualquier IP/subred del lab sin tocar el Inspector. Si en el laboratorio hay varios PCs con builds activas, el orden de descubrimiento (FIFO) prioriza el host visto primero.
+
+---
+
+### PerformanceHUD — telemetría en runtime para builds standalone
+
+Archivo nuevo:
+
+```text
+Assets/NetworkAudit/PerformanceHUD.cs
+```
+
+Overlay top-right (`F3` toggle), ancho fijo (`fixedWidth = 360 px`) para evitar reflow del cuadro cuando varían los números. Reporta por frame:
+
+* **FPS**: instantáneo + suavizado exponencial con constante de tiempo ~0.5 s (`alpha = 1 − exp(-dt/0.5)`).
+* **Frame time**: `now`, `p95`, `p99` sobre una ventana deslizante de `sampleWindowSec` (default 1 s). p95/p99 se recomputan cada 250 ms (no por frame, para evitar el costo del `Array.Sort`).
+* **Memoria managed**: `Profiler.GetMonoUsedSizeLong()` y delta de alloc por frame en KB.
+* **NGO RTT**: usa `NetworkConfig.NetworkTransport.GetCurrentRtt(ServerClientId)` en cliente. Muestra rol (HOST/SERVER/CLIENT/idle) y N de clientes conectados.
+* **HandRayDriver status**: estado L/R activo + valor actual de `RotationSmoothK`.
+* **ClockSync offset**: lee `NetworkClockSync.Instance.OffsetToHost` en ms, condicional a `IsSynced`.
+
+Por construcción no spawnea garbage en runtime salvo los frame-times en la `Queue<float>` (cuyo tamaño se mantiene acotado por el window).
+
+---
+
+### BuildAuditHUD — enhancements
+
+Modificaciones a `Assets/NetworkAudit/BuildAuditHUD.cs`:
+
+* Ancho fijo configurable (`fixedWidth = 420 px`) para evitar que la caja cambie de tamaño según el contenido.
+* Toggle visible/oculto en runtime con `F4`.
+* Nuevo bloque "**LAN Discovery**" que enumera los hosts visibles con `hostName@ip:gamePort session=<sid> age=<s>`. Si el servicio está deshabilitado o no hay hosts, lo indica explícitamente. Esto cierra el loop visual: el usuario puede confirmar antes de pulsar `C` que efectivamente hay un host descubierto en la subred.
+* Aumento del padding y separación visual; pintado en upper-left para no chocar con `PerformanceHUD`.
+
+---
+
+### HandRayDriver — aim ray estilo Meta Horizon con palm placement de 3 ejes
+
+Archivo nuevo:
+
+```text
+Assets/Multiplayer/HandRayDriver.cs
+```
+
+Reemplaza el ray viejo (que salía del `ThumbMarker`, fuertemente acoplado al gesto pinch) por un ray estilo Meta Horizon / Quest System UI:
+
+* **Origen lógico**: posición real de la muñeca (`XRHandJointID.Wrist`) en world space, vía `conversionSpace.TransformPoint(wristPose.position)` usando el `CameraFloorOffsetObject` del `XROrigin`.
+* **Dirección**: vector hombro-virtual → muñeca. El hombro virtual se estima desde la pose del HMD:
+
+  ```text
+  shoulder = headPos
+           + (isLeft ? -headRight : headRight) * shoulderLateralOffset   // 0.17 m
+           - Vector3.up * shoulderDownOffset                              // 0.15 m
+           - headForward * shoulderBackOffset                             // 0.05 m
+  ```
+
+* Estable por construcción: la muñeca casi no se mueve con la flexión de dedos, y `shoulder→wrist` produce un vector consistente con la intención natural de apuntar.
+* `Update` sobreescribe `transform.position` y `transform.rotation` del anchor en world space cada frame, por lo que el parenting del anchor es indiferente (en escena viven directamente bajo `XR_Hands_Debug > HandDebug`, fuera del subtree del `ThumbMarker`).
+* Singleton `HandRayDriver.Instance` para que el `PerformanceHUD` pueda mostrar el estado L/R.
+
+**Wiring con `JengaRayGrabInteractor`**: el campo `rayOrigin` del Interactor apunta a `Left/RightHandRayAnchor` (los Transform que `HandRayDriver` mueve cada frame). El raycast del Interactor sigue funcionando sin cambios; lo único que se sustituyó es la fuente del Transform.
+
+#### Palm placement — 3 ejes ortogonales para ajustar el origen visible
+
+El usuario observó que el origen visible (donde nace el `LineRenderer`) caía sobre la muñeca, lo que daba la sensación de "proyección desde el hombro" en vez de "salida desde la mano". Para corregirlo sin sacrificar la estabilidad del shoulder-anchor, se añadieron tres offsets independientes que mueven sólo el origen visible (la dirección del ray no se altera):
+
+| Campo | Eje | Positivo | Negativo |
+|---|---|---|---|
+| `originForwardOffset` | a lo largo de la mano (hueso) | hacia los dedos | hacia el codo |
+| `originLateralOffset` | perpendicular horizontal | hacia el pulgar | hacia el meñique |
+| `originVerticalOffset` | perpendicular vertical | hacia el dorso | hacia la palma |
+
+Defaults afinados empíricamente: `forward=0.05 m`, `lateral=0`, `vertical=0`. Rangos en Inspector: `[0, 0.2]` para forward, `[-0.2, 0.2]` para los otros dos.
+
+##### Construcción del frame ortonormal
+
+Dos correcciones críticas para que los offsets sean **simétricos entre manos**:
+
+**1. Eje vertical — no debe heredar el flip del lateral.**
+
+Versión incorrecta inicial:
+
+```csharp
+lateralAxis = Cross(up, dir);
+if (isLeft) lateralAxis = -lateralAxis;        // flip para mirror-symmetry
+verticalAxis = Cross(dir, lateralAxis);        // BUG: hereda el flip
+```
+
+Resultado: el mismo valor numérico de `originVerticalOffset` movía una mano hacia arriba y la otra hacia abajo.
+
+Fix: calcular `verticalAxis` **antes** del flip, manteniéndolo global:
+
+```csharp
+lateralAxisRaw = Cross(up, dir);
+verticalAxis  = Cross(dir, lateralAxisRaw);     // global, ambas manos
+lateralAxis   = isLeft ? -lateralAxisRaw : lateralAxisRaw;  // mirror-symmetric
+```
+
+**2. Eje forward — anclar a anatomía, no al ray sintetizado.**
+
+Inicialmente se usaba `dir = (wrist − shoulder).normalized` como eje forward. Como cada brazo se sostiene en una pose ligeramente distinta (asimetría real-world), los dos `dir` no son mirror images perfectas → un mismo valor de `originForwardOffset` cae en puntos anatómicamente distintos de cada mano (más cerca de los nudillos en una, más al costado en la otra).
+
+Fix: anclar forward al vector anatómico `wrist → middleProximal`:
+
+```csharp
+Vector3 handForward = dir;  // fallback
+var middleProximal = hand.GetJoint(XRHandJointID.MiddleProximal);
+if (middleProximal.TryGetPose(out var middleProxPose))
+{
+    Vector3 middleProxWorld = conversionSpace.TransformPoint(middleProxPose.position);
+    Vector3 anatomicalFwd = middleProxWorld - wristWorld;
+    if (anatomicalFwd.sqrMagnitude > 1e-6f)
+        handForward = anatomicalFwd.normalized;
+}
+Vector3 originWorld = wristWorld + handForward * originForwardOffset;
+```
+
+Garantiza que "5 cm forward" cae siempre en el mismo punto anatómico (sobre los nudillos) en ambas manos, independiente de cómo el usuario tenga el brazo.
+
+#### Smoothing opcional
+
+Mantiene constantes `rotationSmoothK` y `positionSmoothK` (default 0 = sin lag adicional). Si se activan, se aplica `Slerp` sobre la dirección y `Lerp` sobre la posición. Documentado en tooltip: 0.3–0.5 reduce jitter pero añade 30–50 ms de latencia.
+
+#### Caveat de jerarquía
+
+`Left/RightHandRayAnchor` deben estar **fuera** del subtree del `ThumbMarker` (que era el parent histórico). Si quedan dentro, el `ThumbMarker` los arrastra cada frame antes de que `HandRayDriver` reescriba la pose absoluta — funcionalmente equivalente porque sobreescribimos world position/rotation, pero hace confuso el inspeccionar la jerarquía. Recomendación: reparentar a `XR_Hands_Debug > HandDebug` directamente.
+
+---
+
+### ViveEyeTrackingProvider — gate de XR session ready
+
+Modificación a `Assets/EyeTracking/ViveEyeTrackingProvider.cs`:
+
+Síntoma original: spam de `XR_ERROR_SESSION_LOST` en consola durante el bootstrap de OpenXR, antes de que `XRManagerSettings.StartSubsystems()` complete. Cada llamada a `XR_HTC_eye_tracker.Interop.GetEyeGazeData()` antes de la sesión válida tiraba excepción.
+
+Fix:
+
+```csharp
+private static bool IsXrSessionReady()
+{
+    var settings = XRGeneralSettings.Instance;
+    if (settings == null || settings.Manager == null) return false;
+    if (!settings.Manager.isInitializationComplete) return false;
+    if (settings.Manager.activeLoader == null) return false;
+
+    s_displaySubsystems.Clear();
+    SubsystemManager.GetSubsystems(s_displaySubsystems);
+    for (int i = 0; i < s_displaySubsystems.Count; i++)
+        if (s_displaySubsystems[i].running) return true;
+    return false;
+}
+```
+
+`Update()` ahora abandona temprano si `IsXrSessionReady()` retorna false. El criterio doble (loader inicializado **y** `XRDisplaySubsystem.running`) es necesario porque entre la inicialización del loader y la sesión OpenXR efectivamente activa hay una ventana en la que el eye tracker todavía no acepta queries.
+
+Adicionalmente: cuando el HMD reporta `XrSystemEyeTrackingPropertiesHTC.supportsEyeTracking = 0` (caso observado en el Vive Focus Vision sin licencia activa de eye tracking en esa sesión), `XR_HTC_eye_tracker.Interop.GetEyeGazeData()` sigue tirando `NullReferenceException` aún con sesión válida. El `try/catch` ya estaba; el throttling del warning (1 cada 2 s vía `lastErrorLogTime`) reduce el ruido a un mensaje cada 2 segundos en lugar de uno por frame.
+
+---
+
+### AcquisitionMockServer — hardening
+
+Modificaciones a `Assets/BiolabUDPSync/AcquisitionMockServer.cs`:
+
+**1. Reset del estado lógico en cada arranque.**
+
+Síntoma: tras detener y reiniciar Play Mode (o cambios de scripts con domain reload), el componente podía retener `acquisitionStarted = true` del run anterior. La siguiente sesión recibía `START` y respondía con `"ERROR Acquisition already started"`.
+
+Fix: `StartServer()` ahora resetea `acquisitionStarted = false` antes de crear el thread del socket.
+
+**2. Diferenciación de causas de shutdown del socket.**
+
+Síntoma: `StopServer()` cerraba el `UdpClient`, y el thread loop arrojaba `SocketException` o `ObjectDisposedException` en `udpServer.Receive()`. Esto generaba un `Debug.LogError` ruidoso que parecía indicar un crash, cuando en realidad era cleanup normal.
+
+Fix: el `catch` ahora distingue:
+
+* `ObjectDisposedException` → silencio (es el shutdown ordenado).
+* `SocketException` con `isRunning == false` → silencio (cierre durante Stop / recarga).
+* `SocketException` con `isRunning == true` → `Debug.Log` (no Warning) con `SocketErrorCode`. Tipicamente shutdown del Editor.
+* Cualquier otra excepción → `Debug.LogError` como antes.
+
+Resultado: la consola queda limpia al salir de Play Mode.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| LAN discovery (host advertise + client listener) | ✅ Multi-NIC, dedupe + timeout, FIFO host pick |
+| Auto-conexión NGO sin IP fija | ✅ Cliente toma IP del primer host visto; fallback a IP estática del Inspector |
+| HUD de auditoría (BuildAuditHUD) | ✅ Rol, IsListening, clientes, spawned, hosts LAN. F4 toggle, ancho fijo |
+| HUD de performance (PerformanceHUD) | ✅ FPS, p95/p99 frame, mono mem, alloc/frame, RTT NGO, estado HandRay, clock offset. F3 toggle |
+| Raycast Meta-style | ✅ Shoulder virtual desde HMD; muñeca real como origen lógico |
+| Palm placement de 3 ejes | ✅ Forward (anatómico vía MiddleProximal), lateral, vertical — simétricos entre manos |
+| Smoothing configurable del ray | ✅ Latencia 0 por default, opcional Slerp/Lerp |
+| Eye tracking sin spam de SESSION_LOST | ✅ Gate por `XRDisplaySubsystem.running` antes de leer gaze |
+| Mock server resiliente a Play Mode repetido | ✅ Reset de estado + clasificación correcta de shutdown |
+
+---
+
+### Caveats / pendientes
+
+* `XR_HTC_eye_tracker.Interop.GetEyeGazeData()` sigue tirando NRE cuando el HMD reporta `supportsEyeTracking = 0`. Solo es ruido throttled (cada 2 s). Si el deployment requiere eye tracking, hay que verificar licencia / calibración del visor antes de arrancar.
+* `LanDiscoveryService.PickPreferredHost()` actualmente es FIFO. Si en el lab corren varias builds simultáneas, el cliente toma el primero que ve. Una versión futura podría priorizar por `sessionId` matcheando el del cliente, o exponer una mini UI de selección.
+* Los offsets de palm placement deberían guardarse como defaults en el prefab (`HandRayDriver` está sobre un GameObject de escena hoy). En build de release conviene serializar valores afinados.
+* Los anchors de mano (`Left/RightHandRayAnchor`) idealmente deberían colgar directamente de `XR_Hands_Debug > HandDebug`, no dentro de `ThumbMarker`. Funciona igual porque `HandRayDriver` sobreescribe world transform, pero es contraintuitivo al inspeccionar.
+
+---
+
+### Próximos pasos
+
+* Persistir offsets de palm placement por participante (ergonomía variable según tamaño de mano).
+* Exponer mini UI para listar hosts LAN descubiertos y permitir selección manual cuando hay más de uno.
+* Broadcast del `SYNC_MARKER` a clientes vía NGO RPC (heredado del log anterior, sigue pendiente).
+* Validar end-to-end con 2 o 3 PCs reales en LAN del lab (heredado).
+* Auto-detección y reporte en HUD del `supportsEyeTracking` del HMD para que el operador sepa de antemano si el gaze va a estar disponible o no.
+
+---
+
 ## 2026-05-18 — Integración multiplayer completa: roles, manos, Jenga networked y sincronización de relojes BioLab
 
 ### Workflow de branches

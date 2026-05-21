@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.XR;
+using UnityEngine.XR.Management;
 using VIVE.OpenXR;
 using VIVE.OpenXR.EyeTracker;
 
@@ -41,9 +44,37 @@ public class ViveEyeTrackingProvider : MonoBehaviour
 
     private float lastErrorLogTime = -999f;
 
+    private static readonly List<XRDisplaySubsystem> s_displaySubsystems = new();
+
+    private static bool IsXrSessionReady()
+    {
+        // 1) Loader XR debe estar inicializado.
+        var settings = XRGeneralSettings.Instance;
+        if (settings == null || settings.Manager == null) return false;
+        if (!settings.Manager.isInitializationComplete) return false;
+        if (settings.Manager.activeLoader == null) return false;
+
+        // 2) Y debe haber un XRDisplaySubsystem corriendo. Esto solo es true
+        //    despues que StartSubsystems() corrio y la sesion OpenXR esta activa.
+        //    Antes de eso, el eye tracker tira XR_ERROR_SESSION_LOST.
+        s_displaySubsystems.Clear();
+        SubsystemManager.GetSubsystems(s_displaySubsystems);
+        for (int i = 0; i < s_displaySubsystems.Count; i++)
+        {
+            if (s_displaySubsystems[i].running)
+                return true;
+        }
+        return false;
+    }
+
     private void Update()
     {
         TimestampRelativeSeconds = Time.realtimeSinceStartupAsDouble;
+
+        // No leer eye-tracker hasta que XR este inicializado.
+        // Esto evita spam de XR_ERROR_SESSION_LOST durante el bootstrap de OpenXR.
+        if (!IsXrSessionReady())
+            return;
 
         ReadGazeDataSafe();
         ReadPupilDataSafe();

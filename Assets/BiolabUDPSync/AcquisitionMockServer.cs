@@ -30,6 +30,9 @@ public class AcquisitionMockServer : MonoBehaviour
     {
         if (isRunning) return;
 
+        // Reset del estado logico de adquisicion en cada arranque limpio (evita "Acquisition already started" si el componente persistio entre Play sessions).
+        acquisitionStarted = false;
+
         isRunning = true;
         serverThread = new Thread(ServerLoop);
         serverThread.IsBackground = true;
@@ -76,10 +79,16 @@ public class AcquisitionMockServer : MonoBehaviour
                 AppendLog($"{DateTime.UtcNow:o} | FROM {remoteEP} | RX: {message} | TX: {response}");
             }
         }
-        catch (SocketException)
+        catch (ObjectDisposedException)
         {
+            // Socket cerrado durante Stop/recarga: normal, no es error.
+        }
+        catch (SocketException ex)
+        {
+            // Si el socket se interrumpe mientras isRunning sigue true, normalmente es shutdown del Editor.
+            // Solo loggeamos en Debug.Log (no Warning) para evitar ruido en Console.
             if (isRunning)
-                Debug.LogWarning("[AcquisitionMockServer] Socket closed or interrupted.");
+                Debug.Log($"[AcquisitionMockServer] Socket cerrado/interrumpido: {ex.SocketErrorCode}");
         }
         catch (Exception ex)
         {
