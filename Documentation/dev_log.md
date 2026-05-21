@@ -1,5 +1,319 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-05-18 — Integración multiplayer completa: roles, manos, Jenga networked y sincronización de relojes BioLab
+
+### Workflow de branches
+
+Se creó el branch `multiplayer-prototype-fixed` a partir de `biolab-udp-sync-simple` para aislar el trabajo de refactorización multiplayer sin afectar la línea estable de adquisición.
+
+Commits relevantes en este branch:
+
+```text
+44358f3  Preliminary fix working multiplayer.
+2b9df48  Working multiplayer.
+1dfec65  Biolab multiplayer integration.
+```
+
+---
+
+### Diagnóstico inicial: estado real del multiplayer
+
+Antes de tocar código se hizo una auditoría empírica del stack networking existente:
+
+* Framework confirmado: **Unity Netcode for GameObjects (NGO) 1.12.2**.
+* Transport: **UnityTransport directo (UDP)**, sin Unity Relay → compatible con requerimiento de operación 100% LAN sin internet.
+* `Address: 127.0.0.1`, `ServerListenAddress: 0.0.0.0`, `Port: 7777`, `ProtocolType: 0`.
+* `TickRate: 30`, `RunInBackground: 1`, `ConnectionApproval: 0`.
+
+Auditoría reveló matriz de sincronización pobre: solo se networkeaba head + body root del avatar (vía `OwnerNetworkTransform` + `AvatarFollowXROrigin`). Color, label, manos, rays, eventos de interacción y Jenga: **todos locales**.
+
+---
+
+### Fix arquitectónico: `NetworkLauncher` en escena
+
+Se detectó que `NetworkLauncher.cs` (script que escucha teclas `H`/`C` para iniciar host/client) estaba como componente del `Avatar.prefab`, no en la escena. Esto generaba una contradicción imposible:
+
+* el script solo se ejecuta cuando el avatar está spawneado;
+* el avatar solo se spawnea cuando alguien hace `StartHost()`/`StartClient()`;
+* pero las llamadas a `StartHost()`/`StartClient()` las dispara el propio script... que no existe todavía.
+
+Verificación en git history: el GUID del script (`cbcdda6203ed8cc41971694ca9cce55b`) nunca apareció en `Room.unity` en ningún commit, en ningún branch.
+
+Fix: se agregó el componente `NetworkLauncher` al GameObject `Network` de escena, junto al `NetworkManager`. Removido del Avatar.prefab para evitar listeners duplicados al spawnearse N avatares.
+
+---
+
+### Infraestructura de auditoría y testing single-machine
+
+Se introdujo la carpeta `Assets/NetworkAudit/` con utilidades para correr Editor (Host) + build standalone (Client) en la misma máquina:
+
+* `NetworkAuditLogger.cs` — Loggea eventos NGO a Console + CSV (`OnServerStarted`, `OnClientConnected`, `OnClientDisconnected`, snapshot de NetworkObjects con tecla `F2`).
+* `BuildAuditHUD.cs` — Overlay en pantalla con rol actual, `IsListening`, `LocalClientId`, `ConnectedClients`, conteo de spawned, última tecla pulsada.
+* `BuildFlyCamera.cs` — Cámara libre con WASD + mouse derecho para inspeccionar la build sin XR.
+* `BuildXRDisabler.cs` — Detiene `XRGeneralSettings.Manager` y desactiva todos los `TrackedPoseDriver` de escena cuando es build (no Editor).
+* `EditorXRBootstrap.cs` — Inicializa explícitamente XR en `Start()` del Editor.
+
+Configuración de proyecto asociada: se desmarcó `Edit → Project Settings → XR Plug-in Management → Windows Standalone → Initialize XR on Startup`. De este modo XR no se autoinicia, lo que permite:
+
+* Editor: `EditorXRBootstrap` lo enciende manualmente → headset funciona.
+* Build standalone: nadie lo inicia → corre en ventana sin tocar el headset.
+
+Resultado: se puede ejecutar Editor como Host con HMD + build como Client en ventana, simultáneamente en una sola PC.
+
+---
+
+### Asignación de roles por NGO con teleport a spawn
+
+Se introdujo un sistema de asignación de roles networked desacoplado del `TriadSessionManager` (que se mantiene para mocks).
+
+Archivos nuevos:
+
+```text
+Assets/Multiplayer/RoleConfig.cs           (ScriptableObject)
+Assets/Multiplayer/RoleConfig.asset
+Assets/Multiplayer/RoleAssignmentService.cs (server-only)
+Assets/Multiplayer/NetworkedAvatarRole.cs   (NetworkBehaviour)
+```
+
+`RoleConfig` (ScriptableObject) — single source of truth para color + spawn pose por rol. Valores iniciales copiados del mock:
+
+| Rol | Color | Spawn position |
+|---|---|---|
+| Host | rojo | `(0, 0, -0.766)` |
+| Client | verde | `(-1.055, 0, 0)` |
+| Helper | azul | `(1.071, 0, 0)` |
+
+`RoleAssignmentService` (en GameObject `Network`):
+
+* Suscribe a `OnServerStarted` y `OnClientConnectedCallback`.
+* Mantiene array `assignmentOrder = [Host, Client, Helper]` y un `nextRoleIndex` server-only.
+* En cada conexión nueva, asigna el siguiente rol al `clientId` correspondiente.
+* Envía `TeleportClientRpc(position, euler)` al owner.
+
+`NetworkedAvatarRole` (en Avatar.prefab):
+
+* `NetworkVariable<PlayerRole> Role` (server-write, everyone-read).
+* `OnNetworkSpawn` + `OnValueChanged` → aplica color en `bodyRenderers`, escribe texto en TMP `roleLabel`, billboard del `labelAnchor`.
+* `TeleportClientRpc`: el owner mueve el `XROrigin` local (no el avatar directo, porque `AvatarFollowXROrigin` lo sobreescribiría al siguiente frame).
+
+---
+
+### Sincronización de manos y rays vía NetworkVariable
+
+Archivos nuevos:
+
+```text
+Assets/Multiplayer/HandPoseState.cs        (struct INetworkSerializable + IEquatable)
+Assets/Multiplayer/NetworkedAvatarHands.cs (NetworkBehaviour en Avatar.prefab)
+```
+
+`HandPoseState` campos:
+
+```text
+bool tracked
+bool pinching
+Vector3 thumbTipPos     (world space)
+Vector3 indexTipPos     (world space)
+Vector3 palmPos         (world space)
+Quaternion palmRot      (world space)
+bool rayActive
+Vector3 rayStart        (world space)
+Vector3 rayEnd          (world space)
+```
+
+`NetworkedAvatarHands`:
+
+* Owner: lee `XRHandSubsystem.leftHand/rightHand`, convierte joint poses a world space usando el `CameraFloorOffsetObject` del `XROrigin` local, escribe a dos `NetworkVariable<HandPoseState>`.
+* Owner adicional: lee el `LineRenderer` del raycast local del rig (`LeftGrabRay`/`RightGrabRay`) via auto-wire por nombre.
+* All clients (incluyendo owner): aplican el estado a markers que son hijos del Avatar.prefab (`ThumbMarker`, `IndexMarker`, `PinchMarker`, `PinchLine`, `RayDisplay`).
+* Threshold de pinch en world space configurable (`pinchThreshold = 0.025`).
+
+Avatar.prefab nuevo sub-rig por mano:
+
+```text
+Avatar
+├── LeftHand
+│   ├── ThumbMarker      (sphere)
+│   ├── IndexMarker      (sphere)
+│   ├── PinchMarker      (sphere; se oculta vía Renderer.enabled, no SetActive)
+│   ├── PinchLine        (LineRenderer; conecta thumb-index siempre que la mano se trackea)
+│   └── RayDisplay       (LineRenderer; refleja el raycast del owner)
+├── RightHand (idem)
+└── LabelAnchor → RoleLabel (TMP)
+```
+
+Decisiones importantes:
+
+* World space para todas las poses → cada cliente puede aplicar sin saber dónde está el `XROrigin` del owner.
+* `Renderer.enabled = false` en lugar de `gameObject.SetActive(false)` cuando se oculta el `PinchMarker` (evita apagar la línea adyacente si quedó como hijo).
+* Width de `LineRenderer` forzado vía script (`lineWidth = 0.003` configurable) en lugar de la curva de Inspector — esta última quedaba en 0 sin que sea evidente, generando líneas invisibles.
+* Material fallback en runtime: si una `LineRenderer` queda sin material asignado al spawn, se le asigna `Sprites/Default` con warning.
+
+`PinchDebugVisualizer` modificado: `Start` ahora delega en `TryAttachHandSubsystem` con retry en `Update`. Fix necesario porque XR ya no autoinicia → el subsistema aparece después.
+
+---
+
+### Sincronización del Jenga (server-authoritative con ownership transfer)
+
+Archivos nuevos:
+
+```text
+Assets/Jenga/NetworkedJengaBlock.cs
+```
+
+Modificaciones a `JengaBlock.prefab`:
+
+* Añadidos: `NetworkObject`, `OwnerNetworkTransform`, `NetworkRigidbody`, `NetworkedJengaBlock`.
+* `NetworkRigidbody` maneja automáticamente `Rigidbody.isKinematic` según ownership; se eliminó la lógica manual del wrapper.
+* Registro en `DefaultNetworkPrefabs.asset`.
+
+Modificaciones a `JengaTowerGenerator.cs`:
+
+* `Awake` registra singleton `Instance` (para que clientes accedan a `blockMaterials`).
+* `Start` ya no construye la torre incondicionalmente. Suscribe a `NetworkManager.Singleton.OnServerStarted`.
+* La torre se construye **solo en el server**.
+* `BuildTower`: usa `NetworkObject.Spawn(true)` después de configurar el bloque. Mantiene lista privada `spawnedBlocks` para clear posterior.
+* Material del bloque: índice determinístico `((level * 3) + (i + 1)) % blockMaterials.Length`. El server asigna el índice vía `NetworkVariable<int>` sobre `NetworkedJengaBlock`. Clientes leen el array local de `JengaTowerGenerator.Instance.GetMaterial(idx)` en `OnValueChanged`.
+* Fallback standalone (sin NGO) sigue funcionando: aplica material localmente con `sharedMaterial`.
+
+`NetworkedJengaBlock`:
+
+* `RequestGrab(handTransform)` — guarda `pendingGrabHand` y envía `RequestGrabServerRpc()`.
+* Server valida (bloque server-owned actualmente), llama `NetworkObject.ChangeOwnership(senderId)`.
+* Cliente recibe `OnGainedOwnership` → ejecuta `grabbable.BeginGrab(pendingGrabHand)` localmente.
+* `RequestRelease()` → `RequestReleaseServerRpc()` → server hace `RemoveOwnership()` → cliente recibe `OnLostOwnership` → `grabbable.EndGrab()`.
+* `IsGrabbedAnywhere` propiedad pública para que los interactors descarten bloques tomados por otros.
+
+`JengaGrabInteractor` y `JengaRayGrabInteractor` modificados:
+
+* `TryGrab` delega al `NetworkedJengaBlock.RequestGrab(pinchPoint)` cuando existe, o cae al `JengaGrabbable.BeginGrab` local cuando no.
+* `IsBlockTaken(g)` consulta el estado networked además del local.
+* Eliminado `Debug.Log("Ray hit: ...")` del `Update` (era spam por cada frame que el ray toca algo).
+
+Caveat operacional documentado: los `SphereCollider` que Unity agrega por default a los markers de mano del Avatar.prefab fueron eliminados — el raycast local del Jenga se autochocaba contra las propias esferas del avatar (que coinciden con la posición de los dedos). Las interacciones de poke/grab del rig no se ven afectadas porque referencian los markers de escena bajo `XR Origin > Camera Offset > XR_Hands_Debug`, no los del prefab.
+
+---
+
+### Eventos BioLab desde todos los nodos
+
+Refactor de `AcquisitionEventManager.cs`:
+
+* Eliminadas las puertas `if (!config.IsHost) return;` en `BeginExperimentalSession()` y `EndExperimentalSession()`.
+* `LogAndMaybeForward` renombrado a `LogAndForward`, sin gate por rol.
+* Cada nodo ejecuta su propia rutina de sesión: PING individual, SESSION_START / TASK_CONTEXT / heartbeat propios tagueados con su `node_id`.
+* **Solo el host** mantiene la responsabilidad del comando `START` / `STOP` de adquisición a BioLab (evita conflictos en BioLab).
+* En no-host: `acquisitionRunning = true` se asume tras PING OK + log `START_SKIPPED_NON_HOST`.
+
+Hooks de interacción agregados:
+
+* `EmitInteractionEvent(string label, string detailKey, string detailValue)` público en `AcquisitionEventManager`.
+* `JengaGrabInteractor.TryGrab` / `Release` → `GRAB_BEGIN_PINCH` / `GRAB_END_PINCH` con `block={blockName}`.
+* `JengaRayGrabInteractor.TryGrab` / `Release` → `GRAB_BEGIN_RAY` / `GRAB_END_RAY` con `block={blockName}`.
+
+Resultado: cada participante (Host / Client / Helper) escribe su CSV local y reenvía sus propios eventos a BioLab tagueados con su `node_id`. BioLab recibe N timelines y puede agruparlas offline.
+
+---
+
+### Sincronización de relojes (Nivel 2.5 — handshake + sync markers)
+
+Archivo nuevo:
+
+```text
+Assets/BiolabUDPSync/NetworkClockSync.cs (NetworkBehaviour)
+```
+
+Decisión de arquitectura: handshake explícito al conectar + sync markers periódicos, descartando la opción de NTP a nivel SO o de depender de `NetworkManager.ServerTime`.
+
+Algoritmo de handshake (Cristian's):
+
+* Cliente envía `T1` (su `Time.realtimeSinceStartup`) en `RequestSampleServerRpc`.
+* Server registra `T2` al recibir y `T3` al responder con `RespondSampleClientRpc(T1, T2, T3)`.
+* Cliente registra `T4` al recibir, calcula:
+  * `offset = ((T2 − T1) + (T3 − T4)) / 2`
+  * `rtt = (T4 − T1) − (T3 − T2)`
+* Repite N veces (default `samples = 10`).
+* Selecciona los `samples / 2` con menor RTT y toma la mediana del offset como estimación final.
+
+API expuesta:
+
+* `NetworkClockSync.Instance.IsSynced` → bool.
+* `NetworkClockSync.Instance.OffsetToHost` → segundos (positivo si el host adelanta).
+* `NetworkClockSync.Instance.HostTime` → `Time.realtimeSinceStartup + OffsetToHost`.
+* `NetworkClockSync.Instance.SyncQualityRttMs` → telemetry.
+
+Modificaciones en `AcquisitionEventManager`:
+
+* `BuildMetadataPayload` ahora incluye `t_local=<localTime>` y `t_host=<HostTime>` además del flag `sync=synced` / `unsynced` / `failed`.
+* Nuevo `LogAndForwardExternal` público para que `NetworkClockSync` pueda emitir markers a través del mismo pipeline (CSV + UDP a BioLab).
+* En el `Start()` no-host: espera al handshake con timeout (`waitForClockSync = true`, `clockSyncWaitTimeoutSec = 5`). Si vence el timeout, continúa con `offset = 0` y deja registrado `CLOCK_SYNC` `TIMEOUT_PROCEED_WITHOUT_SYNC`.
+
+Sync markers:
+
+* Server-only coroutine en `NetworkClockSync.SyncMarkerLoop`.
+* Emite cada `syncMarkerIntervalSec` (default 10s) un evento `SYNC_MARKER` con `seq`, `t_host_auth`, `t_host_est`, `t_local`, `offset_ms`.
+* Se loggea localmente y se reenvía a BioLab vía `AcquisitionEventManager.LogAndForwardExternal`.
+
+Validación local (Editor + build sobre loopback):
+
+```text
+host:    [NetworkClockSync] Server side ready (offset=0).
+client:  [NetworkClockSync] Handshake OK.
+         offset=-140785.688 ms, avgRTT=30.337 ms (best 5/10 samples).
+```
+
+El offset de ~141 segundos no es deriva de relojes — es la diferencia entre los orígenes de `Time.realtimeSinceStartup` de cada instancia (cada Unity arranca con su propio cero). Es exactamente lo que necesitamos capturar para alinear los timelines.
+
+Items pendientes detectados en el log:
+
+* El handshake se dispara dos veces seguidas en el cliente (mismo resultado las dos veces). Probablemente dos sitios de invocación (`OnNetworkSpawn` + algún callback). No rompe pero es redundante.
+* Los `SYNC_MARKER` no se propagan a los clientes vía NGO RPC actualmente; solo el host los loggea. Falta el broadcast para que cada nodo escriba su propio par `(t_host_recibido, t_local_propio)` y se pueda validar drift offline.
+
+---
+
+### Cleanup de escena
+
+* Eliminado el GameObject `HandTrackingManager` raíz (tenía solo `PinchDetector` con `Debug.Log` comentados → no-op funcional).
+* El otro `HandTrackingManager` (hijo de XR Origin, con `PinchDebugVisualizer` y todas las refs a markers) se mantuvo y es el único activo.
+* `TriadSessionManager` desactivado durante el audit inicial para evitar superposición visual entre mocks y avatares networked.
+
+---
+
+### Fix de compilación
+
+`Assets/Jenga/AssignJengaAOIs.cs` se movió a `Assets/Jenga/Editor/AssignJengaAOIs.cs` (con su `.meta`). Usaba `[MenuItem]`, `Selection`, `Undo`, `EditorUtility` (todos del namespace `UnityEditor`) sin guard `#if UNITY_EDITOR`. Esto rompía cualquier build (Player.exe). Mover a una carpeta `Editor/` es la solución idiomática de Unity.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| Roles networked | ✅ Host / Client / Helper con color + spawn determinístico |
+| Avatares (head/body) | ✅ NetworkTransform owner-authoritative |
+| Manos (markers + pinch line + ray) | ✅ Sincronizado en world space |
+| Labels TMP de rol | ✅ Sincronizado con billboard |
+| Torre Jenga | ✅ Server-spawn con NetworkObject |
+| Grab/release de bloques | ✅ Ownership transfer + ClientRpc local |
+| Material de bloques | ✅ Index sincronizado via NetworkVariable |
+| Eventos BioLab por nodo | ✅ Host / Client / Helper emiten independientes |
+| Clock sync | ✅ Handshake al conectar + sync markers cada 10s |
+| Timestamps en eventos | ✅ `t_local` + `t_host` en payloads |
+| Sin internet, intranet only | ✅ Confirmado (UDP directo, no Relay) |
+| Eventos eye tracking en CSV | ✅ Por nodo, local |
+| Velocidad al soltar bloque | ⚠ No se transfiere en cambio de ownership (limitación conocida) |
+
+---
+
+### Próximos pasos
+
+* Auto-vincular `AcquisitionNodeConfig.role` al `PlayerRole` asignado por `RoleAssignmentService` (hoy se configura manualmente por máquina).
+* Resolver doble disparo del handshake en el cliente.
+* Agregar broadcast del `SYNC_MARKER` vía NGO RPC para que cada nodo lo loggee con su par `(t_host_recibido, t_local_propio)` y permita validar drift offline.
+* Probar end-to-end con 2 PCs reales en LAN (offset esperado ≠ 0, RTT esperado < 5 ms).
+* Sincronizar velocidad/angularVelocity del rigidbody en el cambio de ownership para que el bloque mantenga inercia al soltarlo.
+* Filtrar warnings de `XR_ERROR_SESSION_LOST` del eye tracker hasta que XR esté completamente inicializado.
+* Documentar configuración por máquina (`nodeId`, `acquisitionIp`, role) en un README de deployment.
+
 ## 2026-05-08 — Refinamiento del flujo experimental y corrección de interacción XR basada en hand rays
 
 ### Simplificación del flujo experimental
