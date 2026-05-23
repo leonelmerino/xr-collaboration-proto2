@@ -1,5 +1,445 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-05-22 — Prototipo de tuning de física de bloques Jenga: ScriptableObject + Runtime HUD + presets + preservación de velocidad
+
+Branch activo: `jenga-physics-prototype` (creado desde `main` tras el merge de `multiplayer-prototype-fixed`).
+
+Motivación: la física actual de los bloques se ajustó a lo largo de varias sesiones (ver entradas de marzo: estabilización inicial, colliders, settling) y se llegó a un punto razonable, pero "razonable" no es "natural". La sensación al agarrar, mover y soltar bloques todavía se siente algo rígida en VR. Tunear los ~25 parámetros relevantes requiere muchas iteraciones, y cada una implica sacarse el visor para editar el Inspector — flujo inviable a escala.
+
+Objetivo de esta iteración: construir una infraestructura de tuning que permita iterar **sin quitarse el headset**, con persistencia en assets, comparación A/B vía presets, y edición fina en runtime.
+
+Alcance acordado: **single-player solamente**. Si el usuario inicia NGO durante una sesión de tuning, los cambios solo afectan a su instancia local. La propagación networked de la configuración de física queda pendiente para una iteración futura (requeriría serializar el config completo via ServerRpc en cada cambio).
+
+---
+
+### Diagnóstico del estado actual (antes del tuner)
+
+Antes de tocar nada se hizo una auditoría del setup heredado para entender la línea de base contra la que medir cambios.
+
+`JengaBlock.prefab` (Rigidbody):
+
+```text
+mass:                  0.1 kg   (Jenga real ≈ 0.014 kg — bloque ~15x más pesado)
+drag:                  0
+angularDrag:           0.2
+useGravity:            true
+isKinematic:           false (gestionado por NetworkRigidbody en multiplayer)
+interpolate:           Interpolate
+collisionDetection:    ContinuousDynamic  ✓ óptimo
+```
+
+`Assets/Jenga/JengaBlockPhysics.physicMaterial`:
+
+```text
+staticFriction:        0.8
+dynamicFriction:       0.8
+bounciness:            0
+frictionCombine:       Maximum  ← agresivo: cualquier superficie "pegajosa" domina
+bounceCombine:         Minimum
+```
+
+`Assets/TableMaterial.physicMaterial`: friction 1.0 / 1.0, combine Maximum. Como friction combine es Maximum, el contacto bloque-mesa efectivo es `max(0.8, 1.0) = 1.0`, lo que probablemente contribuye a una sensación de torre "demasiado adherida".
+
+`ProjectSettings/DynamicsManager.asset` (ya tuneado en iteraciones previas):
+
+```text
+defaultSolverIterations:          12   (default Unity: 6) ✓
+defaultSolverVelocityIterations:  4    (default Unity: 1) ✓
+defaultContactOffset:             0.005 (default Unity: 0.01) ✓ — apropiado para bloques de 15 mm
+bounceThreshold:                  2
+sleepThreshold:                   0.005
+defaultMaxDepenetrationVelocity:  10
+defaultMaxAngularSpeed:           7
+```
+
+`ProjectSettings/TimeManager.asset`:
+
+```text
+Fixed Timestep: 0.01   (= 100 Hz; default Unity: 0.02 / 50 Hz) ✓
+```
+
+**Hallazgo crítico durante el diagnóstico**: `JengaGrabbable.EndGrab` desfreezía el rigidbody y lo dejaba caer, pero **no preservaba ningún componente de velocidad**. Si el usuario "sacudía" el bloque y luego lo soltaba, el momentum del movimiento se descartaba — el bloque caía en línea recta desde la última posición de la mano. Esta era una falla de feel más importante que cualquier ajuste de friction.
+
+Conclusión del diagnóstico: los parámetros globales (solver iterations, contact offset, timestep) ya estaban en valores razonables. Las palancas con margen real eran (a) el comportamiento del release del grab y (b) el conjunto friction/mass/combine.
+
+---
+
+### Decisión de arquitectura — Opción 5 híbrida
+
+Se evaluaron cinco estrategias de tuning, listadas en orden creciente de costo de implementación:
+
+| Estrategia | Descripción | Pros | Contras |
+|---|---|---|---|
+| 1. Inspector + SO | Editar valores en Inspector con SO | Cero código de UI | Hay que salir del visor por cada cambio |
+| 2. OnGUI overlay | HUD desktop estilo `PerformanceHUD` | Reuso del patrón existente | No visible en VR — requiere doble pantalla |
+| 3. World-space Canvas | Panel UI dentro de la escena VR | Visible en visor | Más código (Canvas, sliders) |
+| 4. Presets predefinidos | Hotkeys que cargan configs nombradas | Estructura para A/B testing | Limitado a puntos pre-elegidos |
+| 5. **Híbrida** | SO como source-of-truth + HUD runtime + presets | Cobertura total | Más código pero amortizado |
+
+Se eligió la opción 5 con dos modos de render del HUD: **OnGUI** para desktop (útil al hacer screencast o cuando se ve el reflejo del Game view en el monitor externo) y **world-space Canvas con TextMeshPro** para que sea visible dentro del visor.
+
+---
+
+### `JengaPhysicsConfig` — ScriptableObject como source-of-truth
+
+Archivo nuevo:
+
+```text
+Assets/Jenga/Physics/JengaPhysicsConfig.cs
+```
+
+Agrupa **27 parámetros tuneables** en un único asset, organizados por categoría visual (`[Header]`) para el Inspector:
+
+* **Block PhysicMaterial** (5): staticFriction, dynamicFriction, bounciness, frictionCombine, bounceCombine.
+* **Block Rigidbody** (5): mass, drag, angularDrag, collisionDetection, interpolation.
+* **Project Physics globals** (5): solverIterations, solverVelocityIterations, contactOffset, bounceThreshold, sleepThreshold.
+* **Grab feel** (4): grabPositionLerp, preserveVelocityOnRelease, releaseVelocitySamples, releaseVelocityMax.
+* **Tower build** (3): horizontalSpacing, verticalSpacing, dropHeight.
+
+`[CreateAssetMenu]` hace que sea trivial crear nuevos presets desde el Project window. Cada parámetro tiene `[Tooltip]` con rango sugerido y referencia comparativa (Jenga real, default Unity, default proyecto actual). `[Range]` clamps en el Inspector pero **no en runtime** (el HUD usa límites propios para permitir overshoot exploratorio).
+
+Método `CopyFrom(other)`: copia campo a campo desde otro `JengaPhysicsConfig`. Usado por el runtime cuando se carga un preset (no se reasigna la referencia, se mutan los campos de la copia in-memory para que la suscripción de eventos se mantenga estable).
+
+---
+
+### `JengaPhysicsRuntime` — singleton de aplicación
+
+Archivo nuevo:
+
+```text
+Assets/Jenga/Physics/JengaPhysicsRuntime.cs
+```
+
+Componente singleton de escena con `[DefaultExecutionOrder(-50)]` para que aplique los project settings **antes** de que el `JengaTowerGenerator` o cualquier rigidbody empiece a simular. Si lo dejábamos sin orden explícito, la torre podía construirse con solver iterations default antes de que se sobrescriba.
+
+**Patrón de live-config sin mutación de assets**:
+
+```csharp
+JengaPhysicsConfig source = overrideInitialConfig ?? presets[0];
+liveConfig = Instantiate(source);            // deep copy in-memory
+liveConfig.name = $"Live ({source.presetName})";
+```
+
+`ScriptableObject.Instantiate()` crea una copia que vive en memoria y no se persiste. Mutarla no toca el `.asset` en disco. Los presets quedan inmutables aunque el HUD modifique `liveConfig` durante Play.
+
+**Aplicación a cuatro targets independientes**:
+
+```csharp
+public void ApplyActive()
+{
+    ApplyToProjectPhysics(liveConfig);   // Physics.* static setters
+    ApplyToPhysicMaterial(liveConfig);   // mutación in-memory del PhysicMaterial asset
+    LastAppliedBlockCount = ApplyToBlocks(liveConfig);  // FindObjectsOfType<JengaBlockTag>
+    ApplyToGrabbables(liveConfig);       // FindObjectsOfType<JengaGrabbable> + SetTuning(...)
+    OnConfigApplied?.Invoke(liveConfig);
+}
+```
+
+Detalles relevantes:
+
+* `Physics.defaultSolverIterations` (y derivados) son setters estáticos sin overhead — se setean al instante.
+* La mutación del `PhysicMaterial` asset durante Play **es revertida automáticamente por Unity al salir de Play mode** — por eso decimos que el tuner es "experimentar libremente, persistir manualmente". Si se llega a una combinación valiosa, se anota o se edita el preset SO fuera de Play.
+* `FindObjectsOfType<JengaBlockTag>()` se llama solo en cada `ApplyActive()` (no por frame). Costo despreciable.
+* `ApplyToGrabbables` invoca `JengaGrabbable.SetTuning(positionLerp, preserveVelocity, samples, max)` — API pública nueva que expusimos para no acoplar el grabbable al runtime.
+
+API pública del runtime:
+
+```text
+LoadPreset(int idx)        // copia preset[idx] → liveConfig, re-aplica
+CycleNextPreset() / CyclePrevPreset()
+ApplyActive()              // re-aplica liveConfig sin tocar nada
+RebuildTower()             // pasa los spacings al generator y dispara ResetTower()
+```
+
+`RebuildTower` modifica los campos públicos de `JengaTowerGenerator.Instance` (`horizontalSpacing`, `verticalSpacing`, `dropHeight`) y luego invoca `ResetTower()`. Necesario porque esos parámetros se consumen durante el build, no por frame.
+
+---
+
+### `JengaPhysicsTunerHUD` — render dual (desktop + VR)
+
+Archivo nuevo:
+
+```text
+Assets/Jenga/Physics/JengaPhysicsTunerHUD.cs
+```
+
+Maneja entrada por teclado y dibuja la misma información en dos contextos: overlay OnGUI 2D (visible en el monitor) y panel world-space TMP (visible en VR).
+
+#### Sistema de parámetros tuneables
+
+Lista de `Tunable` definidos en `BuildTunables()`. Cada uno tiene:
+
+```text
+label           string mostrado en el HUD
+read(config)    función que devuelve el valor formateado como string
+step(config, dir) función que mueve el valor +1 o -1 step
+requiresRebuild bool — marca con [B] los que necesitan rebuild
+```
+
+Factory helpers para los tipos comunes:
+
+```csharp
+FloatT("Static Friction", c => c.staticFriction, (c,v) => c.staticFriction = v, 0.05f, 0f, 2f)
+IntT("Solver Iterations", c => c.solverIterations, (c,v) => c.solverIterations = v, 1, 1, 30)
+BoolT("Preserve Vel @Release", c => c.preserveVelocityOnRelease, (c,v) => c.preserveVelocityOnRelease = v)
+EnumT_FrictionCombine()  // ciclado sobre todos los valores del enum
+```
+
+`GetStepMultiplier()` lee Shift / Alt actual y devuelve `10` / `0.1` / `1`. Permite cambios gruesos (`Shift+↑`) o fino (`Alt+↑`) sobre el mismo step base.
+
+#### Hotkeys finales
+
+```text
+F6                  toggle visibilidad
+Tab / Shift+Tab     siguiente / anterior parámetro
+↑ / ↓  (o + / -)    ajustar valor (Shift = x10, Alt = x0.1)
+1-9                 cargar preset N directamente
+[ / ]               ciclar prev / next preset
+R                   re-aplicar liveConfig
+B                   reconstruir torre (parámetros marcados [B])
+P                   re-anclar panel VR a la vista actual
+Esc                 cerrar
+```
+
+#### Caché de texto + render dual
+
+```csharp
+private void Update() { ...; _cachedText = BuildText(rt); }
+
+private void OnGUI()      { GUI.Label(rect, _cachedText, style); }
+private void LateUpdate() { _vrText.text = _cachedText; }
+```
+
+`BuildText()` se llama una sola vez por frame en Update y produce el string formateado con rich text tags (`<b>`, `<color=#xxx>`). Tanto IMGUI como TextMeshPro entienden los mismos tags, por lo que un solo string sirve a los dos renderers.
+
+#### Construcción programática del world-space Canvas
+
+`EnsureVrCanvas()` crea en runtime: `Canvas` (renderMode = WorldSpace) + `CanvasScaler` + `GraphicRaycaster` + `Image` (background semi-opaco) + `TextMeshProUGUI` (richText, no word-wrap, alineación TopLeft, fuente 26pt). El `sizeDelta` se mantiene en píxeles UI (900×1100) y `localScale` se calcula para que el ancho en metros sea el configurado en Inspector (`vrPanelWidthM`, default 0.45 m).
+
+No es hijo de la escena al crearse — `SetParent(null, true)`. Esto se hace para que el panel viva en world space puro, sin heredar transformaciones de algún padre. Su transform se setea explícitamente en `PinVrCanvasToView`.
+
+#### UX de anclaje del panel
+
+Decisión de diseño: **no seguir la cabeza por defecto**. Un panel que sigue el HMD cada frame es nauseabundo y mata el ground truth visual. En cambio:
+
+* Al pulsar F6 (toggle visible), el panel se ancla a la vista actual: posición = `headPos + forward * distance + right * lateral + up * vertical`, rotación = `LookRotation(-(panelPos→headPos), worldUp)`.
+* Una vez anclado, queda fijo en world space. El usuario puede mover la cabeza sin que el panel lo siga.
+* La hotkey **P** re-ancla a la vista actual — útil si te moviste mucho y el panel quedó lejos.
+* Toggle visible mediante Inspector: `vrPanelFollowHead = true` para activar follow continuo (modo "wrist menu"), por si el usuario lo prefiere.
+
+#### Coexistencia con NGO
+
+Cuando NGO está corriendo, el HUD sigue funcionando pero los cambios afectan **solo a esta instancia**. No hay propagación automática a remote clients. Documentado en docstring del archivo. La razón es que sincronizar via ServerRpc el config completo a cada cambio (potencialmente decenas por segundo) sería un anti-patrón. La opción correcta sería sincronizar solo al confirmar un preset, pero eso requiere refactor para distinguir "tuning" vs "applied". Decisión: dejar fuera de scope.
+
+---
+
+### `JengaGrabbable` — preservación de velocidad al soltar
+
+Archivo modificado:
+
+```text
+Assets/Jenga/JengaGrabbable.cs
+```
+
+Cambio principal: agregar un ring buffer de 8 muestras `(position, time)` que se llena cada `FixedUpdate` durante el grab. En `EndGrab`, se estima la velocidad promedio sobre las últimas N muestras y se asigna al Rigidbody antes de soltarlo.
+
+```csharp
+private const int BufSize = 8;
+private readonly Vector3[] _posBuf = new Vector3[BufSize];
+private readonly float[] _timeBuf = new float[BufSize];
+private int _bufHead;   // próximo slot a escribir
+private int _bufCount;  // muestras válidas (max BufSize)
+
+void FixedUpdate()
+{
+    if (!isGrabbed) return;
+    // ... cómputo de target y rb.MovePosition(newPos) ...
+    _posBuf[_bufHead] = newPos;           // ojo: posición COMANDADA, no transform.position
+    _timeBuf[_bufHead] = Time.fixedTime;
+    _bufHead = (_bufHead + 1) % BufSize;
+    if (_bufCount < BufSize) _bufCount++;
+}
+
+public void EndGrab()
+{
+    Vector3 estimatedVel = Vector3.zero;
+    if (preserveVelocityOnRelease && _bufCount >= 2)
+    {
+        int n = Mathf.Min(_bufCount, releaseVelocitySamples + 1);
+        int newest = (_bufHead - 1 + BufSize) % BufSize;
+        int oldest = (_bufHead - n + BufSize) % BufSize;
+        float dt = _timeBuf[newest] - _timeBuf[oldest];
+        if (dt > 1e-6f)
+        {
+            estimatedVel = (_posBuf[newest] - _posBuf[oldest]) / dt;
+            if (releaseVelocityMax > 0f && estimatedVel.magnitude > releaseVelocityMax)
+                estimatedVel = estimatedVel.normalized * releaseVelocityMax;
+        }
+    }
+    // ... unfreeze constraints, clear grabPoint ...
+    if (preserveVelocityOnRelease) rb.velocity = estimatedVel;
+}
+```
+
+Decisiones técnicas:
+
+* **Buffer ring**: tamaño fijo 8 evita allocations. `_bufHead` apunta al próximo slot, `_bufCount` indica cuántos slots tienen datos válidos (≤ BufSize).
+* **Posición comandada vs `transform.position`**: registramos `newPos` (lo que pedimos a `MovePosition`) en vez de la posición real del rigidbody. Razón: si el bloque está empujado contra otro y no puede avanzar, `transform.position` se queda quieto y la velocidad estimada sería cero, aunque el usuario está claramente moviendo la mano. Usar la posición comandada captura la **intención** del usuario.
+* **Sample count configurable**: `releaseVelocitySamples` (default 3) define cuántos intervalos usar para el promedio. Más muestras = release más suave (mayor latencia perceptual); menos muestras = release más responsivo pero más sensible a jitter.
+* **Clamp `releaseVelocityMax`**: el hand tracking del Vive Focus Vision puede generar spikes de ~10 m/s por jitter de un solo frame. Sin clamp, soltar un bloque mientras la mano está estática puede impartirle una velocidad absurda. El default de 3 m/s es generoso (un swing humano normal va ~1-2 m/s).
+* **`angularVelocity` queda en 0**: durante el grab tenemos `RigidbodyConstraints.FreezeRotation`, así que no hay historial de rotación que conservar. Si quisiéramos rotación al soltar, habría que cambiar todo el modelo del grab (sin freeze + un buffer de rotaciones). Fuera de scope.
+
+API pública nueva:
+
+```csharp
+public void SetTuning(float positionLerp, bool preserveVelocity, int velocitySamples, float velocityMax)
+```
+
+Llamada por `JengaPhysicsRuntime.ApplyToGrabbables` cada vez que se aplica una config. Permite cambiar el comportamiento del grab sin tocar el prefab.
+
+---
+
+### `JengaTowerGenerator` — auto-build standalone
+
+Archivo modificado:
+
+```text
+Assets/Jenga/JengaTowerGenerator.cs
+```
+
+Problema observado durante el primer test: si `NetworkManager.Singleton` está en escena (lo está), `Start()` registra el handler `OnServerStarted` y espera. Si el usuario no pulsa H ni C, la torre no se construye nunca. Tuvo que pulsar H solo para ver bloques que después iba a tunear single-player.
+
+Fix: dos campos nuevos en el Inspector:
+
+```text
+autoBuildIfNoServer  bool (default true)
+autoBuildDelaySec    float (default 2.0)
+```
+
+Y una corutina nueva:
+
+```csharp
+private IEnumerator AutoBuildIfStandaloneRoutine()
+{
+    yield return new WaitForSeconds(autoBuildDelaySec);
+    if (hasBuiltOnce) yield break;
+    var nm = NetworkManager.Singleton;
+    if (nm != null && nm.IsListening) yield break;
+    Debug.Log("[JengaTowerGenerator] No se inicio NGO; construyendo torre en modo standalone para tuning.");
+    yield return StartCoroutine(InitialBuildRoutine());
+}
+```
+
+Flag adicional `hasBuiltOnce` agregado a `InitialBuildRoutine` para hacer la operación idempotente: si por alguna razón el flujo NGO arranca durante el timeout y dispara `InitialBuildRoutine`, el `AutoBuildIfStandaloneRoutine` que espera el timeout lo detecta vía `hasBuiltOnce` y aborta sin doble-construir.
+
+Race conditions cubiertas:
+
+* H pulsado **antes** de los 2s → `OnServerStarted` dispara `InitialBuildRoutine` → marca `hasBuiltOnce = true` → cuando el timeout vence, el auto-build aborta.
+* H pulsado **después** de los 2s → auto-build ya corrió → `hasBuiltOnce = true` → cuando NGO arranca, `HandleServerStarted` dispara `InitialBuildRoutine` que ahora aborta. **Nota**: esto significa que si el usuario empieza tuneando standalone y luego pulsa H, la torre no se reconstruye networked. Es un caveat aceptado del modo single-player de tuning.
+
+---
+
+### Editor tool — `JengaPhysicsPresetCreator`
+
+Archivo nuevo:
+
+```text
+Assets/Jenga/Physics/Editor/JengaPhysicsPresetCreator.cs
+```
+
+Bajo guard `#if UNITY_EDITOR` (no debe compilar en builds). MenuItem en `XR Collab > Jenga > Create or Reset Default Physics Presets`. Idempotente: borra los `.asset` existentes en `Assets/Jenga/Physics/Presets/` y los regenera con los valores hard-codeados en C#. Esto permite re-correrlo como "factory reset" si el usuario tocó alguno y quiere volver al estado conocido.
+
+Después de correrlo se abre un diálogo `EditorUtility.DisplayDialog` con instrucciones de wiring (asignar al array `presets` del runtime, verificar `Block Material`, etc.). Esto evita que el usuario olvide los pasos manuales.
+
+---
+
+### Los 5 presets — valores y racional
+
+| Param | Baseline | RealWood | StableDemo | LoosePlay | PolishedVR |
+|---|---|---|---|---|---|
+| Static Friction | 0.8 | 0.45 | 1.0 | 0.30 | 0.60 |
+| Dynamic Friction | 0.8 | 0.40 | 0.85 | 0.25 | 0.50 |
+| Bounciness | 0 | 0.02 | 0 | 0.05 | 0.01 |
+| Friction Combine | Maximum | Average | Maximum | Average | Average |
+| Bounce Combine | Minimum | Average | Minimum | Average | Average |
+| Mass (kg) | 0.1 | 0.015 | 0.15 | 0.07 | 0.08 |
+| Linear Drag | 0 | 0 | 0.05 | 0 | 0 |
+| Angular Drag | 0.2 | 0.05 | 0.5 | 0.1 | 0.15 |
+| Collision Detection | CtnDyn | CtnDyn | CtnDyn | CtnDyn | CtnDyn |
+| Interpolation | Interp | Interp | Interp | Interp | Interp |
+| Solver Iterations | 12 | 12 | 15 | 10 | 12 |
+| Solver Vel.Iter | 4 | 4 | 5 | 3 | 4 |
+| Contact Offset | 0.005 | 0.003 | 0.005 | 0.005 | 0.004 |
+| Bounce Threshold | 2.0 | 2.0 | 4.0 | 2.0 | 2.5 |
+| Sleep Threshold | 0.005 | 0.005 | 0.01 | 0.005 | 0.005 |
+| Grab Pos Lerp | 0.35 | 0.5 | 0.30 | 0.4 | 0.5 |
+| Preserve Vel | ON | ON | ON | ON | ON |
+| Release Vel Samples | 3 | 3 | 4 | 4 | 3 |
+| Release Vel Max | 3 | 3 | 2 | 4 | 3.5 |
+| H-Spacing (mm) | 0.5 | 0.5 | 0 | 1.0 | 0.7 |
+| V-Spacing (mm) | 0.2 | 0.2 | 0 | 0.3 | 0.2 |
+| Drop Height (mm) | 10 | 8 | 5 | 15 | 12 |
+
+**Lógica de cada preset**:
+
+* **Baseline**: replica exacta del estado pre-tuner. Existe para A/B comparación.
+* **RealWood**: aproxima la física de un Jenga real. Coeficiente de fricción madera-madera ≈ 0.25-0.5; masa real ≈ 14 g; bounciness mínima; friction combine Average elimina la sensación pegajosa que da Maximum. Contact offset bajado a 3 mm porque los bloques son tan livianos que el default 5 mm se "siente" como flotación.
+* **StableDemo**: torre anti-caos para demos a usuarios novatos. Friction Maximum + mass alta + angular drag 0.5 (damping fuerte) + drop height bajo + spacings cero. La torre aguanta jugadas torpes.
+* **LoosePlay**: el opuesto. Friction baja + bounciness leve + spacing aumentado (1 mm horizontal) + drop height alto (15 mm). La torre es frágil; útil para evaluar el comportamiento de cascadas y el release velocity.
+* **PolishedVR**: compromiso afinado para la versión "de producción". Friction intermedia con combine Average; masa 80 g (presente pero no pesada); Grab Lerp 0.5 (follow casi 1:1 con la mano); release velocity samples 3 con clamp 3.5 m/s.
+
+Algunos parámetros quedan **uniformes** en todos los presets porque son decisiones técnicas, no de feel:
+
+* `Collision Detection = ContinuousDynamic` — la única opción razonable para objetos pequeños en movimiento rápido. Sin esto, los bloques se atraviesan al moverlos rápido.
+* `Interpolation = Interpolate` — suaviza el render entre ticks de física. La alternativa `Extrapolate` da artefactos en colisiones; `None` se ve como tartamudeo en 90 Hz.
+* `Linear Drag = 0` (excepto StableDemo) — drag amortigua incluso bajo gravedad, hace que los bloques caigan en cámara lenta. Rompe el feel de masa.
+
+---
+
+### Caveats del prototipo de tuning
+
+* **Mutaciones de assets en Play no persisten**. PhysicMaterial y los SO presets se revierten al salir de Play. Es seguro experimentar pero los valores ganadores hay que copiarlos a mano (o editar el preset SO fuera de Play). Una v2 podría agregar un hotkey "S = save current to preset slot N" que use `EditorUtility.SetDirty` + `AssetDatabase.SaveAssets` en Editor.
+* **Cambios al `DynamicsManager.asset` SÍ persisten** entre sesiones de Play. Si llegás a una configuración global que te gusta, queda como default del proyecto.
+* **Tower spacings requieren rebuild** (marcados `[B]` en el HUD). Los demás cambios se aplican en vivo.
+* **NGO no sincroniza el tuning**. Single-player only. Si vas a tunear, no pulses H/C.
+* **No hay audio**. Mencionado en propuesta original ("audio de impacto cambia mucho la percepción") pero fuera de scope de esta iteración. Próximo candidato natural si se quiere subir el realismo perceptual sin tocar más física.
+* **No hay LayerMask dedicado** para el tuner. El HUD canvas hereda el layer del GameObject del componente. Si se agregan colliders al canvas (no debería pero el `GraphicRaycaster` puede inferir cosas), conviene moverlo a un layer excluido del raycast del Jenga.
+* **El panel VR no es interactivo**. Solo display. La interacción es por teclado físico (el usuario tipea ciego mientras tiene el visor puesto). Una v2 podría agregar interacción por raycast de mano sobre los sliders, pero eso requiere XR Interaction Toolkit o equivalente.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| ScriptableObject de config con 27 parámetros tuneables | ✅ `JengaPhysicsConfig` con `[CreateAssetMenu]` |
+| Runtime singleton que aplica configs en vivo | ✅ `JengaPhysicsRuntime` con `[DefaultExecutionOrder(-50)]` |
+| Aplicación a 4 targets (Project Physics, PhysicMaterial, Rigidbodies, Grabbables) | ✅ Todos vía API pública del runtime |
+| Live config como deep copy in-memory de un preset | ✅ Vía `ScriptableObject.Instantiate` |
+| HUD desktop OnGUI | ✅ Toggle F6, bottom-left para no chocar con HUDs existentes |
+| HUD VR world-space TMP canvas | ✅ Programmatic, pin-to-view + repin con P |
+| Sistema de tunables con factory helpers (float/int/bool/enum) | ✅ Lista de `Tunable` con step + read lambdas |
+| Step multipliers Shift (x10) / Alt (x0.1) | ✅ Ambos modificadores |
+| Presets cargables por hotkey 1-9 + ciclado [/] | ✅ Con eventos `OnConfigApplied` |
+| Preservación de velocidad al soltar bloque | ✅ Ring buffer 8 samples + clamp configurable |
+| Auto-build de torre sin pulsar H | ✅ Timeout 2s, idempotente con `hasBuiltOnce` |
+| Editor tool para generar 5 presets con un click | ✅ Idempotente, con dialog post-ejecución |
+| 5 presets tuneados (Baseline, RealWood, StableDemo, LoosePlay, PolishedVR) | ✅ Hard-coded en C# para reproducibilidad |
+| No-interferencia con poke / drag / NGO / Jenga raycast | ✅ Sin colliders, sin layers nuevos, sin tocar el flujo NGO existente |
+
+---
+
+### Próximos pasos
+
+* **Audio de impacto**. Probablemente la mejora más grande de realismo perceptual por menos esfuerzo. `OnCollisionEnter` en cada bloque, volumen proporcional a `collision.relativeVelocity.magnitude`, sample de madera con leve variación de pitch. Estimado: 50 líneas, una sesión.
+* **Save-current-to-preset** desde el HUD (modo Editor). Hotkey S que copia liveConfig sobre el preset asset activo y llama `EditorUtility.SetDirty + AssetDatabase.SaveAssets`. Convierte el tuning de "anotar valores y editarlos manual" a "guardar y olvidar".
+* **Logging del preset activo al `AcquisitionEventManager`**. Cada `LoadPreset` emite un evento `JENGA_PHYSICS_PRESET` con el nombre. Permite análisis offline correlacionando preset activo con métricas de interacción (cantidad de bloques movidos, caídas accidentales, etc.) para A/B testing con participantes.
+* **Network propagation del config**. Si en el futuro se quiere tunear con dos participantes en LAN, hace falta serializar el config completo por ServerRpc al cambiar. El truco es no spammear (un cambio por frame con un slider sería ~30 RPCs/s) — agrupar con debounce de 100 ms.
+* **Métricas en el HUD**. Mostrar FPS, p95 de física, cantidad de contactos activos. Permite ver si subir solver iterations realmente cuesta o no.
+* **Probar con 2-3 participantes reales en VR**. El tuning con un solo usuario es inevitablemente sesgado. Vale la pena hacer una sesión con 3 personas evaluando A/B entre RealWood / PolishedVR / Baseline y promediar las preferencias.
+
+---
+
 ## 2026-05-21 — Representación de manos por esqueleto (local y networked) para mejorar presencia
 
 Branch activo: `multiplayer-prototype-fixed` (mismo día, sesión continuada).
