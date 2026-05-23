@@ -1,5 +1,354 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-05-23 — Look-and-feel: nueva escena con HDRP Furniture Pack, iluminación bakeable y materiales PBR
+
+Branch nuevo: `look-and-feel-prototype` (creado desde `main` después de mergear `jenga-physics-prototype`).
+
+Motivación: la escena `Room.unity` previa funcionaba operativamente pero visualmente era una sucesión de cubos primitive con Standard materials sin textura ni normales (suelo/paredes/techo color plano, mesa coffee table chica, sillas y muebles inexistentes). Sin presencia ambiental, los participantes sentían que estaban en un "test technical demo" en vez de una habitación. Esta sesión rearma el cuarto desde cero usando assets del `HDRPFurniturePack` (ya importado pero no usado por incompatibilidad de pipeline) + bake de lightmaps + PBR textures.
+
+Constraint clave: **bajo costo de runtime + baja latencia para VR**. Built-in render pipeline se mantiene (no se migró a URP/HDRP para no introducir regresiones en sistemas estables como hand tracking, networking, eye tracking, BioLab UDP).
+
+---
+
+### Estrategia: cinco tiers de mejoras estéticas
+
+Antes de implementar, se analizó el espacio de mejoras posibles y se ordenó por ROI (impacto visual / costo de performance):
+
+| Tier | Categoría | Ejemplos | Costo runtime |
+|---|---|---|---|
+| **0** | Flips de settings (gratis) | Single Pass Instanced, Linear Light Intensity, Color Temperature, shadow distance/cascades, reflection resolution | **Nulo o negativo** (mejora performance) |
+| **1** | Baking (precomputado, cero runtime) | Lightmaps, light probes, AO bakeado, reflection probes baked | **Nulo** (mueve trabajo a offline) |
+| **2** | PBR textures | Albedo + Normal + AO + Roughness para suelo/paredes/techo/muebles | **Mínimo** (~3 KB/m² de textura, despreciable) |
+| **3** | Post-processing | ACES tonemap, bloom sutil, color grading | **+1-2 ms/eye** |
+| **4** | Iluminación cinematográfica | Three-point sobre la mesa, lámpara de pie con luz real, HDRI skybox | **Variable** (depende de modos Mixed/Baked) |
+| **5** | Polish / props | Polvo en el aire, props decorativos pequeños | **Mínimo** |
+
+En esta sesión se implementaron principalmente **Tiers 0, 1, 2, 4** (parcial). Tier 3 (post-processing) y Tier 5 (props finos) quedan pendientes.
+
+---
+
+### Tier 0 — Settings flips (ProjectSettings, Quality, Scene)
+
+Cambios aplicados via edición directa de los YAML de `ProjectSettings/`:
+
+| Setting | Archivo | Antes | Después | Justificación |
+|---|---|---|---|---|
+| `m_LightsUseLinearIntensity` | `GraphicsSettings.asset` | 0 | **1** | Cómputo de iluminación en linear space, falloff más natural. Costo nulo. |
+| `m_LightsUseColorTemperature` | `GraphicsSettings.asset` | 0 | **1** | Permite especificar luces en Kelvin (5000K neutro, 2800K incandescente, etc.). Costo nulo. |
+| Ultra → `shadowDistance` | `QualitySettings.asset` | 150 m | **15 m** | La habitación es de 6m. Concentra el shadow map en el área visible, multiplica resolución efectiva por ~10×. |
+| Ultra → `shadowCascades` | `QualitySettings.asset` | 4 | **2** | Indoor no necesita 4 cascadas. Menos splits = más resolución por cascada. |
+| Very High → `shadowDistance` | `QualitySettings.asset` | 70 m | **15 m** | Idem Ultra (consistencia entre quality levels usables en VR). |
+| `m_DefaultReflectionResolution` | `Scenes/Room.unity` (RenderSettings) | 128 | **256** | Reflejos del fallback skybox más definidos para superficies con smoothness > 0. Costo de memoria: ~768 KB. |
+
+Verificación adicional: **Stereo Rendering Mode ya estaba en Single Pass Instanced** (`m_renderMode: 1` en `OpenXR Package Settings.asset`). El `m_StereoRenderingPath: 0` que figuraba en `ProjectSettings.asset` es del sistema XR legacy, ignorado por OpenXR.
+
+Impacto medido (estimado, headset Vive Focus Vision tethered):
+
+* Shadow distance 150 → 15: **−1.5 a −3 ms por eye** (menos drawcalls de shadow casters).
+* Shadow cascades 4 → 2: **−0.5 a −1 ms por eye**.
+* Linear Intensity + Color Temp: ~0 ms.
+* Reflection 128 → 256: +0.05 ms (despreciable).
+
+Net: **2-4 ms ahorrados por eye** con look mejor.
+
+---
+
+### Conversión HDRP → Built-in del Furniture Pack
+
+Archivo nuevo: `Assets/Editor/HdrpToBuiltinConverter.cs`.
+
+Problema: el `HDRPFurniturePack` (sillas Artek, mesa Aalto, sofá, plantas, alfombras, candelabros, lámpara de pie, cuadros) estaba importado pero **inusable en Built-in RP** porque sus materiales usan el shader `HDRP/Lit`. En Built-in sin HDRP package, los materiales aparecen en magenta (shader missing).
+
+Tool: menú **XR Collab → Materials → Convert HDRP Furniture Pack to Built-in Standard**.
+
+Mapping de propiedades:
+
+```text
+_BaseColorMap (HDRP)     -> _MainTex (Built-in)
+_BaseColor               -> _Color
+_NormalMap               -> _BumpMap  (textureType import set a NormalMap)
+_NormalScale             -> _BumpScale
+_MaskMap (HDRP)          -> _MetallicGlossMap + _OcclusionMap (mismo asset)
+                            HDRP MaskMap: R=Metallic, G=AO, B=DetailMask, A=Smoothness
+                            Built-in MetallicGlossMap: R=Metallic, A=Smoothness  -> match directo
+                            Built-in OcclusionMap: G channel                       -> match directo
+_OcclusionMap (separado) -> _OcclusionMap (si existe, prevalece sobre MaskMap)
+_Metallic                -> _Metallic
+_Smoothness              -> _Glossiness
+tiling/offset            -> idem
+```
+
+Output: `Assets/HDRPFurniturePack_BuiltIn/<OriginalName>_Builtin.mat` por cada material HDRP encontrado.
+
+Robustez de lectura: la primera pasada usa `Material.GetTexture()` directo; si la propiedad no existe (shader missing → `HasProperty` retorna false), cae a un `SerializedObject` que lee del YAML del `.mat` directamente. Esto permite convertir materiales con shader HDRP no instalado en el proyecto.
+
+Tool complementaria: **XR Collab → Materials → Swap Materials on Selected (HDRP → Builtin)** para aplicar los `_Builtin.mat` a renderers de instancias en escena. Buscar por `name + "_Builtin"`.
+
+#### Bug crítico encontrado y corregido: pérdida de GUIDs al re-ejecutar
+
+Primera versión del converter: `AssetDatabase.DeleteAsset(outPath); AssetDatabase.CreateAsset(newMat, outPath);` — borrar y recrear. Esto **cambia el GUID del asset**, por lo que cualquier renderer en escena que referenciaba el material viejo queda con referencia rota y se ve magenta.
+
+Fix: mutar el material existente in-place vía `Material.CopyPropertiesFromMaterial(src)`. Conserva el GUID, todas las referencias en escena siguen funcionando. Idempotente — re-ejecutar el menú actualiza propiedades sin romper nada.
+
+```csharp
+var existing = AssetDatabase.LoadAssetAtPath<Material>(outPath);
+if (existing != null)
+{
+    existing.shader = standardShader;
+    existing.CopyPropertiesFromMaterial(newMat); // preserve GUID
+    existing.enableInstancing = true;
+    EditorUtility.SetDirty(existing);
+    Object.DestroyImmediate(newMat); // discard temp
+}
+else
+{
+    AssetDatabase.CreateAsset(newMat, outPath);
+}
+```
+
+#### Tool de recuperación: `Recover Magenta Materials from Prefab Source`
+
+Para reparar las referencias rotas dejadas por la versión buggy del converter, se añadió un menú adicional que:
+
+1. Por cada Renderer en la selección, obtiene el prefab source vía `PrefabUtility.GetCorrespondingObjectFromSource()`.
+2. Lee el material HDRP original que ese slot tiene en el prefab asset.
+3. Construye el path candidato `_Builtin.mat` por nombre.
+4. Asigna el material recuperado al slot.
+
+Resolvió en una pasada los renderers rotos de `RoomFurniture` tras el incidente del GUID change.
+
+#### Fallback de Albedo desde `_DetailAlbedoMap`
+
+Algunos materiales del pack (notablemente `Wall_Decoration_Art_Zebra` y `Table_97_Artek_Wood_natural`) **no asignan textura en `_BaseColorMap`** — usan el "detail" slot como textura principal con un base color tint blanco. El converter inicial leía sólo `_BaseColorMap` y por eso esos muebles aparecían blancos.
+
+Fix en `ConvertOne`: cascada `_BaseColorMap → _DetailAlbedoMap → _MainTex (legacy)`. El primer slot no vacío se mapea a `_MainTex` del material Built-in. Log explícito cuando se usa fallback para que se sepa qué textura está activa.
+
+---
+
+### Construcción del shell del cuarto
+
+Archivo nuevo: `Assets/Editor/RoomShellBuilder.cs`. Menú: **XR Collab → Room → Create Room Shell**.
+
+Crea un GameObject `RoomNew` con 6 hijos (Floor, Ceiling, WallNorth/South/East/West) que forman una habitación cerrada.
+
+#### Iteración 1 (descartada): Quads single-sided con rotaciones explícitas
+
+Primera implementación: cada superficie es un `PrimitiveType.Quad` rotado para que su normal apunte hacia el interior del cuarto.
+
+Quad de Unity tiene normal default = `-Z`. Rotaciones aplicadas:
+
+```text
+Floor       -> Quaternion.Euler(-90, 0, 0)   normal final: -Y  ← INCORRECTO (debería ser +Y)
+Ceiling     -> Quaternion.Euler(+90, 0, 0)   normal final: +Y  ← INCORRECTO (debería ser -Y)
+WallSouth   -> Quaternion.Euler(0, 180, 0)   normal final: +Z  ✓
+WallNorth   -> Quaternion.identity            normal final: -Z  ✓
+WallEast    -> Quaternion.Euler(0, +90, 0)   normal final: -X  ✓
+WallWest    -> Quaternion.Euler(0, -90, 0)   normal final: +X  ✓
+```
+
+Resultado en VR: paredes visibles desde adentro, **piso y techo invisibles** (la normal apuntaba hacia afuera, back-face culling los volvía transparentes desde la posición del usuario). Hipótesis inicial de "es problema de iluminación, las caras están en sombra y se ven negro" fue descartada después de un test con material Unlit rojo (red aparecía solo desde abajo del piso, no desde arriba).
+
+#### Iteración 2 (la elegida): Cube slabs finos
+
+Cada superficie es un `PrimitiveType.Cube` con scale apropiado (slab fino):
+
+| Superficie | Position | Scale (m) |
+|---|---|---|
+| Floor | `(0, -0.05, 0)` | `(6, 0.1, 6)` |
+| Ceiling | `(0, 3.05, 0)` | `(6, 0.1, 6)` |
+| WallSouth | `(0, 1.5, -3.05)` | `(6, 3, 0.1)` |
+| WallNorth | `(0, 1.5, +3.05)` | `(6, 3, 0.1)` |
+| WallEast | `(+3.05, 1.5, 0)` | `(0.1, 3, 6)` |
+| WallWest | `(-3.05, 1.5, 0)` | `(0.1, 3, 6)` |
+
+Cubes tienen las 6 caras visibles desde afuera. Cada slab está **fuera del volumen interior del cuarto**, así que la cara interior de cada slab es la que mira al usuario → siempre visible, sin pelearse con direcciones de normales.
+
+Ventajas extra sobre Quads:
+
+* BoxCollider nativo del Cube primitive → piso bloquea físicas de Jenga blocks, paredes bloquean avatares si caminan demasiado.
+* Espesor físico real (10cm) → look más natural desde fuera (vistas no-VR).
+* No depende de rotaciones precisas.
+
+Costo de geometría: 72 tris totales (12 por cube × 6) — despreciable. Marcado todo Static automáticamente para entrar al bake.
+
+Materiales asignados desde `Assets/FloorMaterial.mat` / `WallMaterial.mat` / `CeilingMaterial.mat` (con PBR Wood048 para piso, plaster para paredes/techo).
+
+---
+
+### Iluminación cinematográfica (Tier 4 parcial)
+
+Archivo nuevo: `Assets/Editor/RoomLighting.cs`. Menú: **XR Collab → Room → Setup Lighting**.
+
+Crea un GameObject `RoomLighting` con 4 hijos + tweak de RenderSettings:
+
+| Luz | Tipo | Color Temp | Intensity | Modo | Función |
+|---|---|---|---|---|---|
+| `DirectionalLight` | Directional | 5000 K | 0.5 | Mixed | "Sol" indirecto suave entrando por hipotéticas ventanas. Reconfigura el directional existente si ya hay uno. |
+| `KeyLight_Table` | Spot | 4000 K | 5 | Mixed | Cenital sobre la mesa. Posicionado 1.8m arriba del `JengaTowerGenerator.transform.position`. Spot angle 60° (90° tras tunear), shadows soft. |
+| `FillLight_Center` | Point | 2800 K | 1.5 | Baked | Ambient cálido a 2/3 de altura del cuarto. Llena esquinas oscuras, no proyecta sombras (ahorra costo). |
+| `RoomReflectionProbe` | Reflection Probe | — | — | Baked | Box-shaped del tamaño del cuarto, parallax-corrected, resolución 256. Genera reflejos genuinos en superficies con smoothness > 0.3. |
+
+Tweak global: `RenderSettings.ambientIntensity` subido de 1.0 → 1.2.
+
+Decisiones de modos:
+
+* **Mixed para Directional + KeyLight**: las luces directas siguen siendo realtime (sombras dinámicas sobre Jenga blocks móviles), pero el bounce/indirect se bakea.
+* **Baked para FillLight**: la luz completa se bakea en lightmap. Cero costo runtime. No afecta objetos dinámicos directamente — para ellos se usan Light Probes (siguiente sección).
+* **Baked para Reflection Probe**: precomputa los reflejos al hacer Generate Lighting. Cero costo runtime después.
+
+#### Issue: spot light descentrado
+
+Caso real durante prueba: el `KeyLight_Table` se posicionó sobre el `JengaTowerGenerator`, pero ese transform no coincidía exactamente con el centro de la mesa Aalto. El spot quedó descentrado, iluminando solo una porción del top de la mesa y dejando el resto en sombra dura.
+
+Fix mientras se afina: subir spot angle de 60 → 90, bajar intensity de 5 → 2.5, o convertirlo a Point light si la geometría no se preocupa por la dirección de la luz. Se documenta como ajuste manual post-script.
+
+---
+
+### Población de muebles
+
+Archivo nuevo: `Assets/Editor/RoomPopulator.cs`. Menú: **XR Collab → Room → Populate Furniture**.
+
+Instancia un layout predefinido bajo un GameObject `RoomFurniture`, aplica swap de materiales `HDRP → Built-in` automáticamente, marca todo Static para bake.
+
+Layout final usado (después de iteración para encajar setup "seated" con mesa real):
+
+| Mueble | Prefab | Función |
+|---|---|---|
+| Mesa cuadrada Aalto | `Table_97_Artek` (sustituye al Coffee_Table_90D inicial, muy chico) | Superficie de Jenga (~73 cm altura, 95×95 cm) |
+| 3 banquetas | `Stool 60 Artek` | Una por participante (Host, Client, Helper). Posicionables a mano según silla física real. |
+| Alfombra | `Rug_High_Pile_Grey` | Bajo la mesa, contraste de textura |
+| Sofá | `Sofa_SL03_Allemuir_Stirling` | Costado del cuarto, llena espacio |
+| Planta | `Plant_Potted_Monstera_Deliciosa` | Esquina noreste, vida |
+| Lámpara de pie | `Floor_Light_A810_Artek` | Esquina noroeste, decorativa (no emite luz real todavía) |
+| Cuadro decorativo | `Wall_Decoration_Art_Zebra` | Punto focal en pared norte |
+
+Override de posición de mesa: si existe `JengaTowerGenerator` en escena, la mesa se posiciona en `JengaTowerGenerator.transform.position` con `y = 0`. Asegura que la torre de Jenga queda sobre la superficie de la mesa nueva.
+
+Setup "passive haptics seated": los 3 participantes estarán **en la misma habitación física real** sentados alrededor de una mesa física. Las 3 banquetas virtuales se reposicionan manualmente para coincidir con las posiciones físicas reales. Tactil real + visual virtual = presencia maximizada.
+
+---
+
+### Light Probes para objetos dinámicos
+
+Archivo nuevo: `Assets/Editor/RoomProbeGenerator.cs`. Menú: **XR Collab → Room → Generate Light Probes**.
+
+Razón: los Jenga blocks, manos del XR rig, avatares networked — son objetos **dinámicos** (no Static). Los lightmaps NO les aplican. Sin Light Probes, esos objetos no reciben luz indirecta del cuarto y se ven "out of place" (planos, sin GI adaptada al entorno).
+
+Distribución de 35 probes generada:
+
+* **Grid principal**: 3 capas (Y = 0.4, 1.5, 2.5 m) × 3×3 en XZ = 27 probes. Margen 0.5m del borde de la habitación.
+* **Cluster denso alrededor de la mesa**: 4 esquinas × 2 alturas (0.75 y 1.20 m) = 8 probes. Centrado en el `JengaTowerGenerator` si existe. Densifica donde más se usan los Jenga blocks (la actividad principal).
+
+API: `LightProbeGroup.probePositions = Vector3[]`. Una sola componente que contiene todas las posiciones.
+
+---
+
+### Bake de lightmaps (Tier 1)
+
+Configuración usada en `Window → Rendering → Lighting → Scene`:
+
+| Setting | Valor |
+|---|---|
+| Lighting Mode | Baked Indirect |
+| Lightmapper | Progressive GPU |
+| Direct Samples | 32 |
+| Indirect Samples | 512 |
+| Bounces | 2 |
+| Filtering | Auto |
+| Lightmap Resolution | 40 texels/m |
+| Lightmap Size | 1024 |
+| Compress Lightmaps | ON |
+| Ambient Occlusion | ON (Max Distance 1, Indirect/Direct 1.0) |
+| Auto Generate | **OFF** (re-bakea automáticamente al cambiar cualquier cosa, anti-flow) |
+
+Tiempo de bake: ~20 min para el cuarto chico con ~10 muebles.
+
+Resultado: bounce light entre piso/paredes/muebles, AO en junturas, Reflection Probe activo (reflejos en superficies con smoothness > 0.3). Light Probes interpolan ambient para Jenga blocks móviles.
+
+---
+
+### Texturas PBR (Tier 2)
+
+Wood048 de AmbientCG (CC0): se descargó el zip `Wood048_1K-JPG.zip` a `Assets/Textures/Room/Wood048/`. Texturas usadas: Color, NormalGL, Roughness.
+
+#### Bugs de asignación encontrados
+
+**Bug 1**: el `_MainTex` (Albedo) de la mesa quedó apuntando a `Wood048.png` — el archivo de preview thumbnail que AmbientCG incluye en el zip para mostrarse en su sitio web, NO la textura real. El PNG es de baja resolución, washed out. Cualquier asignación drag-and-drop "rápida" al primer archivo .png/.jpg encontrado caía sobre el preview.
+
+Fix: cambiar la referencia en el YAML del material a `Wood048_1K-JPG_Color.jpg` (GUID `fb4a20145230fdb40909e3f4b891dd93`).
+
+**Bug 2**: los 3 materiales de bloque Jenga (`BlockRed.mat`, `BlockBlue.mat`, `BlockYellow.mat`) **no tenían texturas asignadas** — solo color tint plano (rojo, azul, amarillo puros). En la escena previa los bloques se veían como cubos de plástico colorido, sin grain de madera.
+
+Fix: edición directa del YAML de cada material para asignar:
+* `_MainTex` → `Wood048_1K-JPG_Color.jpg`
+* `_BumpMap` → `Wood048_1K-JPG_NormalGL.jpg`
+* Habilitar keyword `_NORMALMAP`
+* `_BumpScale` ajustado a 0.3 (sutil en bloques chicos de 1.5cm de alto)
+
+**Bug 3**: el tint del bloque azul `(0, 0, 1)` era azul puro. Multiplicado contra wood (~0.4, 0.3, 0.2 RGB en albedo):
+
+```text
+R: 0   * 0.4 = 0
+G: 0   * 0.3 = 0
+B: 1.0 * 0.2 = 0.2
+```
+
+Los canales R y G quedan en 0, perdiendo toda la variación del Albedo. El bloque azul se veía como un sólido azul oscuro sin grain visible.
+
+Fix: tint `(0.177, 0.359, 1.0)` — azul claro estilo "stain" que preserva las vetas visibles porque ningún canal del tint queda en 0. Multiplicado:
+
+```text
+R: 0.177 * 0.4 = 0.07
+G: 0.359 * 0.3 = 0.11
+B: 1.0   * 0.2 = 0.2
+```
+
+Resultado: bloque azul-grisáceo con grain visible. Mismo principio aplicable a otros tints muy saturados: nunca dejar un canal en 0 si querés ver la textura subyacente.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| Tier 0 settings (Linear/ColorTemp/Shadow distance/etc.) | ✅ Aplicado vía YAML, performance + look mejorados |
+| HDRP → Built-in material converter | ✅ Robusto, idempotente, preserva GUIDs, fallback a `_DetailAlbedoMap` |
+| Material recovery tool para magenta | ✅ Reparable vía menú |
+| Shell del cuarto (6 Cube slabs, 72 tris, BoxColliders nativos) | ✅ `RoomNew` con Floor/Ceiling/4 walls |
+| Muebles instanciados con materiales convertidos | ✅ `RoomFurniture` con 9 muebles del pack |
+| Iluminación cinematográfica (Directional Mixed + Spot Key + Point Fill + Reflection Probe) | ✅ `RoomLighting` |
+| Light Probes (35 distribuidos, denso alrededor de la mesa) | ✅ `RoomLightProbes` |
+| Bake de lightmaps completado | ✅ Baked Indirect + AO + Reflection probe baked |
+| PBR Wood048 en piso, paredes (yeso), techo (yeso) | ✅ Albedo + Normal + Roughness en los 3 materiales del shell |
+| PBR Wood048 en mesa + bloques Jenga | ✅ Albedo + Normal en `Table_97_Artek_Wood_natural_Builtin` + `BlockRed/Blue/Yellow.mat` |
+| Tint del bloque azul ajustado para preservar grain | ✅ `(0.177, 0.359, 1.0)` |
+
+---
+
+### Pendiente / sugerido para futuras iteraciones
+
+* **Tier 3 — Post-processing**: ACES tonemap + bloom sutil (intensidad 0.2-0.4) + color grading. Costo en VR ~1-2 ms/eye. **NO usar Depth of Field, Motion Blur, Chromatic Aberration ni Lens Flares en VR** — todos rompen presencia o causan mareo.
+* **Tier 5 — Polish props**: partículas de polvo flotando muy sutilmente para "atmósfera viva". Pequeños props decorativos (libros sobre mesa con `Coffee_Table_Books`, candelabro `Taper_Candle_Holders` apagado). Cuidar de no recargar la escena.
+* **Lámpara de pie con luz real**: el `Floor_Light_A810_Artek` actualmente es solo decorativo. Agregarle un Point Light hijo (2800K, intensity 2, range 3, Baked) que coincida con la posición del bulb del modelo. Vendería mucha calidez al cuarto.
+* **HDRI skybox**: reemplazar el procedural skybox por un HDRI de interior (Polyhaven CC0). El cuarto está cerrado pero el ambient lighting calculado del skybox sigue siendo el "exterior virtual" del cuarto. Un HDRI de estudio o ventana grande haría más realista lo poco que se filtra.
+* **Texturas PBR distintas por mueble**: actualmente Wood048 está en piso, mesa y bloques (consistencia, mismo material en todo). Considerar si la mesa Artek debería tener un birch más claro para diferenciarse del piso oak. Trade-off entre coherencia y variedad visual.
+* **Posicionamiento de las 3 banquetas según setup físico real**: cuando se calibre el laboratorio, mover las 3 `Stool_*` a las posiciones físicas exactas de las sillas reales. Para passive haptics que el tactil coincida con lo visual.
+* **Tunear `JengaTowerGenerator.transform.position.y`**: el cambio de mesa coffee table (~40cm alto) → Table 97 (~73cm alto) requiere subir el `transform.position.y` del Jenga generator para que la torre quede sobre la superficie nueva.
+* **Validar performance en VR con el bake activo**: medir con `PerformanceHUD` (F3) si el FPS sostenido es ≥ 72 con todos los sistemas activos (NGO + skeleton + scene baked). Si baja, identificar drawcall culpable (probablemente el sofá o la planta tienen mesh complejo).
+
+---
+
+### Mantenimiento del branch
+
+Este branch (`look-and-feel-prototype`) está pensado para **mergeable a main** cuando se confirme el look final. A diferencia de `jenga-physics-prototype` (que es sandbox de tuning con scaffolding que no se merge), aquí los cambios son **cambios de assets + scripts de Editor reusables**:
+
+* Los `RoomShellBuilder`, `RoomLighting`, `RoomPopulator`, `RoomProbeGenerator`, `HdrpToBuiltinConverter` quedan como **Editor tools** disponibles por menú. No agregan código de runtime.
+* Los assets generados (materials Built-in, lightmaps bakeados, scene actualizada) son los productos finales que se promueven.
+
+Cuando se merge a main, mantener los 5 Editor scripts permite re-generar partes del cuarto si en el futuro se cambia layout o se agregan muebles.
+
+---
+
 ## 2026-05-21 — Representación de manos por esqueleto (local y networked) para mejorar presencia
 
 Branch activo: `multiplayer-prototype-fixed` (mismo día, sesión continuada).
