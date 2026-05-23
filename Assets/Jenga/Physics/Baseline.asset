@@ -1,0 +1,37 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c429dddc31c3c26458cfdaeabfc57c0f, type: 3}
+  m_Name: Baseline
+  m_EditorClassIdentifier: 
+  presetName: Baseline
+  staticFriction: 0.8
+  dynamicFriction: 0.8
+  bounciness: 0
+  frictionCombine: 3
+  bounceCombine: 2
+  mass: 0.1
+  drag: 0
+  angularDrag: 0.2
+  collisionDetection: 2
+  interpolation: 1
+  solverIterations: 12
+  solverVelocityIterations: 4
+  contactOffset: 0.005
+  bounceThreshold: 2
+  sleepThreshold: 0.005
+  grabPositionLerp: 0.35
+  preserveVelocityOnRelease: 1
+  releaseVelocitySamples: 3
+  releaseVelocityMax: 3
+  horizontalSpacing: 0.0005
+  verticalSpacing: 0.0002
+  dropHeight: 0.01

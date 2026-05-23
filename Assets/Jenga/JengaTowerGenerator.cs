@@ -27,12 +27,20 @@ public class JengaTowerGenerator : MonoBehaviour
     public float settleAngularVelocity = 0.01f;
     public float maxSettleTime = 1.0f;
 
+    [Header("Single-player / tuning")]
+    [Tooltip("Si NGO esta en escena pero nadie pulsa H/C dentro de autoBuildDelaySec segundos, construye la torre localmente. " +
+             "Util para tuning de fisica sin tener que iniciar como host. Si pulsas H/C dentro del timeout, el auto-build se cancela y arranca el flujo NGO normal.")]
+    public bool autoBuildIfNoServer = true;
+    [Tooltip("Segundos de espera antes de auto-construir en modo standalone.")]
+    public float autoBuildDelaySec = 2f;
+
     [Header("AOI Tagging")]
     public bool addAOITags = true;
     public string aoiType = "jenga_block";
     public bool renameBlocksToAOI = true;
 
     private bool isBuilding = false;
+    private bool hasBuiltOnce = false;
     private readonly List<NetworkObject> spawnedBlocks = new();
     private bool serverHandlerRegistered;
 
@@ -52,13 +60,33 @@ public class JengaTowerGenerator : MonoBehaviour
 
             // Si por alguna razon ya esta corriendo (recarga de escena), arrancamos ya.
             if (nm.IsServer)
+            {
                 StartCoroutine(InitialBuildRoutine());
+            }
+            else if (autoBuildIfNoServer)
+            {
+                // Modo tuning: si nadie inicia NGO, construimos local despues del timeout.
+                StartCoroutine(AutoBuildIfStandaloneRoutine());
+            }
         }
         else
         {
             // Sin NGO en escena: comportamiento local original.
             StartCoroutine(InitialBuildRoutine());
         }
+    }
+
+    private IEnumerator AutoBuildIfStandaloneRoutine()
+    {
+        yield return new WaitForSeconds(autoBuildDelaySec);
+
+        if (hasBuiltOnce) yield break; // alguien ya disparo el build (server start dentro del timeout).
+
+        var nm = NetworkManager.Singleton;
+        if (nm != null && nm.IsListening) yield break;
+
+        Debug.Log("[JengaTowerGenerator] No se inicio NGO; construyendo torre en modo standalone para tuning.");
+        yield return StartCoroutine(InitialBuildRoutine());
     }
 
     private void OnDestroy()
@@ -84,6 +112,8 @@ public class JengaTowerGenerator : MonoBehaviour
 
     private IEnumerator InitialBuildRoutine()
     {
+        if (hasBuiltOnce) yield break;
+        hasBuiltOnce = true;
         yield return null;
         yield return new WaitForFixedUpdate();
         yield return new WaitForSeconds(0.25f);

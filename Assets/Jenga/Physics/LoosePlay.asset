@@ -1,0 +1,37 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c429dddc31c3c26458cfdaeabfc57c0f, type: 3}
+  m_Name: LoosePlay
+  m_EditorClassIdentifier: 
+  presetName: LoosePlay
+  staticFriction: 0.3
+  dynamicFriction: 0.25
+  bounciness: 0.05
+  frictionCombine: 0
+  bounceCombine: 0
+  mass: 0.07
+  drag: 0
+  angularDrag: 0.1
+  collisionDetection: 2
+  interpolation: 1
+  solverIterations: 10
+  solverVelocityIterations: 3
+  contactOffset: 0.005
+  bounceThreshold: 2
+  sleepThreshold: 0.005
+  grabPositionLerp: 0.4
+  preserveVelocityOnRelease: 1
+  releaseVelocitySamples: 4
+  releaseVelocityMax: 4
+  horizontalSpacing: 0.001
+  verticalSpacing: 0.0003
+  dropHeight: 0.015

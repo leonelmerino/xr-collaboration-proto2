@@ -7346,6 +7346,89 @@ Transform:
   m_CorrespondingSourceObject: {fileID: 1717954561962503726, guid: f6336ac4ac8b4d34bc5072418cdc62a0, type: 3}
   m_PrefabInstance: {fileID: 1924991816}
   m_PrefabAsset: {fileID: 0}
+--- !u!1 &1328693542
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1328693545}
+  - component: {fileID: 1328693544}
+  - component: {fileID: 1328693543}
+  m_Layer: 0
+  m_Name: JengaPhysicsTuner
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1328693543
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1328693542}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 37e6a939aa9b213428b9ceb05664c383, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  showInEditor: 1
+  showInBuild: 1
+  fontSize: 13
+  margin: {x: 12, y: 12}
+  fixedWidth: 460
+  showInVR: 1
+  vrPanelDistance: 0.6
+  vrPanelVerticalOffset: -0.08
+  vrPanelLateralOffset: 0
+  vrPanelWidthM: 0.45
+  vrPanelFollowHead: 0
+  toggleKey: 287
+  rebuildKey: 98
+  reapplyKey: 114
+  repinKey: 112
+  nextPresetKey: 93
+  prevPresetKey: 91
+--- !u!114 &1328693544
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1328693542}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 869f577f5274ba54ca7b07defc8b14a4, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  blockMaterial: {fileID: 13400000, guid: e1a495b8d5c116b4388941dd4cf34cc9, type: 2}
+  presets:
+  - {fileID: 11400000, guid: 7a20107366445ca4981dc03de4f2671e, type: 2}
+  - {fileID: 11400000, guid: 8854eaa16126707448a5740af1f28ee9, type: 2}
+  - {fileID: 11400000, guid: 5bcd257f215c5b848995a95b421f7598, type: 2}
+  - {fileID: 11400000, guid: d0d6cc30cf2a89e4f9b3ab9b662d9450, type: 2}
+  - {fileID: 11400000, guid: fccc4f40e525f794cadef69adf0827f6, type: 2}
+  - {fileID: 11400000, guid: 56125436484ee6347b6c7a7462bd1186, type: 2}
+  overrideInitialConfig: {fileID: 0}
+--- !u!4 &1328693545
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1328693542}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0.09454508, y: 0.40285218, z: -0.012501228}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1383259940
 GameObject:
   m_ObjectHideFlags: 0
@@ -9739,6 +9822,8 @@ MonoBehaviour:
   settleVelocity: 0.01
   settleAngularVelocity: 0.01
   maxSettleTime: 1
+  autoBuildIfNoServer: 1
+  autoBuildDelaySec: 2
   addAOITags: 1
   aoiType: jenga_block
   renameBlocksToAOI: 1
@@ -10545,3 +10630,4 @@ SceneRoots:
   - {fileID: 1571458974}
   - {fileID: 767751666}
   - {fileID: 1683180926}
+  - {fileID: 1328693545}
