@@ -1,5 +1,472 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-05-24 — Avatares humanoides Rocketbox: head/hand IK + finger driving geométrico
+
+Branch activo: `look-and-feel-prototype` (continuación de la sesión visual del día anterior).
+
+Motivación: la representación de manos de las sesiones previas (`HandSkeletonRenderer` + `NetworkedAvatarSkeleton`: 20 esferas y 5 líneas decorativas por mano) funcionaba operativamente pero carecía de cuerpo. Los participantes veían "esqueletos flotantes" sin contexto antropomórfico — sin torso, brazos, expresión postural. Para una tarea colaborativa de Jenga sentada, donde dos a tres personas se miran y se pasan piezas, la presencia social pide un avatar humanoide completo con animación corporal coherente.
+
+Decisión: migrar a Microsoft Rocketbox (CC0, 100% LAN-compatible, sin servicios cloud) con tres FBX distintos para diferenciación visual por rol — Male_Adult_07 (Host), Male_Adult_10 (Client), Male_Adult_12 (Helper). Cada rol activa solo su sub-mesh en runtime para evitar overhead de tres rigs renderizando simultáneamente.
+
+Constraints heredados: el proyecto sigue en Built-in Render Pipeline + NGO 1.12.2 + XR Hands 1.5. La estrategia de avatar tenía que integrarse sin migrar a URP/HDRP y sin agregar runtime cost notable (eye tracking + BioLab UDP + Jenga physics ya pesan en el frame).
+
+---
+
+### Migración a Rocketbox humanoides: setup del prefab AvatarHumanoid
+
+Estructura final del prefab `Assets/AvatarHumanoid.prefab`:
+
+```text
+AvatarHumanoid (root, NetworkObject + NetworkedAvatarPose + NetworkedAvatarRole + AvatarRoleMeshSwitcher)
+├── LabelAnchor (Y=1.921, para nameplate flotante)
+└── AvatarVisuals
+    ├── Avatar_Host (sub-mesh con Male_Adult_07Avatar + Animator humanoid + AvatarPoseDriver + RigBuilder)
+    │   ├── Bip01 (jerarquía de bones Biped 3DS Max)
+    │   ├── Rig (Animation Rigging)
+    │   │   ├── LeftArmIK (TwoBoneIKConstraint: Shoulder→UpperArm→Forearm→Hand)
+    │   │   └── RightArmIK
+    │   ├── IKTarget_LeftHand (Transform vacío, posicionado por AvatarPoseDriver cada frame)
+    │   └── IKTarget_RightHand
+    ├── Avatar_Client (idem con Male_Adult_10)
+    └── Avatar_Helper (idem con Male_Adult_12)
+```
+
+`AvatarRoleMeshSwitcher` (existente, sin cambios funcionales) lee `NetworkedAvatarRole.Role.OnValueChanged` y hace `SetActive(true)` solo al sub-mesh del rol asignado; los otros dos se desactivan. Componentes en GameObjects inactivos no procesan Update/LateUpdate — esto evita el costo de tener 3 Animators humanoid + 3 RigBuilders evaluando simultáneamente.
+
+#### Validador de setup: `AvatarSetupValidator.cs`
+
+Archivo nuevo en `Assets/Editor/`. Menú: **XR Collab → Avatars → Validate Avatar Setup**.
+
+Iteró el prefab y emite un reporte por sub-mesh:
+
+* Animator presente + `isHuman == true` + bone Head reachable
+* AvatarPoseDriver presente
+* RigBuilder con al menos 1 layer
+* Child "Rig" con LeftArmIK + RightArmIK (TwoBoneIKConstraint con root/mid/tip/target no nulos)
+* IKTarget_LeftHand / IKTarget_RightHand como children directos del sub-mesh
+
+Salvó tiempo identificando el caso del Avatar_Helper que tenía el `target` del `RightArmIK` apuntando al propio constraint en vez del Transform `IKTarget_RightHand` — un slip de configuración manual difícil de ver en el Inspector pero capturado por el validador en una corrida.
+
+#### Setup de materiales: `RocketboxMaterialSetup.cs`
+
+Los FBX de Rocketbox tenían los materiales embebidos con "Use Embedded Materials" mode. Unity los importaba pero las texturas no se asignaban automáticamente — el avatar aparecía como mannequin grisaceo. La tool de Editor:
+
+1. Itera los FBX en `Assets/Avatars/Rocketbox/Male_Adult_*/Export/`
+2. Cambia el material importer a "Use External Materials (Legacy)" → genera `.mat` y `.png` extraídos
+3. Crea materiales Standard (Specular setup) con las texturas correspondientes asignadas por nombre (color, normal, specular)
+4. Aplica los materiales a los `SkinnedMeshRenderer` del sub-mesh
+
+Esto resolvió el problema en una sola pasada para los tres avatares.
+
+#### Bug del Biped Triangle Pelvis (falso positivo)
+
+Al configurar los FBX como Humanoid, Unity reportó un warning sobre la jerarquía Biped:
+
+```text
+Invalid parent for Bip01 L Thigh. Expected Bip01 Pelvis, but found Bip01 Spine. Disable Triangle Pelvis.
+Invalid parent for Bip01 L Clavicle. Expected Bip01 Spine2, but found Bip01 Neck. Enable Triangle Neck.
+```
+
+Rocketbox usa la convención Biped 3DS Max con Triangle Pelvis y Triangle Neck activos. Unity infirió mal el mapeo automático.
+
+Solución: abrir **Configure...** en el tab Rig de cada FBX y verificar manualmente los 4 tabs (Body, Head, Left Hand, Right Hand). Todos los bones del Rocketbox aparecieron correctamente mapeados a sus equivalentes Humanoid — el warning era falso positivo. Unity logró mapear pese a la jerarquía no-estándar. Confirmamos con screenshots de los 4 tabs que los 15 finger bones por mano + neck/head + body están todos verdes.
+
+---
+
+### Sistema de pose sincronizada: `NetworkedAvatarPose` + `AvatarPoseDriver`
+
+Pareja de componentes que reemplaza al sistema de presencia decorativo:
+
+* **`NetworkedAvatarPose`** (NetworkBehaviour en el root del prefab): owner samplea XR Hands y HMD y los publica via NetworkVariable. Read by everyone, write by owner.
+* **`AvatarPoseDriver`** (MonoBehaviour en cada sub-mesh): cada frame lee el state sincronizado y lo aplica al rig humanoid del sub-mesh activo.
+
+Esquema de propagación:
+
+```text
+Owner machine                              All machines (incl. owner)
+─────────────                              ──────────────────────────
+XR Hands (joints)  →  NetworkVariable  →  AvatarPoseDriver  →  Bones + IK targets
+HMD camera         →     (NGO sync)    →  (one per active     →  (Bip01 Head rot,
+                                           sub-mesh)              IK target pos/rot,
+                                                                  finger bone rots)
+```
+
+El owner ve su avatar driveado desde su propio state local; los remotos ven el avatar del owner driveado por el state recibido. Misma lógica idéntica, distintas fuentes de data.
+
+#### Bug crítico: `IsOwner` check durante `OnEnable`
+
+Síntoma inicial: la lógica `hideRenderersForLocalOwner` chequeaba `poseSync.IsOwner` en `OnEnable` del AvatarPoseDriver. Siempre devolvía `false` aún para el owner local.
+
+Causa: `OnEnable` corre dentro de `NetworkSpawnManager.InstantiateNetworkPrefab`, **antes** de que NGO complete el spawn (que setea `OwnerClientId`). En ese instante `IsSpawned == false` y `IsOwner` siempre retorna `false`.
+
+Fix: diferir el chequeo a un coroutine que espera hasta `poseSync.IsSpawned == true` (timeout 5s de seguridad):
+
+```csharp
+private void OnEnable()
+{
+    // ... resolver refs
+    if (hideRenderersForLocalOwner)
+        StartCoroutine(EvaluateOwnerVisibilityWhenSpawned());
+}
+
+private IEnumerator EvaluateOwnerVisibilityWhenSpawned()
+{
+    float deadline = Time.time + 5f;
+    while (Time.time < deadline)
+    {
+        if (poseSync != null && poseSync.IsSpawned) break;
+        yield return null;
+    }
+    bool isLocalOwner = poseSync != null && poseSync.IsOwner;
+    // ... aplicar hide
+}
+```
+
+Confirmado en logs:
+
+```text
+[AvatarPoseDriver] OnEnable on 'Avatar_Host': ... (IsOwner check deferred a post-spawn.)
+[AvatarPoseDriver] Post-spawn: 'Avatar_Host' isLocalOwner=True. ...
+```
+
+---
+
+### Alineación del avatar al piso: `AvatarFootAlignTool`
+
+Síntoma original: al spawnear el avatar en `(0, 0, 0)`, los pies aparecían **debajo del piso**. El FBX de Rocketbox importa con el `Bip01` (root del Biped) en la cadera (~1m sobre el "suelo" del modelo), y Unity no compensa el offset automáticamente al wrappear con extra root.
+
+Iteración 1 (fallida): leer la posición del bone `LeftFoot` via `Animator.GetBoneTransform()` y offsetear el sub-mesh para que la planta del pie quede en `y=0`. Resultado: el offset capturado fue `+0.1016`, pero al aplicarlo el avatar quedó **más** hundido. Diagnóstico: en Prefab Mode el Animator no garantiza tener los bones en bind pose evaluado; la posición devuelta era la transform "cruda" del FBX, no la bind pose correcta.
+
+Iteración 2 (la elegida): usar `SkinnedMeshRenderer.bounds.min.y` en vez del bone foot. Esto da el punto más bajo de la **mesh visible** (sole del zapato), independiente de cualquier evaluación del rig. Captura confirmada en log:
+
+```text
+[AvatarFootAlign] 'Avatar_Host': mesh bottom was at localY=-1.0299 (via 'm013_hipoly_81_bones_opacity').
+                  lp.y: 0.0000 → 1.0299 (delta +1.0299).
+```
+
+Los tres sub-meshes salieron con offset ~1.03m. Después del fix los pies quedan exactamente en el piso al spawnear.
+
+Tool en `Assets/Editor/AvatarFootAlignTool.cs` con dos menús:
+
+* **XR Collab → Avatars → Auto-Align Feet To Floor (Mesh Bounds)**: corre el cálculo arriba descrito.
+* **XR Collab → Avatars → Reset Sub-Mesh Y Offsets**: deshace los offsets (útil cuando el primer intento falló y dejó valores incorrectos).
+
+---
+
+### Head bone driving: bind capture para preservar convención del Biped
+
+Síntoma: la rotación del HMD se aplicaba directamente al `Bip01 Head` con `headBone.rotation = avatarRoot.rotation * hmdRotLocal`. Resultado: la cabeza del avatar apuntaba al techo.
+
+Causa: el bone `Bip01 Head` del Rocketbox (convención Biped 3DS Max) tiene ejes locales **X=up, Y=forward** — no Z=forward como asume Unity. Sobreescribir `bone.rotation` con la rotación del HMD (que reporta Z=forward) re-mapea los ejes locales del bone: el +Y del bone (que era "forward de la cara") queda apuntando para arriba.
+
+Fix: capturar la rotación del bone en bind pose **relativa al avatar root**, y multiplicarla como offset al aplicar el HMD:
+
+```csharp
+// Una vez, en el primer LateUpdate:
+_headBindRelLocalRot = Quaternion.Inverse(_avatarRoot.rotation) * _headBone.rotation;
+
+// Cada frame:
+Quaternion worldRot = _avatarRoot.rotation * state.hmdRotLocal * _headBindRelLocalRot;
+_headBone.rotation = worldRot;
+```
+
+Demostración matemática: cuando `state.hmdRotLocal == identity` (HMD mirando "adelante" del avatar), `worldRot == avatarRoot.rotation * headBindRelLocalRot == headBone.rotation_at_bind` — el head queda en bind pose. Cualquier delta del HMD desde el neutral rota el head bone por la misma cantidad en avatar-root-local space.
+
+Confirmación visual: el cliente ve al host con la cabeza tracking correctamente. El cliente sin HMD (corriendo en ventana sin XR) muestra el avatar con cabeza mirando al techo — esperado, porque `state.hmdRotLocal == identity` para él, y el bind pose del Biped tiene `+Y` (= eje "up" semántico) apuntando al techo por la convención de ejes. No es un bug; es lo que pasa cuando no hay HMD que driveear la cabeza.
+
+---
+
+### Hand IK: tres estrategias iteradas hasta encontrar la geométrica
+
+Esta fue la parte más difícil de la sesión. Documento las tres iteraciones porque las dos primeras enseñan por qué la tercera fue necesaria.
+
+#### Estrategia 1 — Calibración manual con tecla C (descartada)
+
+Mismo problema de convención de ejes que el head bone, pero más complejo porque la muñeca tiene 3 ejes que importan (forward de los dedos, palm normal, palm side) y XR Hands los reporta en su propia convención (Z=fingers forward, Y=palm up).
+
+Primer intento: capturar la rotación del wrist en un momento "neutral" definido por el usuario (apretando tecla C con las manos en una pose conocida), y restar esa rotación de la rotación reportada:
+
+```csharp
+Quaternion ikRot = avatarRoot.rotation * state.wristRotLocal *
+                   Inverse(wristCalibration) * handBindRelLocalRot * extraOffset;
+```
+
+Problema en uso real: el usuario tenía que mantener exactamente la pose de calibración en el momento del key press. En la práctica era imposible — apretar C movía la muñeca, y el resultado era una calibración incorrecta. Después de calibrar las dos manos por separado los resultados quedaban "casi bien" pero asimétricos.
+
+Veredicto del usuario: "es muy difícil de usar".
+
+#### Estrategia 2 — HUD de tuning manual con teclas Q/A/W/S/E/D (también descartada)
+
+Agregado: `Assets/Multiplayer/AvatarHandTunerHUD.cs`. NetworkVariables `LeftWristOffsetEuler` / `RightWristOffsetEuler` (`Vector3`, owner-write) sincronizadas. El owner ajusta el offset Euler de cada muñeca con teclado:
+
+| Tecla | Acción |
+|---|---|
+| 1 / 2 | seleccionar wrist L / R |
+| Q/A · W/S · E/D | X +/- · Y +/- · Z +/- (step 5°) |
+| Shift / Ctrl | step ×5 (25°) / ×0.2 (1°) |
+| R | reset del wrist seleccionado a (0,0,0) |
+| F4 | toggle visibilidad del HUD |
+| Y / U / X | save/load/export a PlayerPrefs |
+
+El HUD se renderea via OnGUI (monitor) + opcional Canvas world-space (VR). Los offsets se aplican como Euler residual encima del bind pose.
+
+Problema: aún con HUD interactivo, el espacio de soluciones es de tres parámetros continuos por mano sin feedback "correcto/incorrecto" claro. Era prueba y error, lento, y los valores que parecían funcionar en una pose dejaban de funcionar en otra (porque el offset Euler tiene una orientación de referencia fija, no se adapta a la pose actual).
+
+Veredicto: "la única forma en que funciona es colocar las manos imitando la posición original del avatar (con las muñecas torcidas)... necesario pero impráctico".
+
+#### Estrategia 3 — Orientación geométrica desde 3 joints (la solución)
+
+El insight del usuario: las **esferas del XR Hands debug** (representación de los joints) están perfectamente alineadas con las manos reales. Eso significa que los joint **positions** son data correcta y bien definida geométricamente — sin convenciones de ejes ambiguas. Reformulación del problema: en vez de tratar de mapear el wrist rotation reportado (que tiene convención propia) al bone Biped (que tiene otra), derivar la orientación de la palma directamente desde la geometría de 3 joints.
+
+Validación visual previa a la implementación final: archivo nuevo `Assets/Multiplayer/AvatarHandJointDebugViz.cs`. Renderiza en escena:
+
+* **Esferas verdes**: posiciones reales de Wrist + MiddleMetacarpal + ThumbMetacarpal del usuario (desde XR Hands)
+* **Esferas rojas**: posiciones equivalentes en el rig del avatar (`Animator.GetBoneTransform(LeftHand)` + `LeftMiddleProximal` + `LeftThumbProximal`)
+* **Línea magenta**: vector "fingers forward" (wrist → middle)
+* **Línea cian**: palm normal (cross product `fingersForward × thumbDir`, flippeada para la izquierda)
+
+En testing visual el usuario confirmó: las dos triadas de líneas (lado usuario, lado avatar) apuntaban en direcciones coincidentes cuando las manos estaban en orientaciones equivalentes. La estrategia geométrica iba a funcionar.
+
+#### Implementación de la estrategia geométrica
+
+Sincronización: `AvatarPoseState` (struct dentro de `NetworkedAvatarPose`) cambia. Reemplaza los campos `leftWristRotLocal` / `rightWristRotLocal` con `leftMiddleMetacarpalPosLocal` / `leftThumbMetacarpalPosLocal` (idem right). El wrist position sigue sincronizándose.
+
+Computación del lado del receiver:
+
+```csharp
+// 1. Convertir las 3 posiciones a world.
+Vector3 wristW = avatarRoot.TransformPoint(state.leftWristPosLocal);
+Vector3 middleW = avatarRoot.TransformPoint(state.leftMiddleMetacarpalPosLocal);
+Vector3 thumbW = avatarRoot.TransformPoint(state.leftThumbMetacarpalPosLocal);
+
+// 2. Construir base ortonormal "palma del usuario" en world.
+Vector3 fingersForward = (middleW - wristW).normalized;
+Vector3 thumbDir = (thumbW - wristW).normalized;
+Vector3 palmNormal = Vector3.Cross(fingersForward, thumbDir).normalized;
+if (isLeft) palmNormal = -palmNormal;  // flip para mantener convención "up = dorso de la mano"
+Quaternion userPalmWorldRot = Quaternion.LookRotation(fingersForward, palmNormal);
+
+// 3. Aplicar la transformación que mapea la palma del usuario al frame del hand bone del avatar.
+Quaternion ikRot = userPalmWorldRot * Quaternion.Inverse(_leftPalmRotInHand);
+leftHandIKTarget.SetPositionAndRotation(wristW, ikRot);
+```
+
+Donde `_leftPalmRotInHand` es **la orientación de la palma en el frame local del hand bone**, capturada una sola vez al inicio:
+
+```csharp
+Vector3 fwd = handBone.InverseTransformPoint(middleProxBone.position).normalized;
+Vector3 thumb = handBone.InverseTransformPoint(thumbProxBone.position).normalized;
+Vector3 normal = Vector3.Cross(fwd, thumb).normalized;
+if (isLeft) normal = -normal;
+_leftPalmRotInHand = Quaternion.LookRotation(fwd, normal);
+```
+
+Justificación matemática de por qué `_leftPalmRotInHand` es invariante al runtime: `Transform.InverseTransformPoint` proyecta una posición world al frame LOCAL del transform. La relación geométrica entre `handBone`, `middleProxBone` y `thumbProxBone` está fijada por la jerarquía del rig (Animation Rigging y skinning no la modifican). Sus posiciones relativas en world cambian con la pose del avatar, pero en frame local del hand bone son constantes. Por lo tanto la palm orientation derivada de esas posiciones es constante.
+
+Consecuencia operativa: **no hay timing issue** para la captura. Tradicionalmente capturar bind pose requiere que el Animator haya evaluado los bones; sin embargo InverseTransformPoint da el resultado correcto en cualquier frame, incluso con bones todavía no evaluados. El check de validez (`Vector3.Distance(handBone.position, middleProxBone.position) > 0.005f`) solo descarta el caso patológico donde los bones todavía no se inicializaron en absoluto.
+
+Resultado: las manos del avatar se orientan correctamente sin offsets manuales ni calibración. Sin tuning. Independiente del rig (funcionaría con Mixamo o cualquier humanoid). El HUD de offsets Euler queda como fine-tuning residual opcional (default `Vector3.zero` para todas las muñecas).
+
+---
+
+### Finger driving: 15 bones por mano con FromToRotation
+
+Misma estrategia geométrica extendida a los dedos. Cada uno de los 15 finger bones por mano (Thumb/Index/Middle/Ring/Little × Proximal/Intermediate/Distal) se rota cada frame para que apunte en la dirección equivalente a la del usuario.
+
+#### Sincronización: nueva NetworkVariable
+
+Struct `HandFingerPose` con 19 Vector3 por mano + 1 bool de validity. Total 38 Vector3 + 2 bools = ~460 bytes por update.
+
+```csharp
+public struct HandFingerPose : INetworkSerializable, IEquatable<HandFingerPose>
+{
+    // LEFT (19 joints en avatar-root-local space)
+    public Vector3 lThumbProx, lThumbDist, lThumbTip;
+    public Vector3 lIndexProx, lIndexInt, lIndexDist, lIndexTip;
+    public Vector3 lMidProx, lMidInt, lMidDist, lMidTip;
+    public Vector3 lRingProx, lRingInt, lRingDist, lRingTip;
+    public Vector3 lLitProx, lLitInt, lLitDist, lLitTip;
+    public bool lValid;
+    // RIGHT (idem)
+    // ...
+}
+
+public readonly NetworkVariable<HandFingerPose> Fingers = new NetworkVariable<HandFingerPose>(...);
+```
+
+Decisión arquitectónica: separar `Fingers` de `Pose` en dos NetworkVariables. Razón: NGO dedupea por valor de NetworkVariable. Si solo se mueve la cabeza, no se broadcastea el blob entero de fingers (~460 bytes adicionales). Solo si los joints de los dedos efectivamente cambian se manda el update.
+
+Mapeo XR Hands → Humanoid bones:
+
+| Avatar bone | XR start joint | XR end joint |
+|---|---|---|
+| ThumbProximal | ThumbMetacarpal | ThumbProximal |
+| ThumbIntermediate | ThumbProximal | ThumbDistal |
+| ThumbDistal | ThumbDistal | ThumbTip |
+| (Index/Mid/Ring/Lit) Proximal | XR.XxxProximal | XR.XxxIntermediate |
+| (Index/Mid/Ring/Lit) Intermediate | XR.XxxIntermediate | XR.XxxDistal |
+| (Index/Mid/Ring/Lit) Distal | XR.XxxDistal | XR.XxxTip |
+
+(El pulgar es especial porque anatómicamente solo tiene 2 falanges + metacarpal, mientras los demás dedos tienen 3 falanges. Unity Humanoid no expone metacarpal para los demás dedos, así que el ThumbProximal Humanoid corresponde al hueso metacarpal del pulgar.)
+
+#### Algoritmo de driving
+
+Para cada finger bone:
+
+1. **Captura una vez**: `childDirInBoneLocal = bone.InverseTransformPoint(childBone.position).normalized`. Constante del rig (cancela la pose del bone via InverseTransformPoint, como con la palma).
+2. **Cada frame**: computar la dirección del segmento equivalente del usuario en world (`(endJoint - startJoint).normalized`).
+3. **Aplicar `Quaternion.FromToRotation`** para alinear el bone:
+
+```csharp
+Vector3 targetDir = (segEndWorld - segStartWorld).normalized;
+Vector3 currentDir = slot.bone.TransformDirection(slot.childDirInBoneLocal);
+Quaternion delta = Quaternion.FromToRotation(currentDir, targetDir);
+slot.bone.rotation = delta * slot.bone.rotation;
+```
+
+`FromToRotation` da la rotación mínima entre dos vectores — no impone twist (rotación alrededor del eje del dedo se preserva). Para dedos cilíndricos eso es suficiente.
+
+Orden de aplicación: Proximal → Intermediate → Distal en cadena, porque rotar el padre cambia la posición mundial del hijo y el siguiente cálculo de `currentDir` depende de la posición actualizada del bone.
+
+Para el bone Distal no hay child Humanoid; se aproxima la dirección hacia el tip con `(distalBone.position - intermediateBone.position).normalized` re-expresada en frame local del distal. Como (intermediate → distal) y (distal → tip) son aproximadamente colineales en el rig, la aproximación es buena.
+
+#### Bandwidth total post-finger-driving
+
+```text
+Pose:           ~80 bytes  (HMD + 3 wrist joints × 2 manos + bools)
+HandFingerPose: ~460 bytes (19 joints × 2 manos + 2 bools)
+Total:          ~540 bytes / update × 30 Hz ≈ 16 KB/s por avatar
+```
+
+Sigue siendo trivial sobre LAN. NGO sigue deduplicando por NetworkVariable (si los fingers no cambian no se broadcastea el blob).
+
+#### Bug crítico durante el rollout: layout mismatch al hacer build
+
+Síntoma: agregar el field `[SerializeField] private bool driveFingerBones` rompió el build standalone con:
+
+```text
+Type '[Assembly-CSharp]AvatarPoseDriver' has an extra field 'driveFingerBones' of type 'System.Boolean' in the player and thus can't be serialized.
+Editor: 9 fields (sin driveFingerBones)
+Player: 10 fields (con driveFingerBones)
+Error building player because script class layout is incompatible between the editor and the player.
+```
+
+Causa: los `.prefab` ya tenían las instancias de `AvatarPoseDriver` serializadas con los 9 fields previos. El compilador del player veía 10 fields. El asset import no había re-serializado los prefabs con la nueva layout, y el build se hace con la última versión del source pero contra los assets viejos.
+
+Fixes intentados: `Assets → Reimport All` (sin éxito), borrar `Library/ScriptAssemblies/` (sin éxito en esa sesión). El workaround pragmático fue cambiar el field a `private bool driveFingerBones = true` sin `[SerializeField]` — no se serializa al prefab, no hay mismatch, perdiendo solo la capacidad de toggle desde el Inspector. Para flippear el comportamiento en producción se edita el código y se recompila.
+
+Esta misma decisión se aplicó retrospectivamente a otros toggles agregados en esta sesión: cuando un componente que ya tiene prefabs serializados gana un campo nuevo, usar `private const bool ...` o `private bool ... = X` sin SerializeField evita el problema.
+
+---
+
+### Visibilidad del avatar del owner: ocultar solo la cabeza
+
+Síntoma con el avatar humanoide visible para todos: el host, al mirar para abajo, veía su propio torso/cuerpo en el HMD — perfecto para presencia. Pero al mirar para adelante veía **dentro de su propia cabeza** (la geometría facial del avatar interceptando la cámara stereo).
+
+Primera solución (descartada): `hideRenderersForLocalOwner = true` que ocultaba **todos** los `SkinnedMeshRenderer` y `MeshRenderer` del sub-mesh del owner. Esto eliminaba el problema pero también ocultaba las manos del avatar, que el usuario necesita ver para jugar al Jenga (apuntar, alcanzar piezas).
+
+Solución final: cambió la interpretación del flag `hideRenderersForLocalOwner`. En vez de ocultar todos los renderers, **escalar el head bone a casi cero**:
+
+```csharp
+if (isLocalOwner)
+{
+    if (_headBone != null)
+    {
+        _headBone.localScale = new Vector3(0.0001f, 0.0001f, 0.0001f);
+    }
+}
+```
+
+Justificación: los vértices del mesh skinned al head bone (cara, pelo, ojos, mandíbula, vía las child bones LCheek/LEye/etc.) colapsan a un punto microscópico en la posición del bone. Las child bones del head (LCheek, REye, etc.) heredan la scale `0.0001` y los vértices skinned a ellas también colapsan. El resto del cuerpo (torso, brazos, manos — skinned al neck, spine, shoulders, etc.) queda intacto.
+
+Por qué `0.0001` y no `Vector3.zero`: scale exactamente cero genera matrices singulares en el skinning de Unity, que pueden producir NaNs en posiciones de vértices y crashear el render driver. `0.0001` da el mismo efecto visual (punto invisible a cualquier distancia razonable) sin problemas numéricos.
+
+La rotación del head bone driveada por el HMD (a través de `driveHeadBone = true`) sigue funcionando — solo el tamaño visual es ~0. Eso es importante porque otros sistemas (por ejemplo, eye tracking gaze visualization si se agrega en el futuro) podrían leer la rotación del head bone.
+
+---
+
+### Limpieza de las visualizaciones de manos antiguas
+
+Con el avatar humanoide funcional driveando bones + IK + dedos, las representaciones de manos legacy quedaron como decoración duplicada. Toggles `private const bool ShowVisualizers = false` agregados a:
+
+| Archivo | Qué dibujaba | Para quién | Estado |
+|---|---|---|---|
+| `PinchDebugVisualizer.cs` | Esferas Thumb/Index + PinchLine local | HOST | Apagado (lógica de pinch detection conservada para grab) |
+| `NetworkedAvatarHands.cs` | Esferas + PinchLine + RayDisplay sincronizados | TODOS | Apagado (sync se conserva por compat con sistemas que lean state) |
+| `NetworkedAvatarSkeleton.cs` | 20 esferas + 5 LineRenderers por mano del avatar remoto | CLIENTE viendo HOST | Apagado (early-return en LateUpdate) |
+| `HandSkeletonRenderer.cs` | Idem pero local del owner | HOST sí mismo | Apagado |
+| `AvatarHandJointDebugViz.cs` | Esferas verdes/rojas de validación geométrica | Diagnóstico | `showViz` default `false` (F5 toggle si se necesita debug) |
+
+Lo que QUEDA visible:
+
+* El avatar humanoide completo (torso + brazos + manos con dedos) — visible para los remotos
+* El avatar humanoide con cabeza oculta — visible para el owner local
+* El raycast de grab (`JengaRayGrabInteractor.rayLine`) — local del owner, no fue tocado, mantiene grab interaction funcional
+
+Decisión de usar `const bool` (no `[SerializeField]`): evita el problema de layout mismatch descrito arriba, y los toggles son flags de comportamiento global del componente, no settings por instancia.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| 3 avatares humanoides Rocketbox (Host/Client/Helper) con sub-mesh switching por rol | ✅ `AvatarHumanoid.prefab` + `AvatarRoleMeshSwitcher` |
+| Bone mapping Humanoid de los 3 FBX (Body/Head/LeftHand/RightHand) | ✅ Validado manualmente en Configure de cada FBX |
+| Validador de setup del prefab | ✅ `AvatarSetupValidator.cs` editor tool |
+| Setup automático de materiales Rocketbox | ✅ `RocketboxMaterialSetup.cs` editor tool |
+| Alineación de pies al piso via mesh bounds | ✅ `AvatarFootAlignTool.cs` (~1m delta auto-calculado) |
+| Hide-owner-head (escalando head bone a 0.0001) | ✅ Owner ve cuerpo y manos, no su cara desde adentro |
+| Driving del head bone con HMD (con bind capture) | ✅ Funciona, cabeza apunta donde mira el HMD |
+| Hand IK target driveado por estrategia geométrica (3 joints → palm orientation) | ✅ Sin offsets manuales, sin calibración |
+| Sincronización de pose por NetworkVariable (HMD + 3 joints por mano) | ✅ `Pose` NetworkVariable ~80 bytes/update |
+| Finger driving: 15 bones por mano via FromToRotation | ✅ `Fingers` NetworkVariable ~460 bytes/update |
+| Bandwidth total ≤ 16 KB/s por avatar | ✅ ~540 bytes × 30 Hz |
+| Visualizaciones legacy desactivadas | ✅ 5 sistemas apagados via `ShowVisualizers = false` |
+| Grab raycast del Jenga preservado | ✅ `JengaRayGrabInteractor.rayLine` no afectado |
+| HUD de tuning manual de muñeca (legacy, ahora opcional) | ⚠️ Funcional pero default offsets = (0,0,0) — innecesario con estrategia geométrica |
+
+---
+
+### Caveats y limitaciones conocidas
+
+* **Cliente sin HMD**: si el client corre desde el editor en ventana sin XR Hands ni HMD, su avatar (visto desde el host) tendrá cabeza apuntando al techo (`hmdRotLocal == identity` + bind pose del Biped) y manos sin tracking (todos los joints en cero). Comportamiento esperado, no es un bug; se documenta para evitar confusión en testing.
+* **No hay interpolación**: a 30 Hz los joints de los dedos y las manos saltan visiblemente entre updates en el remote. Para una iteración futura, agregar buffer de 2 muestras + delay ~100 ms con blending lineal.
+* **El bone Distal de cada dedo se aproxima**: no hay child humanoid para Distal en Unity (no expone "Tip" como bone), así que la dirección del distal se calcula como `(distalBone - intermediateBone)` re-expresada en frame local del distal. Aproximación buena en la mayoría de las poses; sutil error si el dedo está muy curvado.
+* **El twist (rotación alrededor del eje del dedo) no se sincroniza**: `Quaternion.FromToRotation` es la rotación mínima entre dos direcciones, sin imponer twist. Para dedos cilíndricos esto da resultados visualmente correctos en todos los casos testeados.
+* **Animator Controller debe estar en `None`** en cada sub-mesh: el AvatarPoseDriver asume que ninguna animation clip sobreescribe sus bone writes. Si hay un Controller con un state que anima los huesos, las correcciones del PoseDriver son sobreescritas por el Animator.
+* **`Optimize Game Objects` debe estar OFF** en el rig settings de los FBX: si está ON, Unity hace "bone hiding" para optimización y `Animator.GetBoneTransform` retorna `null`. Confirmado OFF en los 3 FBX de Rocketbox.
+
+---
+
+### Pendiente / sugerido para futuras iteraciones
+
+* **Interpolación de pose remoto**: buffer + delay para eliminar el snapping de 30 Hz. Aplicar a la NetworkVariable Pose y Fingers.
+* **Recovery del Animator Controller**: actualmente sin controller = avatar en T-pose para body/legs (que casi no se ven, ocultos por el cuerpo en seated experience). Si en el futuro se ven más, agregar un Idle clip que mantenga el torso en pose sentada natural sin sobreescribir head/hand IK.
+* **Animación procedural del pecho/hombro al mover los brazos**: las constraints `LeftArmIK`/`RightArmIK` configuradas en Animation Rigging mueven el wrist via IK, pero el shoulder/clavícula no se compensan. Resultado: si el usuario estira mucho el brazo, el shoulder queda fijo y el brazo se ve "rígido". Iteración: agregar `MultiAimConstraint` sobre la clavícula para que rote suavemente siguiendo al hand IK target.
+* **Eye tracking sobre el avatar**: el sistema BioLab UDP ya provee gaze data del HMD. Aplicarlo a las eye bones (`LeftEye`, `RightEye` en Humanoid) para que los avatares se miren entre sí. Big presence win.
+* **Limpiar código legacy**: una vez confirmada la estrategia geométrica, hay código muerto que se puede borrar:
+  * `LeftWristCalibration` / `RightWristCalibration` NetworkVariables (no se usan más)
+  * `CalibrateHands()` (ya es no-op)
+  * Partes de `AvatarHandTunerHUD` (la calibración con V, el flujo de save/load, etc.)
+* **Documentar los tooltips de los SerializeField**: en `AvatarPoseDriver` el campo `hideRenderersForLocalOwner` ahora significa "ocultar solo la cabeza" pero el nombre del field es legacy. Si se renombra hay que actualizar el prefab — alternativamente, dejar el nombre y mejorar el tooltip (ya hecho).
+* **Validar performance en VR con todo activo**: medir con `PerformanceHUD` (F3) que el FPS sostenido sigue ≥ 72 con 3 avatares humanoides + finger driving + Jenga physics + NGO + eye tracking. Si baja, identificar bottleneck (probablemente los skinned mesh renderers de los 3 sub-meshes — aunque solo uno está activo por avatar).
+
+---
+
+### Mantenimiento del branch
+
+Esta sesión consolida el sistema de avatares humanoides como reemplazo del esqueleto decorativo previo (`NetworkedAvatarSkeleton` + `HandSkeletonRenderer`). Los componentes nuevos son **runtime + editor tools**:
+
+* Runtime: `AvatarPoseDriver`, `AvatarHandJointDebugViz`, `AvatarHandTunerHUD`, modificaciones a `NetworkedAvatarPose`
+* Editor tools: `AvatarSetupValidator`, `RocketboxMaterialSetup`, `AvatarFootAlignTool`
+
+Los visualizers viejos (`NetworkedAvatarSkeleton`, `HandSkeletonRenderer`, `PinchDebugVisualizer`, `NetworkedAvatarHands`) **se conservan en el repo** pero con sus `ShowVisualizers` apagados. Esto permite revertir a la representación de esqueleto si en el futuro se decide volver atrás (por ejemplo, si el costo de render del avatar humanoide impacta performance en algún caso).
+
+Cuando se merge a main: los assets del prefab `AvatarHumanoid.prefab` + los 3 FBX de Rocketbox bajo `Assets/Avatars/Rocketbox/` son los productos finales. Los editor tools quedan como utilidades para regenerar setup si se agregan más rigs en el futuro.
+
+---
+
 ## 2026-05-23 — Look-and-feel: nueva escena con HDRP Furniture Pack, iluminación bakeable y materiales PBR
 
 Branch nuevo: `look-and-feel-prototype` (creado desde `main` después de mergear `jenga-physics-prototype`).

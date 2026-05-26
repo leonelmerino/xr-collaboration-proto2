@@ -27,12 +27,38 @@ public class PinchDebugVisualizer : MonoBehaviour
     [Header("Debug")]
     [SerializeField] private bool logTrackingWarnings = true;
 
+    // Toggle de visuales. Si esta en false, las esferas del thumb/index y la pinch line NO
+    // se muestran (las muñecas + dedos del avatar quedan como unica representacion de mano).
+    // La logica de deteccion de pinch sigue funcionando (drivea grab interactor).
+    // Flippear a true si queres re-habilitar las visualizaciones de debug local.
+    private const bool ShowVisualizers = false;
+
     private XRHandSubsystem handSubsystem;
 
     private void Awake()
     {
         ConfigureLineRenderer(rightPinchLine);
         ConfigureLineRenderer(leftPinchLine);
+
+        // Si los visuales estan apagados, ocultar los markers inmediatamente para que no
+        // queden esferas en posicion (0,0,0) durante el primer frame.
+        if (!ShowVisualizers)
+        {
+            HideMarker(rightThumb); HideMarker(rightIndex); HideMarker(rightPinch);
+            HideMarker(leftThumb); HideMarker(leftIndex); HideMarker(leftPinch);
+            if (rightPinchLine != null) rightPinchLine.enabled = false;
+            if (leftPinchLine != null) leftPinchLine.enabled = false;
+        }
+    }
+
+    private static void HideMarker(Transform t)
+    {
+        if (t == null) return;
+        var rend = t.GetComponent<Renderer>();
+        if (rend != null) rend.enabled = false;
+        // Tambien apagamos renderers de hijos por si la esfera vive en un hijo.
+        foreach (var r in t.GetComponentsInChildren<Renderer>(includeInactive: true))
+            r.enabled = false;
     }
 
     private void Start()
@@ -158,6 +184,8 @@ public class PinchDebugVisualizer : MonoBehaviour
             true);
 
         // Local-space assignment: this assumes the hierarchy is under XR Origin / Camera Offset.
+        // Las posiciones se actualizan SIEMPRE (necesario para la deteccion de pinch). Lo que
+        // gateamos con ShowVisualizers es solo el rendering.
         thumbMarker.localPosition = thumbPose.position;
         thumbMarker.localRotation = thumbPose.rotation;
 
@@ -166,7 +194,7 @@ public class PinchDebugVisualizer : MonoBehaviour
 
         if (pinchLine != null)
         {
-            pinchLine.enabled = true;
+            pinchLine.enabled = ShowVisualizers;
             pinchLine.SetPosition(0, thumbPose.position);
             pinchLine.SetPosition(1, indexPose.position);
         }
@@ -179,10 +207,27 @@ public class PinchDebugVisualizer : MonoBehaviour
             pinchMarker.gameObject.SetActive(true);
             pinchMarker.localPosition = (thumbPose.position + indexPose.position) * 0.5f;
             pinchMarker.localRotation = Quaternion.identity;
+            // Re-ocultar renderer si los visuales estan apagados (SetActive(true) lo activa pero
+            // queremos que su renderer respete ShowVisualizers).
+            if (!ShowVisualizers)
+            {
+                var rend = pinchMarker.GetComponent<Renderer>();
+                if (rend != null) rend.enabled = false;
+                foreach (var r in pinchMarker.GetComponentsInChildren<Renderer>(includeInactive: true))
+                    r.enabled = false;
+            }
         }
         else
         {
             pinchMarker.gameObject.SetActive(false);
+        }
+
+        // Si los visuales estan apagados, asegurar que los markers de thumb/index no muestren
+        // sus renderers (SetHandActive arriba puede haberlos re-habilitado).
+        if (!ShowVisualizers)
+        {
+            HideMarker(thumbMarker);
+            HideMarker(indexMarker);
         }
 
         UpdateRayOrigin(

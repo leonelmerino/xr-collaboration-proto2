@@ -27,6 +27,12 @@ using UnityEngine.XR.Hands;
 /// </summary>
 public class HandSkeletonRenderer : MonoBehaviour
 {
+    // Toggle de visuales. Si esta en false, el usuario local no ve las esferas + lineas
+    // decorativas de su propio esqueleto. Las manos del avatar humanoid (driveadas por
+    // AvatarPoseDriver con XR Hands) son la unica representacion.
+    // Flippear a true si queres re-habilitar el render decorativo local.
+    private const bool ShowVisualizers = false;
+
     [Header("Joints (esferas)")]
     [Tooltip("Mesh para cada joint. Si esta vacio se usa la esfera built-in de Unity (768 tris). " +
              "Para mejor rendimiento asigna un icosphere low-poly (20-80 tris).")]
@@ -149,6 +155,17 @@ public class HandSkeletonRenderer : MonoBehaviour
 
     private void LateUpdate()
     {
+        // Si los visuales estan apagados, no renderizamos nada. Apagamos las LineRenderers
+        // que pudieran haberse creado antes de flippear el flag.
+        if (!ShowVisualizers)
+        {
+            if (_bonesLeft != null)
+                for (int i = 0; i < _bonesLeft.Length; i++) if (_bonesLeft[i] != null) _bonesLeft[i].enabled = false;
+            if (_bonesRight != null)
+                for (int i = 0; i < _bonesRight.Length; i++) if (_bonesRight[i] != null) _bonesRight[i].enabled = false;
+            return;
+        }
+
         EnsureReferences();
         if (bindColorToRole) TryBindLocalRole();
         if (handSubsystem == null || sphereMesh == null || jointMaterial == null) return;

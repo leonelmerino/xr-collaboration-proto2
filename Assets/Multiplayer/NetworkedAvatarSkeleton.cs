@@ -26,6 +26,12 @@ using UnityEngine.XR.Hands;
 /// </summary>
 public class NetworkedAvatarSkeleton : NetworkBehaviour
 {
+    // Toggle de visuales. Si esta en false, los avatares REMOTOS no muestran las esferas ni
+    // las lineas decorativas del esqueleto. La sincronizacion del NetworkVariable sigue
+    // corriendo en el owner por si algun otro sistema quiere consumir los joints positions.
+    // Flippear a true para re-habilitar la decoracion de presencia.
+    private const bool ShowVisualizers = false;
+
     [Header("Joints (esferas)")]
     [Tooltip("Mesh de esfera para los joints. Si esta vacio se usa la built-in al spawn.")]
     [SerializeField] private Mesh sphereMesh;
@@ -201,6 +207,18 @@ public class NetworkedAvatarSkeleton : NetworkBehaviour
     private void LateUpdate()
     {
         if (!IsSpawned || IsOwner) return;
+
+        // Si los visuales estan apagados, no renderizamos nada en el cliente remoto. Las
+        // manos del avatar humanoid (driveadas por AvatarPoseDriver) son la unica
+        // representacion visible. Si ya creamos bone renderers, los apagamos.
+        if (!ShowVisualizers)
+        {
+            if (_bonesLeft != null)
+                for (int i = 0; i < _bonesLeft.Length; i++) if (_bonesLeft[i] != null) _bonesLeft[i].enabled = false;
+            if (_bonesRight != null)
+                for (int i = 0; i < _bonesRight.Length; i++) if (_bonesRight[i] != null) _bonesRight[i].enabled = false;
+            return;
+        }
 
         var s = _state.Value;
         _activeCount = 0;
