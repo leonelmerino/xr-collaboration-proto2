@@ -1,6 +1,15 @@
 {
+    "scopedRegistries": [
+        {
+            "name": "package.openupm.com",
+            "url": "https://package.openupm.com",
+            "scopes": [
+                "com.htc.upm.vive.openxr"
+            ]
+        }
+    ],
   "dependencies": {
-    "com.htc.upm.vive.openxr": "file:C:/Users/merino/Downloads/VIVE-OpenXR-Unity-master/VIVE-OpenXR-Unity-master/com.htc.upm.vive.openxr",
+    "com.htc.upm.vive.openxr": "2.5.1",
     "com.unity.collab-proxy": "2.11.4",
     "com.unity.feature.development": "1.0.1",
     "com.unity.netcode.gameobjects": "1.12.2",
