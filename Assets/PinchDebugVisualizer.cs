@@ -175,59 +175,39 @@ public class PinchDebugVisualizer : MonoBehaviour
             return;
         }
 
-        SetHandActive(
-            thumbMarker,
-            indexMarker,
-            pinchMarker,
-            pinchLine,
-            rayOrigin,
-            true);
-
-        // Local-space assignment: this assumes the hierarchy is under XR Origin / Camera Offset.
-        // Las posiciones se actualizan SIEMPRE (necesario para la deteccion de pinch). Lo que
-        // gateamos con ShowVisualizers es solo el rendering.
-        thumbMarker.localPosition = thumbPose.position;
-        thumbMarker.localRotation = thumbPose.rotation;
-
-        indexMarker.localPosition = indexPose.position;
-        indexMarker.localRotation = indexPose.rotation;
-
-        if (pinchLine != null)
-        {
-            pinchLine.enabled = ShowVisualizers;
-            pinchLine.SetPosition(0, thumbPose.position);
-            pinchLine.SetPosition(1, indexPose.position);
-        }
-
         float pinchDistance = Vector3.Distance(thumbPose.position, indexPose.position);
         bool isPinching = pinchDistance < pinchThreshold;
 
-        if (isPinching)
+        // Toda la actualizacion de visuals se omite cuando ShowVisualizers esta apagado.
+        // Los GameObjects de los markers quedan inactivos (Awake los desactivo) y nunca
+        // se re-activan, eliminando las esferas/lineas decorativas de la vista.
+        if (ShowVisualizers)
         {
-            pinchMarker.gameObject.SetActive(true);
-            pinchMarker.localPosition = (thumbPose.position + indexPose.position) * 0.5f;
-            pinchMarker.localRotation = Quaternion.identity;
-            // Re-ocultar renderer si los visuales estan apagados (SetActive(true) lo activa pero
-            // queremos que su renderer respete ShowVisualizers).
-            if (!ShowVisualizers)
-            {
-                var rend = pinchMarker.GetComponent<Renderer>();
-                if (rend != null) rend.enabled = false;
-                foreach (var r in pinchMarker.GetComponentsInChildren<Renderer>(includeInactive: true))
-                    r.enabled = false;
-            }
-        }
-        else
-        {
-            pinchMarker.gameObject.SetActive(false);
-        }
+            SetHandActive(thumbMarker, indexMarker, pinchMarker, pinchLine, rayOrigin, true);
 
-        // Si los visuales estan apagados, asegurar que los markers de thumb/index no muestren
-        // sus renderers (SetHandActive arriba puede haberlos re-habilitado).
-        if (!ShowVisualizers)
-        {
-            HideMarker(thumbMarker);
-            HideMarker(indexMarker);
+            thumbMarker.localPosition = thumbPose.position;
+            thumbMarker.localRotation = thumbPose.rotation;
+
+            indexMarker.localPosition = indexPose.position;
+            indexMarker.localRotation = indexPose.rotation;
+
+            if (pinchLine != null)
+            {
+                pinchLine.enabled = true;
+                pinchLine.SetPosition(0, thumbPose.position);
+                pinchLine.SetPosition(1, indexPose.position);
+            }
+
+            if (isPinching)
+            {
+                pinchMarker.gameObject.SetActive(true);
+                pinchMarker.localPosition = (thumbPose.position + indexPose.position) * 0.5f;
+                pinchMarker.localRotation = Quaternion.identity;
+            }
+            else
+            {
+                pinchMarker.gameObject.SetActive(false);
+            }
         }
 
         UpdateRayOrigin(
