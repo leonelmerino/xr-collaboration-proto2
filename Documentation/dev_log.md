@@ -1,5 +1,197 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-06-01 — Tres bugs de regresión: LAN Discovery, interacción Jenga y marcadores de debug
+
+Branch activo: `look-and-feel-prototype`.
+
+Sesión de diagnóstico y corrección de tres bugs independientes que se habían introducido en sesiones anteriores. Los tres comparten un patrón: un cambio aparentemente inocuo en la lógica visual rompió silenciosamente un sistema de física o de red subyacente. Se documentan con detalle porque el patrón es recurrente y puede afectar futuras modificaciones.
+
+---
+
+### 1. LAN Discovery: `ParseBroadcast` lanza excepción silenciosa desde background thread
+
+**Síntoma**: el cliente recibía correctamente los paquetes UDP del host (confirmado por los logs de diagnóstico `"DIAG CLIENT — paquete recibido"`), pasaba el filtro de magic (`XRCOLLAB|`), pero el HUD mostraba siempre "No se encontró ningún host en LAN". El log mostraba:
+
+```
+[LanDiscovery] DIAG CLIENT — ParseBroadcast devolvio null para: XRCOLLAB|v=1|session=P001_S001|host=STIMULUS1|game_port=7777|ts=...
+```
+
+**Causa raíz**: `ParseBroadcast` se ejecuta desde el background thread `ClientListenLoop`. En su interior, al construir el `DiscoveryRecord`, asignaba:
+
+```csharp
+lastSeenLocalTime = Time.realtimeSinceStartup   // ← lanza UnityException fuera del main thread
+```
+
+La documentación de Unity marca `Time.realtimeSinceStartup` como thread-safe, pero en la práctica lanza `UnityException: get_realtimeSinceStartup can only be called from the main thread`. Esta excepción era capturada silenciosamente por el bloque:
+
+```csharp
+catch { return null; }   // ← tragaba la excepción sin loguearla
+```
+
+El resultado: `ParseBroadcast` retornaba `null` para cada paquete válido, sin dejar ningún rastro en el log. El canal de recepción UDP funcionaba perfectamente; la falla estaba en el procesamiento del paquete.
+
+**Fix en `Assets/Multiplayer/Discovery/LanDiscoveryService.cs`**:
+
+Se agregó un campo `volatile float _mainThreadTime` que se actualiza en `Update()` (main thread) y es leído desde el background thread en `ParseBroadcast`:
+
+```csharp
+// Campo nuevo:
+private volatile float _mainThreadTime;
+
+// En Update() — main thread:
+_mainThreadTime = Time.realtimeSinceStartup;
+
+// En ParseBroadcast() — background thread:
+return new DiscoveryRecord
+{
+    ...
+    lastSeenLocalTime = _mainThreadTime   // thread-safe: volatile float del main thread
+};
+```
+
+El modificador `volatile` garantiza visibilidad inmediata del valor entre threads sin necesidad de lock (la escritura en `Update` y la lectura en el thread de red no compiten estructuralmente — el peor caso es leer un timestamp de hace un frame, que es aceptable).
+
+El `catch` también se convirtió en `catch (Exception ex)` con log explícito, para que cualquier excepción futura sea visible en consola:
+
+```csharp
+catch (Exception ex)
+{
+    Debug.LogWarning($"[LanDiscovery] ParseBroadcast excepcion: {ex.GetType().Name}: {ex.Message}");
+    return null;
+}
+```
+
+**Nota de diseño**: `Time.realtimeSinceStartup` no es el único miembro de `Time` que puede fallar fuera del main thread. Cualquier acceso a la API de Unity desde un background thread debe asumir que puede lanzar `UnityException`. El patrón correcto es siempre copiar el valor en el main thread a un campo `volatile` o pasarlo como parámetro al thread.
+
+---
+
+### 2. Interacción con Jenga rota: regresión introducida en commit `ed6188d`
+
+**Síntoma**: ni el poke con el dedo índice ni el grab con raycast+pinch tenían efecto sobre los bloques. El rayo de selección era visible y apuntaba correctamente, pero ni un toque ni una agarrada producían ningún resultado.
+
+**Causa raíz**: el commit `ed6188d` ("fix: oculta marcadores de debug de mano") reestructuró `PinchDebugVisualizer.UpdateSingleHand` agrupando toda la lógica de actualización de markers bajo un bloque `if (ShowVisualizers)`. Con `ShowVisualizers = false` (el valor de producción), esto incluía las líneas que actualizan las posiciones de los Transforms:
+
+```csharp
+// Después del commit — INCORRECTO:
+if (ShowVisualizers)
+{
+    thumbMarker.localPosition = thumbPose.position;   // ← posición de física bloqueada
+    indexMarker.localPosition = indexPose.position;   // ← posición de física bloqueada
+    pinchMarker.localPosition = (thumbPose.position + indexPose.position) * 0.5f;  // ← ídem
+    // ... lógica visual
+}
+```
+
+El problema es que estos Transforms **no son solo visuales**: están referenciados directamente por los sistemas de interacción como datos de física:
+
+| Transform | Usado como | En componente |
+|---|---|---|
+| `rightIndex` (fileID 1604341562) | `pokePoint` | `JengaPokeInteractor` (mano derecha) |
+| `rightPinch` (fileID 2101037878) | `pinchPoint` | `JengaRayGrabInteractor` (mano derecha) |
+| `leftIndex` (fileID 1836880594) | `pokePoint` | `JengaPokeInteractor` (mano izquierda) |
+
+Con los Transforms congelados en su posición inicial:
+
+- **Poke**: `JengaPokeInteractor.Update` calcula `movement = pokePoint.position - previousPosition`. Si `pokePoint` no se mueve, `movement.magnitude ≈ 0` → early return → nunca se aplica fuerza.
+
+- **Grab**: `JengaGrabbable.BeginGrab(pinchPoint)` captura `initialGrabOffset = block.position - pinchPoint.position`. Si `pinchPoint.position ≈ (0,0,0)`, entonces `initialGrabOffset = block.position`. Cada frame: `desired = (0,0,0) + block.position = block.position`. El bloque recibe fuerza hacia sí mismo → no se mueve → parece que el grab no activó.
+
+La dirección del rayo (`rayOrigin`) sí se actualizaba correctamente (estaba fuera del bloque `ShowVisualizers`), por lo que el raycast funcionaba y el rayo era visible, pero el grab no tenía efecto.
+
+**Fix en `Assets/PinchDebugVisualizer.cs`**:
+
+Se separaron las dos responsabilidades que el código mezclaba: actualización de posición (siempre necesaria) y actualización visual (solo cuando `ShowVisualizers = true`):
+
+```csharp
+// Posiciones: siempre actualizadas, independiente de ShowVisualizers.
+// Estos Transforms son referencias compartidas con JengaPokeInteractor (pokePoint)
+// y JengaRayGrabInteractor (pinchPoint) — son datos de fisica, no solo visuales.
+thumbMarker.localPosition = thumbPose.position;
+thumbMarker.localRotation = thumbPose.rotation;
+indexMarker.localPosition = indexPose.position;
+indexMarker.localRotation = indexPose.rotation;
+if (isPinching)
+{
+    pinchMarker.localPosition = (thumbPose.position + indexPose.position) * 0.5f;
+    pinchMarker.localRotation = Quaternion.identity;
+}
+
+// Visuales: solo cuando ShowVisualizers esta activo.
+if (ShowVisualizers)
+{
+    SetHandActive(thumbMarker, indexMarker, pinchMarker, pinchLine, rayOrigin, true);
+    // ... actualizar LineRenderers, SetActive de pinchMarker, etc.
+}
+```
+
+**Invariante a mantener en el futuro**: en `PinchDebugVisualizer`, los Transforms `rightIndex`, `rightPinch`, `leftIndex`, `leftPinch` son puntos de datos compartidos entre el sistema visual y el sistema de física. Cualquier refactoring que bloquee su actualización (por ejemplo, moverlos dentro de un `if` gateado) romperá la interacción con el Jenga. La posición de un Transform y la visibilidad de su renderer son responsabilidades independientes.
+
+---
+
+### 3. Marcadores de validación geométrica visibles en producción
+
+**Síntoma**: en la escena aparecían esferas verdes (wrist + middle metacarpal + thumb metacarpal del usuario real, lado XR Hands) y esferas rojas (bones equivalentes del avatar), más líneas magenta (fingers forward) y cian (palm normal). Estas son las marcas del `AvatarHandJointDebugViz`, el componente de diagnóstico creado durante la sesión de alineación geométrica de manos (2026-05-24).
+
+**Causa raíz**: el campo `showViz` tenía el atributo `[SerializeField]`:
+
+```csharp
+[SerializeField] private bool showViz = false;   // ← el valor del Inspector sobreescribe el default
+```
+
+Durante una sesión de debugging, alguien presionó **F5** (el toggle de runtime) para habilitar la visualización, y la escena fue **guardada en ese estado**. El YAML de `Room.unity` quedó con:
+
+```yaml
+showViz: 1       # persiste entre sesiones porque el campo es [SerializeField]
+showUserSide: 1
+showAvatarSide: 1
+showAxisLines: 1
+```
+
+Al abrir la escena, `OnEnable()` leía `showViz = true` (del valor serializado) y habilitaba todos los objetos de debug. El default `false` del código era irrelevante: Unity lo sobreescribe con el valor guardado en el asset.
+
+El mismo problema existía en `AvatarHandTunerHUD`: `showOnGUI: 1` en el YAML hacía que el overlay 2D de tuning de muñeca apareciera en pantalla.
+
+**Fix**: eliminar `[SerializeField]` de ambos campos. Sin el atributo, Unity ignora cualquier valor guardado en el asset y el campo siempre empieza con el default del código (`false`). El toggle de runtime (F5 / F4) sigue funcionando para debugging sin persistir al guardar.
+
+```csharp
+// AvatarHandJointDebugViz.cs — antes:
+[SerializeField] private bool showViz = false;
+
+// después:
+private bool showViz = false;   // no serializado; el valor en escena es ignorado
+```
+
+```csharp
+// AvatarHandTunerHUD.cs — antes:
+[SerializeField] private bool showOnGUI = true;
+
+// después:
+private bool showOnGUI = false;  // no serializado; siempre arranca oculto
+```
+
+**Patrón general a seguir**: los flags de habilitación de sistemas de debug que se usan solo para diagnóstico puntual (y que tienen un toggle de runtime) **no deben ser `[SerializeField]`**. Si son serializados, el riesgo de que el valor "debug = true" se cuele en la escena guardada es alto. Las opciones según el caso:
+
+| Caso | Recomendación |
+|---|---|
+| Toggle permanente (nunca cambia en prod) | `private const bool ShowX = false` |
+| Toggle temporal con runtime key | `private bool showX = false` (sin SerializeField) |
+| Configurable por instancia en Inspector | `[SerializeField] private bool showX = false` (solo si es intencional que persista) |
+
+---
+
+### Estado tras la sesión
+
+| Sistema | Estado |
+|---|---|
+| LAN Discovery: `ParseBroadcast` thread-safe | ✅ `_mainThreadTime` volatile leído en background thread |
+| LAN Discovery: excepción en `catch` loguea en consola | ✅ `catch (Exception ex)` con `Debug.LogWarning` |
+| Poke con índice sobre bloques Jenga | ✅ `indexMarker.localPosition` actualizado siempre (fuera de ShowVisualizers) |
+| Grab con raycast+pinch sobre bloques Jenga | ✅ `pinchMarker.localPosition` actualizado siempre (fuera de ShowVisualizers) |
+| `AvatarHandJointDebugViz` oculto en producción | ✅ `showViz` sin `[SerializeField]`; F5 toggle disponible para debug |
+| `AvatarHandTunerHUD` oculto en producción | ✅ `showOnGUI` sin `[SerializeField]`; F4 toggle disponible para debug |
+
+---
+
 ## 2026-05-27 — Conectividad LAN, fix paquete HTC SDK y correcciones del avatar
 
 Branch activo: `look-and-feel-prototype`.
