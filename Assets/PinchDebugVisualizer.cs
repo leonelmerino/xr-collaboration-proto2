@@ -178,18 +178,27 @@ public class PinchDebugVisualizer : MonoBehaviour
         float pinchDistance = Vector3.Distance(thumbPose.position, indexPose.position);
         bool isPinching = pinchDistance < pinchThreshold;
 
-        // Toda la actualizacion de visuals se omite cuando ShowVisualizers esta apagado.
+        // Posiciones: siempre actualizadas, independiente de ShowVisualizers.
+        // Estos Transforms son referencias compartidas con JengaPokeInteractor (pokePoint)
+        // y JengaRayGrabInteractor (pinchPoint) — son datos de fisica, no solo visuales.
+        thumbMarker.localPosition = thumbPose.position;
+        thumbMarker.localRotation = thumbPose.rotation;
+
+        indexMarker.localPosition = indexPose.position;
+        indexMarker.localRotation = indexPose.rotation;
+
+        if (isPinching)
+        {
+            pinchMarker.localPosition = (thumbPose.position + indexPose.position) * 0.5f;
+            pinchMarker.localRotation = Quaternion.identity;
+        }
+
+        // Visuales: solo cuando ShowVisualizers esta activo.
         // Los GameObjects de los markers quedan inactivos (Awake los desactivo) y nunca
         // se re-activan, eliminando las esferas/lineas decorativas de la vista.
         if (ShowVisualizers)
         {
             SetHandActive(thumbMarker, indexMarker, pinchMarker, pinchLine, rayOrigin, true);
-
-            thumbMarker.localPosition = thumbPose.position;
-            thumbMarker.localRotation = thumbPose.rotation;
-
-            indexMarker.localPosition = indexPose.position;
-            indexMarker.localRotation = indexPose.rotation;
 
             if (pinchLine != null)
             {
@@ -199,15 +208,9 @@ public class PinchDebugVisualizer : MonoBehaviour
             }
 
             if (isPinching)
-            {
                 pinchMarker.gameObject.SetActive(true);
-                pinchMarker.localPosition = (thumbPose.position + indexPose.position) * 0.5f;
-                pinchMarker.localRotation = Quaternion.identity;
-            }
             else
-            {
                 pinchMarker.gameObject.SetActive(false);
-            }
         }
 
         UpdateRayOrigin(
