@@ -1,5 +1,288 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-05-27 — Conectividad LAN, fix paquete HTC SDK y correcciones del avatar
+
+Branch activo: `look-and-feel-prototype`.
+
+Sesión de diagnóstico y hardening en la que se resolvieron tres clases de problemas ortogonales: un error de conectividad entre dos PCs en LAN, una referencia rota al SDK de HTC en el paquete de Unity, y una serie de bugs en el sistema de avatar (altura al agacharse, visibilidad del owner, marcadores de debug persistentes). Todos los arreglos se commitearon y pushearon al repo remoto.
+
+---
+
+### 1. Conectividad LAN: "All socket receive requests were marked as failed"
+
+**Síntoma**: al correr el cliente en un segundo PC en la misma LAN, NGO no lograba conectarse al host. El log del cliente mostraba:
+
+```text
+[Netcode] All socket receive requests were marked as failed.
+```
+
+La causa raíz era doble:
+
+1. El `UnityTransport.ConnectionData.Address` en `Room.unity` estaba seteado a `192.168.88.182` (IP hardcodeada de la máquina del host). En el PC cliente, ese valor se lee como destino, pero el LAN Discovery (UDP 7778) no llegaba a completarse porque el firewall de Windows bloqueaba los paquetes UDP en ambas máquinas.
+2. Sin discovery exitoso, NGO intentaba conectar a la dirección estática — que en el host mismo era localhost y en el cliente era inalcanzable.
+
+**Fix: reglas de firewall vía PowerShell** (ejecutar como Administrador en **ambas** máquinas):
+
+```powershell
+# Puerto 7777 UDP — tráfico de juego NGO
+New-NetFirewallRule -DisplayName "Unity NGO Game Port" -Direction Inbound `
+    -Protocol UDP -LocalPort 7777 -Action Allow
+
+# Puerto 7778 UDP — LAN Discovery broadcast
+New-NetFirewallRule -DisplayName "Unity LAN Discovery" -Direction Inbound `
+    -Protocol UDP -LocalPort 7778 -Action Allow
+```
+
+Resultado: el LAN Discovery empezó a recibir broadcasts del host, NGO conectó correctamente. Se verificó con dos PCs en la misma red local (router hogareño). La IP en `Room.unity` se dejó en `127.0.0.1` (el discovery la sobreescribe en runtime vía `LanDiscoveryService`); no se commitea la IP de máquina específica para que el repo no rompa en otros equipos.
+
+**Nota de mantenimiento**: el `Room.unity` tiene un campo `ConnectionData.Address` en el componente `UnityTransport` que actúa como fallback solo si el discovery falla. Si se desea un fallback funcional, mantenerlo en `127.0.0.1` (host = loopback = sí mismo) o en la IP del host designado por el laboratorio. No commitear IPs de máquinas individuales.
+
+---
+
+### 2. Fix del paquete HTC SDK: ruta local rota → OpenUPM
+
+**Síntoma**: al hacer `git pull` en una máquina distinta a la que inició el repo, Unity no compilaba con error:
+
+```text
+Cannot find package com.htc.upm.vive.openxr at path C:/Users/merino/Downloads/VIVE-OpenXR-Unity-master/...
+```
+
+**Causa**: `Packages/manifest.json` tenía la dependencia con ruta absoluta local del disco de otro desarrollador:
+
+```json
+"com.htc.upm.vive.openxr": "file:C:/Users/merino/Downloads/VIVE-OpenXR-Unity-master/com.htc.upm.vive.openxr"
+```
+
+**Fix** (commit `d08e788`): migrar al registro OpenUPM con versión fija.
+
+`Packages/manifest.json` — cambio de la dependencia:
+
+```json
+"com.htc.upm.vive.openxr": "2.5.1"
+```
+
+`Packages/manifest.json` — bloque `scopedRegistries` agregado al inicio del JSON:
+
+```json
+"scopedRegistries": [
+    {
+        "name": "package.openupm.com",
+        "url": "https://package.openupm.com",
+        "scopes": [
+            "com.htc.upm.vive.openxr"
+        ]
+    }
+]
+```
+
+`ProjectSettings/PackageManagerSettings.asset` — se registró el mismo scoped registry de OpenUPM para que el Package Manager UI de Unity lo muestre correctamente.
+
+`Assets/XR/Settings/OpenXR Editor Settings.asset` — se habilitó el feature set `com.htc.vive.openxr.featureset.vivexr` que estaba faltando.
+
+Este fix también se aplicó retroactivamente al branch `look-and-feel-prototype` vía `git cherry-pick`, resolviendo el conflicto manual en `manifest.json` (ese branch tiene `com.unity.animation.rigging: 1.2.1` que `main` no tenía; se conservaron ambas dependencias).
+
+---
+
+### 3. Fix avatar — agachado proporcional con calibración automática de altura
+
+**Síntoma**: al agacharse en VR, el root del avatar quedaba anclado en `Y = 0` independientemente de la posición del HMD. Las caderas, el torso y los brazos del avatar permanecían en la misma altura que estando de pie.
+
+**Causa**: `AvatarFollowXROrigin.cs` tenía el Y del root hardcodeado:
+
+```csharp
+transform.position = new Vector3(hmd.position.x, 0f, hmd.position.z);
+```
+
+**Fix** en `Assets/AvatarFollowXROrigin.cs`:
+
+Se agregaron dos campos serializados y lógica de calibración automática de altura de pie:
+
+```csharp
+[SerializeField] private bool autoCalibrateHeight = true;
+[SerializeField] private float standingHmdHeight = 1.7f;
+private bool heightCalibrated = false;
+```
+
+Calibración en el primer frame válido con HMD activo (altura > 0.1 m):
+
+```csharp
+if (autoCalibrateHeight && !heightCalibrated && hmd.position.y > 0.1f)
+{
+    standingHmdHeight = hmd.position.y;
+    heightCalibrated = true;
+    Debug.Log($"[AvatarFollowXROrigin] Altura calibrada: {standingHmdHeight:F2}m");
+}
+```
+
+Cálculo del Y del root con `Mathf.Min(0, ...)` para evitar flotar sobre el suelo:
+
+```csharp
+float bodyY = Mathf.Min(0f, hmd.position.y - standingHmdHeight);
+transform.position = new Vector3(hmd.position.x, bodyY, hmd.position.z);
+```
+
+**Semántica**: cuando el usuario está de pie, `hmd.position.y ≈ standingHmdHeight`, por lo que `bodyY = 0` — el root queda en el suelo como antes. Al agacharse, `bodyY` se vuelve negativo proporcional al descenso del HMD — el avatar se hunde bajo el suelo, que es el efecto correcto (no se pretende hacer una animación de sentado, sino que el cuerpo siga al usuario).
+
+El clamp `Mathf.Min(0f, ...)` impide que el avatar flote sobre el piso si el usuario se pone de puntillas (la altura nunca puede ser positiva; solo puede hundirse o quedar al ras del suelo).
+
+---
+
+### 4. Fix avatar — visibilidad del owner: evitar verse desde adentro
+
+**Síntoma**: con el fix de agachado activo, al agacharse el root del avatar desciende y el torso/cuerpo del mesh humanoid rodea la cámara del HMD → el usuario ve el interior del mesh.
+
+**Decisión**: la convención estándar de VR social es que el owner no ve su propio avatar completo (evita el clipping). Los demás usuarios sí lo ven sin cambios.
+
+**Primera iteración (descartada en esta sesión)**: `GetComponentsInChildren<SkinnedMeshRenderer>()` para ocultar todos los renderers del avatar al owner. Problema: también ocultaba los renderers de brazos y manos, que el usuario necesita ver para la interacción con Jenga.
+
+**Solución final** en `AvatarFollowXROrigin.cs`:
+
+```csharp
+[Header("Owner visibility")]
+[Tooltip("Renderers del cuerpo (torso, cabeza) que se ocultan cuando este cliente es el owner. " +
+         "Arrastrar SOLO el SkinnedMeshRenderer del cuerpo principal. " +
+         "NO incluir brazos ni manos.")]
+[SerializeField] private Renderer[] ownBodyRenderers = new Renderer[0];
+
+private void HideOwnAvatarRenderers()
+{
+    if (ownBodyRenderers == null || ownBodyRenderers.Length == 0)
+    {
+        Debug.LogWarning("[AvatarFollowXROrigin] ownBodyRenderers esta vacio. " +
+                         "Asigna el SkinnedMeshRenderer del torso en el Inspector.");
+        return;
+    }
+    int count = 0;
+    foreach (var r in ownBodyRenderers)
+        if (r != null) { r.enabled = false; count++; }
+    Debug.Log($"[AvatarFollowXROrigin] {count} renderer(s) del cuerpo propio ocultados (IsOwner).");
+}
+```
+
+Se llama desde `OnNetworkSpawn` solo cuando `IsOwner == true`. Los clientes remotos no ejecutan esta ruta — su instancia del avatar mantiene todos los renderers activos.
+
+**Configuración en Inspector**: arrastrar al campo `ownBodyRenderers` únicamente el `SkinnedMeshRenderer` del cuerpo/torso del sub-mesh activo. Los renderers de brazos, manos y dedos se excluyen explícitamente.
+
+**Nota**: este enfoque es deliberadamente explícito (lista manual) en vez de automático (auto-detect por nombre/tag). El motivo es que la jerarquía del rig Rocketbox Biped tiene un solo `SkinnedMeshRenderer` por sub-mesh (`m013_hipoly_81_bones_opacity`) que cubre todo el cuerpo incluyendo manos. Si en el futuro se separa en sub-meshes (cuerpo + manos independientes), el campo se configura correspondientemente. Una detección automática que intentara inferir "cuerpo pero no manos" sería frágil ante cambios de jerarquía.
+
+---
+
+### 5. Fix marcadores de debug — esferas y líneas persistentes
+
+Con el avatar humanoide Rocketbox funcional (sesión 2026-05-24), las visualizaciones decorativas legacy (esferas de ThumbTip/IndexTip, PinchLine, RayDisplay) debían estar ocultas vía las constantes `ShowVisualizers = false` introducidas en esa sesión. Sin embargo, dos bugs independientes las mantenían visibles:
+
+#### 5a. Bug en `PinchDebugVisualizer.cs` — `SetHandActive(true)` re-activaba los markers
+
+`ShowVisualizers = false` ocultaba los markers en `Awake` vía `HideMarker()`. Pero en `UpdateSingleHand`, el path de mano tracked llamaba:
+
+```csharp
+SetHandActive(thumbMarker, indexMarker, pinchMarker, pinchLine, rayOrigin, true);
+```
+
+`SetHandActive` hace `gameObject.SetActive(active)` — re-activaba el GameObject. La llamada posterior a `HideMarker` desactivaba el Renderer, pero solo si el Renderer estaba directamente en el Transform; si el mesh estaba en un child, `HideMarker` podía no alcanzarlo, y el GameObject activo con Renderer activo = esfera visible.
+
+**Fix**: toda la actualización visual se agrupa bajo un único `if (ShowVisualizers)`. La detección de pinch y el `rayGrabInteractor.SetPinchState` quedan **fuera** del bloque — corren siempre para que el grab interaction siga funcionando:
+
+```csharp
+float pinchDistance = Vector3.Distance(thumbPose.position, indexPose.position);
+bool isPinching = pinchDistance < pinchThreshold;
+
+if (ShowVisualizers)
+{
+    SetHandActive(thumbMarker, indexMarker, pinchMarker, pinchLine, rayOrigin, true);
+    thumbMarker.localPosition = thumbPose.position;
+    // ... actualizar posiciones, pinchLine, pinchMarker ...
+}
+
+// Lógica de grab: siempre activa independiente de ShowVisualizers.
+UpdateRayOrigin(hand, palm, indexProximal, thumbProximal, indexPose.position, rayOrigin);
+if (rayGrabInteractor != null)
+    rayGrabInteractor.SetPinchState(isPinching);
+```
+
+Los GameObjects de los markers nunca reciben `SetActive(true)` cuando `ShowVisualizers = false`. Como `Awake` los desactiva al inicio, permanecen inactivos durante toda la sesión.
+
+#### 5b. Bug en `NetworkedAvatarHands.cs` — early-return ocultaba también el rayo de selección
+
+El bloque de `ApplyHandState` con `!ShowVisualizers` hacía:
+
+```csharp
+if (!ShowVisualizers)
+{
+    if (handRoot != null) handRoot.SetActive(false);
+    if (pinchLine != null) pinchLine.enabled = false;
+    if (rayDisplay != null) rayDisplay.enabled = false;  // ← también ocultaba el rayo
+    return;
+}
+```
+
+El `return` prematuro impedía que el bloque del `rayDisplay` al final del método se ejecutara, ocultando el rayo de selección que el usuario necesita para interactuar con los bloques de Jenga.
+
+**Fix**: separar la lógica de markers (dependiente de `ShowVisualizers`) de la lógica del `rayDisplay` (siempre activa):
+
+```csharp
+if (!ShowVisualizers)
+{
+    if (handRoot != null) handRoot.SetActive(false);
+    if (pinchLine != null) pinchLine.enabled = false;
+    // NO return — rayDisplay se procesa siempre a continuación.
+}
+else
+{
+    // ... actualización completa de markers, pinchLine, thumb/index/pinch ...
+}
+
+// El rayo de selección siempre se actualiza, sin importar ShowVisualizers.
+if (rayDisplay != null)
+{
+    if (state.rayActive) { rayDisplay.enabled = true; /* setear posiciones */ }
+    else { rayDisplay.enabled = false; }
+}
+```
+
+Resultado: las esferas y líneas de debug (ThumbTip, IndexTip, PinchLine) quedan ocultas. El `LineRenderer` del rayo de selección (`JengaRayGrabInteractor`) sigue visible y funcional.
+
+---
+
+### 6. Incorporación de `.vsconfig`
+
+Se agregó `.vsconfig` al repositorio:
+
+```json
+{
+  "version": "1.0",
+  "components": [
+    "Microsoft.VisualStudio.Workload.ManagedGame"
+  ]
+}
+```
+
+Este archivo es leído por Visual Studio al abrir la solución del proyecto y sugiere automáticamente instalar el workload **"Game development with Unity"** si no está presente. Permite que cualquier desarrollador que clone el repo en Windows con Visual Studio tenga el entorno de Unity configurado sin pasos manuales adicionales.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| Conectividad LAN entre dos PCs (firewall rules UDP 7777/7778) | ✅ Confirmado funcionando en red local con router |
+| Fix paquete `com.htc.upm.vive.openxr` → OpenUPM `2.5.1` | ✅ Commiteado en `main` y `look-and-feel-prototype` |
+| Avatar — agachado proporcional con calibración automática de altura | ✅ `AvatarFollowXROrigin` con `autoCalibrateHeight` + `Mathf.Min(0f, bodyY)` |
+| Avatar — visibilidad del owner: campo `ownBodyRenderers` para ocultar solo el torso | ✅ Lista explícita en Inspector; brazos/manos permanecen visibles |
+| `PinchDebugVisualizer` — markers nunca se re-activan con `ShowVisualizers=false` | ✅ Toda la lógica visual bajo `if (ShowVisualizers)` |
+| `NetworkedAvatarHands` — rayo de selección visible con `ShowVisualizers=false` | ✅ `rayDisplay` siempre procesado fuera del early-return |
+| `.vsconfig` con workload `ManagedGame` | ✅ Commiteado en el repo |
+
+---
+
+### Pendiente
+
+* **Asignar `ownBodyRenderers` en el Inspector del prefab**: el campo está creado pero vacío. Hay que abrir `AvatarHumanoid.prefab`, seleccionar el sub-mesh del rol correspondiente y arrastrar el `SkinnedMeshRenderer` principal (`m013_hipoly_81_bones_opacity` para Host, equivalente para Client/Helper) al campo en el componente `AvatarFollowXROrigin`. Hasta que se configure, el warning del log aparece y el owner ve el torso desde adentro al agacharse.
+* **Revertir `Room.unity` antes de commitear**: el archivo tiene la IP `192.168.88.182` hardcodeada del PC de trabajo. Revertir a `127.0.0.1` antes de cualquier commit de escena para que el repo no rompa en otros equipos.
+* **Validar visibilidad de brazos/manos del owner**: confirmar en VR que al ocultar el torso (una vez configurado `ownBodyRenderers`) los brazos y manos del avatar siguen siendo visibles para el owner y siguen driveando correctamente.
+
+---
+
 ## 2026-05-24 — Avatares humanoides Rocketbox: head/hand IK + finger driving geométrico
 
 Branch activo: `look-and-feel-prototype` (continuación de la sesión visual del día anterior).
