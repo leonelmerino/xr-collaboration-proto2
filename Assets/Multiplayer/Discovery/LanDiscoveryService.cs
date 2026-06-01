@@ -48,6 +48,11 @@ public class LanDiscoveryService : MonoBehaviour
     private readonly Queue<DiscoveryRecord> incomingQueue = new();
     private readonly object queueLock = new();
 
+    // Tiempo del main thread, copiado en Update() para que ParseBroadcast
+    // lo pueda leer de forma segura desde el background thread.
+    // (Time.realtimeSinceStartup lanza UnityException si se llama fuera del main thread.)
+    private volatile float _mainThreadTime;
+
     private void Awake()
     {
         if (Instance == null) Instance = this;
@@ -71,6 +76,9 @@ public class LanDiscoveryService : MonoBehaviour
 
     private void Update()
     {
+        // Actualizar el timestamp del main thread antes de usarlo en ParseBroadcast.
+        _mainThreadTime = Time.realtimeSinceStartup;
+
         // Drenar paquetes recibidos en background thread.
         lock (queueLock)
         {
@@ -346,10 +354,14 @@ public class LanDiscoveryService : MonoBehaviour
                 hostName = string.IsNullOrEmpty(host) ? "unknown" : host,
                 sessionId = string.IsNullOrEmpty(session) ? "unknown" : session,
                 gamePort = gamePort,
-                lastSeenLocalTime = Time.realtimeSinceStartup
+                lastSeenLocalTime = _mainThreadTime   // thread-safe: volatile float del main thread
             };
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[LanDiscovery] ParseBroadcast excepcion: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
     }
 
     private void MergeDiscovery(DiscoveryRecord newRec)
