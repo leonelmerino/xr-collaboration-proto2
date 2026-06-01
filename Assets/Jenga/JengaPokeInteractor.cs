@@ -38,12 +38,19 @@ public class JengaPokeInteractor : MonoBehaviour
         foreach (Collider hit in hits)
         {
             Rigidbody rb = hit.attachedRigidbody;
+            JengaBlockTag blockTag = hit.GetComponentInParent<JengaBlockTag>();
 
-            if (rb != null && hit.GetComponentInParent<JengaBlockTag>() != null)
+            if (rb != null && blockTag != null)
             {
                 Vector3 forceDir = movement.normalized;
                 rb.AddForce(forceDir * pokeForce, ForceMode.Impulse);
                 lastPokeTime = Time.time;
+
+                // Notificar al TurnManager que este bloque fue tocado (poke).
+                // Si es la primera interacción del turno → dispara TASK_START.
+                // Si ya había interacciones previas → dispara BLOCK_TOUCH.
+                JengaTurnManager.Instance?.NotifyBlockInteraction(blockTag.gameObject.name);
+
                 break;
             }
         }

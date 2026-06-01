@@ -67,6 +67,12 @@ public class JengaRayGrabInteractor : MonoBehaviour
             if (g != null && !IsBlockTaken(g))
             {
                 currentGrabbed = g;
+
+                // Notificar al TurnManager ANTES del evento BioLab genérico:
+                // si es la primera interacción del turno, BeginTask() se llama aquí,
+                // lo que habilita la emisión de GRAB_BEGIN_RAY a continuación.
+                JengaTurnManager.Instance?.NotifyBlockInteraction(g.gameObject.name);
+
                 var net = g.GetComponent<NetworkedJengaBlock>();
                 if (net != null)
                     net.RequestGrab(pinchPoint);
@@ -83,6 +89,16 @@ public class JengaRayGrabInteractor : MonoBehaviour
         if (currentGrabbed != null)
         {
             string blockName = currentGrabbed.gameObject.name;
+            Vector3 blockPos = currentGrabbed.transform.position;
+
+            // Chequear si el bloque está fuera de la huella ANTES de soltarlo.
+            bool outsideFootprint = JengaTowerMonitor.Instance != null &&
+                                    JengaTowerMonitor.Instance.IsOutsideFootprint(blockPos);
+
+            // Emitir evento genérico ANTES de NotifyBlockReleased, porque
+            // NotifyBlockReleased puede llamar EndTask() cerrando la ventana de emisión.
+            EmitInteractionEvent("GRAB_END_RAY", blockName);
+
             var net = currentGrabbed.GetComponent<NetworkedJengaBlock>();
             if (net != null)
                 net.RequestRelease();
@@ -90,7 +106,8 @@ public class JengaRayGrabInteractor : MonoBehaviour
                 currentGrabbed.EndGrab();
             currentGrabbed = null;
 
-            EmitInteractionEvent("GRAB_END_RAY", blockName);
+            // Notificar al TurnManager: si el bloque quedó fuera de huella → BLOCK_REMOVED.
+            JengaTurnManager.Instance?.NotifyBlockReleased(blockName, outsideFootprint);
         }
 
         if (pokeInteractor != null)
