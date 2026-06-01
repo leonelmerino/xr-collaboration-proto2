@@ -1,5 +1,1296 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-06-01 — Tres bugs de regresión: LAN Discovery, interacción Jenga y marcadores de debug
+
+Branch activo: `look-and-feel-prototype`.
+
+Sesión de diagnóstico y corrección de tres bugs independientes que se habían introducido en sesiones anteriores. Los tres comparten un patrón: un cambio aparentemente inocuo en la lógica visual rompió silenciosamente un sistema de física o de red subyacente. Se documentan con detalle porque el patrón es recurrente y puede afectar futuras modificaciones.
+
+---
+
+### 1. LAN Discovery: `ParseBroadcast` lanza excepción silenciosa desde background thread
+
+**Síntoma**: el cliente recibía correctamente los paquetes UDP del host (confirmado por los logs de diagnóstico `"DIAG CLIENT — paquete recibido"`), pasaba el filtro de magic (`XRCOLLAB|`), pero el HUD mostraba siempre "No se encontró ningún host en LAN". El log mostraba:
+
+```
+[LanDiscovery] DIAG CLIENT — ParseBroadcast devolvio null para: XRCOLLAB|v=1|session=P001_S001|host=STIMULUS1|game_port=7777|ts=...
+```
+
+**Causa raíz**: `ParseBroadcast` se ejecuta desde el background thread `ClientListenLoop`. En su interior, al construir el `DiscoveryRecord`, asignaba:
+
+```csharp
+lastSeenLocalTime = Time.realtimeSinceStartup   // ← lanza UnityException fuera del main thread
+```
+
+La documentación de Unity marca `Time.realtimeSinceStartup` como thread-safe, pero en la práctica lanza `UnityException: get_realtimeSinceStartup can only be called from the main thread`. Esta excepción era capturada silenciosamente por el bloque:
+
+```csharp
+catch { return null; }   // ← tragaba la excepción sin loguearla
+```
+
+El resultado: `ParseBroadcast` retornaba `null` para cada paquete válido, sin dejar ningún rastro en el log. El canal de recepción UDP funcionaba perfectamente; la falla estaba en el procesamiento del paquete.
+
+**Fix en `Assets/Multiplayer/Discovery/LanDiscoveryService.cs`**:
+
+Se agregó un campo `volatile float _mainThreadTime` que se actualiza en `Update()` (main thread) y es leído desde el background thread en `ParseBroadcast`:
+
+```csharp
+// Campo nuevo:
+private volatile float _mainThreadTime;
+
+// En Update() — main thread:
+_mainThreadTime = Time.realtimeSinceStartup;
+
+// En ParseBroadcast() — background thread:
+return new DiscoveryRecord
+{
+    ...
+    lastSeenLocalTime = _mainThreadTime   // thread-safe: volatile float del main thread
+};
+```
+
+El modificador `volatile` garantiza visibilidad inmediata del valor entre threads sin necesidad de lock (la escritura en `Update` y la lectura en el thread de red no compiten estructuralmente — el peor caso es leer un timestamp de hace un frame, que es aceptable).
+
+El `catch` también se convirtió en `catch (Exception ex)` con log explícito, para que cualquier excepción futura sea visible en consola:
+
+```csharp
+catch (Exception ex)
+{
+    Debug.LogWarning($"[LanDiscovery] ParseBroadcast excepcion: {ex.GetType().Name}: {ex.Message}");
+    return null;
+}
+```
+
+**Nota de diseño**: `Time.realtimeSinceStartup` no es el único miembro de `Time` que puede fallar fuera del main thread. Cualquier acceso a la API de Unity desde un background thread debe asumir que puede lanzar `UnityException`. El patrón correcto es siempre copiar el valor en el main thread a un campo `volatile` o pasarlo como parámetro al thread.
+
+---
+
+### 2. Interacción con Jenga rota: regresión introducida en commit `ed6188d`
+
+**Síntoma**: ni el poke con el dedo índice ni el grab con raycast+pinch tenían efecto sobre los bloques. El rayo de selección era visible y apuntaba correctamente, pero ni un toque ni una agarrada producían ningún resultado.
+
+**Causa raíz**: el commit `ed6188d` ("fix: oculta marcadores de debug de mano") reestructuró `PinchDebugVisualizer.UpdateSingleHand` agrupando toda la lógica de actualización de markers bajo un bloque `if (ShowVisualizers)`. Con `ShowVisualizers = false` (el valor de producción), esto incluía las líneas que actualizan las posiciones de los Transforms:
+
+```csharp
+// Después del commit — INCORRECTO:
+if (ShowVisualizers)
+{
+    thumbMarker.localPosition = thumbPose.position;   // ← posición de física bloqueada
+    indexMarker.localPosition = indexPose.position;   // ← posición de física bloqueada
+    pinchMarker.localPosition = (thumbPose.position + indexPose.position) * 0.5f;  // ← ídem
+    // ... lógica visual
+}
+```
+
+El problema es que estos Transforms **no son solo visuales**: están referenciados directamente por los sistemas de interacción como datos de física:
+
+| Transform | Usado como | En componente |
+|---|---|---|
+| `rightIndex` (fileID 1604341562) | `pokePoint` | `JengaPokeInteractor` (mano derecha) |
+| `rightPinch` (fileID 2101037878) | `pinchPoint` | `JengaRayGrabInteractor` (mano derecha) |
+| `leftIndex` (fileID 1836880594) | `pokePoint` | `JengaPokeInteractor` (mano izquierda) |
+
+Con los Transforms congelados en su posición inicial:
+
+- **Poke**: `JengaPokeInteractor.Update` calcula `movement = pokePoint.position - previousPosition`. Si `pokePoint` no se mueve, `movement.magnitude ≈ 0` → early return → nunca se aplica fuerza.
+
+- **Grab**: `JengaGrabbable.BeginGrab(pinchPoint)` captura `initialGrabOffset = block.position - pinchPoint.position`. Si `pinchPoint.position ≈ (0,0,0)`, entonces `initialGrabOffset = block.position`. Cada frame: `desired = (0,0,0) + block.position = block.position`. El bloque recibe fuerza hacia sí mismo → no se mueve → parece que el grab no activó.
+
+La dirección del rayo (`rayOrigin`) sí se actualizaba correctamente (estaba fuera del bloque `ShowVisualizers`), por lo que el raycast funcionaba y el rayo era visible, pero el grab no tenía efecto.
+
+**Fix en `Assets/PinchDebugVisualizer.cs`**:
+
+Se separaron las dos responsabilidades que el código mezclaba: actualización de posición (siempre necesaria) y actualización visual (solo cuando `ShowVisualizers = true`):
+
+```csharp
+// Posiciones: siempre actualizadas, independiente de ShowVisualizers.
+// Estos Transforms son referencias compartidas con JengaPokeInteractor (pokePoint)
+// y JengaRayGrabInteractor (pinchPoint) — son datos de fisica, no solo visuales.
+thumbMarker.localPosition = thumbPose.position;
+thumbMarker.localRotation = thumbPose.rotation;
+indexMarker.localPosition = indexPose.position;
+indexMarker.localRotation = indexPose.rotation;
+if (isPinching)
+{
+    pinchMarker.localPosition = (thumbPose.position + indexPose.position) * 0.5f;
+    pinchMarker.localRotation = Quaternion.identity;
+}
+
+// Visuales: solo cuando ShowVisualizers esta activo.
+if (ShowVisualizers)
+{
+    SetHandActive(thumbMarker, indexMarker, pinchMarker, pinchLine, rayOrigin, true);
+    // ... actualizar LineRenderers, SetActive de pinchMarker, etc.
+}
+```
+
+**Invariante a mantener en el futuro**: en `PinchDebugVisualizer`, los Transforms `rightIndex`, `rightPinch`, `leftIndex`, `leftPinch` son puntos de datos compartidos entre el sistema visual y el sistema de física. Cualquier refactoring que bloquee su actualización (por ejemplo, moverlos dentro de un `if` gateado) romperá la interacción con el Jenga. La posición de un Transform y la visibilidad de su renderer son responsabilidades independientes.
+
+---
+
+### 3. Marcadores de validación geométrica visibles en producción
+
+**Síntoma**: en la escena aparecían esferas verdes (wrist + middle metacarpal + thumb metacarpal del usuario real, lado XR Hands) y esferas rojas (bones equivalentes del avatar), más líneas magenta (fingers forward) y cian (palm normal). Estas son las marcas del `AvatarHandJointDebugViz`, el componente de diagnóstico creado durante la sesión de alineación geométrica de manos (2026-05-24).
+
+**Causa raíz**: el campo `showViz` tenía el atributo `[SerializeField]`:
+
+```csharp
+[SerializeField] private bool showViz = false;   // ← el valor del Inspector sobreescribe el default
+```
+
+Durante una sesión de debugging, alguien presionó **F5** (el toggle de runtime) para habilitar la visualización, y la escena fue **guardada en ese estado**. El YAML de `Room.unity` quedó con:
+
+```yaml
+showViz: 1       # persiste entre sesiones porque el campo es [SerializeField]
+showUserSide: 1
+showAvatarSide: 1
+showAxisLines: 1
+```
+
+Al abrir la escena, `OnEnable()` leía `showViz = true` (del valor serializado) y habilitaba todos los objetos de debug. El default `false` del código era irrelevante: Unity lo sobreescribe con el valor guardado en el asset.
+
+El mismo problema existía en `AvatarHandTunerHUD`: `showOnGUI: 1` en el YAML hacía que el overlay 2D de tuning de muñeca apareciera en pantalla.
+
+**Fix**: eliminar `[SerializeField]` de ambos campos. Sin el atributo, Unity ignora cualquier valor guardado en el asset y el campo siempre empieza con el default del código (`false`). El toggle de runtime (F5 / F4) sigue funcionando para debugging sin persistir al guardar.
+
+```csharp
+// AvatarHandJointDebugViz.cs — antes:
+[SerializeField] private bool showViz = false;
+
+// después:
+private bool showViz = false;   // no serializado; el valor en escena es ignorado
+```
+
+```csharp
+// AvatarHandTunerHUD.cs — antes:
+[SerializeField] private bool showOnGUI = true;
+
+// después:
+private bool showOnGUI = false;  // no serializado; siempre arranca oculto
+```
+
+**Patrón general a seguir**: los flags de habilitación de sistemas de debug que se usan solo para diagnóstico puntual (y que tienen un toggle de runtime) **no deben ser `[SerializeField]`**. Si son serializados, el riesgo de que el valor "debug = true" se cuele en la escena guardada es alto. Las opciones según el caso:
+
+| Caso | Recomendación |
+|---|---|
+| Toggle permanente (nunca cambia en prod) | `private const bool ShowX = false` |
+| Toggle temporal con runtime key | `private bool showX = false` (sin SerializeField) |
+| Configurable por instancia en Inspector | `[SerializeField] private bool showX = false` (solo si es intencional que persista) |
+
+---
+
+### Estado tras la sesión
+
+| Sistema | Estado |
+|---|---|
+| LAN Discovery: `ParseBroadcast` thread-safe | ✅ `_mainThreadTime` volatile leído en background thread |
+| LAN Discovery: excepción en `catch` loguea en consola | ✅ `catch (Exception ex)` con `Debug.LogWarning` |
+| Poke con índice sobre bloques Jenga | ✅ `indexMarker.localPosition` actualizado siempre (fuera de ShowVisualizers) |
+| Grab con raycast+pinch sobre bloques Jenga | ✅ `pinchMarker.localPosition` actualizado siempre (fuera de ShowVisualizers) |
+| `AvatarHandJointDebugViz` oculto en producción | ✅ `showViz` sin `[SerializeField]`; F5 toggle disponible para debug |
+| `AvatarHandTunerHUD` oculto en producción | ✅ `showOnGUI` sin `[SerializeField]`; F4 toggle disponible para debug |
+
+---
+
+## 2026-05-27 — Conectividad LAN, fix paquete HTC SDK y correcciones del avatar
+
+Branch activo: `look-and-feel-prototype`.
+
+Sesión de diagnóstico y hardening en la que se resolvieron tres clases de problemas ortogonales: un error de conectividad entre dos PCs en LAN, una referencia rota al SDK de HTC en el paquete de Unity, y una serie de bugs en el sistema de avatar (altura al agacharse, visibilidad del owner, marcadores de debug persistentes). Todos los arreglos se commitearon y pushearon al repo remoto.
+
+---
+
+### 1. Conectividad LAN: "All socket receive requests were marked as failed"
+
+**Síntoma**: al correr el cliente en un segundo PC en la misma LAN, NGO no lograba conectarse al host. El log del cliente mostraba:
+
+```text
+[Netcode] All socket receive requests were marked as failed.
+```
+
+La causa raíz era doble:
+
+1. El `UnityTransport.ConnectionData.Address` en `Room.unity` estaba seteado a `192.168.88.182` (IP hardcodeada de la máquina del host). En el PC cliente, ese valor se lee como destino, pero el LAN Discovery (UDP 7778) no llegaba a completarse porque el firewall de Windows bloqueaba los paquetes UDP en ambas máquinas.
+2. Sin discovery exitoso, NGO intentaba conectar a la dirección estática — que en el host mismo era localhost y en el cliente era inalcanzable.
+
+**Fix: reglas de firewall vía PowerShell** (ejecutar como Administrador en **ambas** máquinas):
+
+```powershell
+# Puerto 7777 UDP — tráfico de juego NGO
+New-NetFirewallRule -DisplayName "Unity NGO Game Port" -Direction Inbound `
+    -Protocol UDP -LocalPort 7777 -Action Allow
+
+# Puerto 7778 UDP — LAN Discovery broadcast
+New-NetFirewallRule -DisplayName "Unity LAN Discovery" -Direction Inbound `
+    -Protocol UDP -LocalPort 7778 -Action Allow
+```
+
+Resultado: el LAN Discovery empezó a recibir broadcasts del host, NGO conectó correctamente. Se verificó con dos PCs en la misma red local (router hogareño). La IP en `Room.unity` se dejó en `127.0.0.1` (el discovery la sobreescribe en runtime vía `LanDiscoveryService`); no se commitea la IP de máquina específica para que el repo no rompa en otros equipos.
+
+**Nota de mantenimiento**: el `Room.unity` tiene un campo `ConnectionData.Address` en el componente `UnityTransport` que actúa como fallback solo si el discovery falla. Si se desea un fallback funcional, mantenerlo en `127.0.0.1` (host = loopback = sí mismo) o en la IP del host designado por el laboratorio. No commitear IPs de máquinas individuales.
+
+---
+
+### 2. Fix del paquete HTC SDK: ruta local rota → OpenUPM
+
+**Síntoma**: al hacer `git pull` en una máquina distinta a la que inició el repo, Unity no compilaba con error:
+
+```text
+Cannot find package com.htc.upm.vive.openxr at path C:/Users/merino/Downloads/VIVE-OpenXR-Unity-master/...
+```
+
+**Causa**: `Packages/manifest.json` tenía la dependencia con ruta absoluta local del disco de otro desarrollador:
+
+```json
+"com.htc.upm.vive.openxr": "file:C:/Users/merino/Downloads/VIVE-OpenXR-Unity-master/com.htc.upm.vive.openxr"
+```
+
+**Fix** (commit `d08e788`): migrar al registro OpenUPM con versión fija.
+
+`Packages/manifest.json` — cambio de la dependencia:
+
+```json
+"com.htc.upm.vive.openxr": "2.5.1"
+```
+
+`Packages/manifest.json` — bloque `scopedRegistries` agregado al inicio del JSON:
+
+```json
+"scopedRegistries": [
+    {
+        "name": "package.openupm.com",
+        "url": "https://package.openupm.com",
+        "scopes": [
+            "com.htc.upm.vive.openxr"
+        ]
+    }
+]
+```
+
+`ProjectSettings/PackageManagerSettings.asset` — se registró el mismo scoped registry de OpenUPM para que el Package Manager UI de Unity lo muestre correctamente.
+
+`Assets/XR/Settings/OpenXR Editor Settings.asset` — se habilitó el feature set `com.htc.vive.openxr.featureset.vivexr` que estaba faltando.
+
+Este fix también se aplicó retroactivamente al branch `look-and-feel-prototype` vía `git cherry-pick`, resolviendo el conflicto manual en `manifest.json` (ese branch tiene `com.unity.animation.rigging: 1.2.1` que `main` no tenía; se conservaron ambas dependencias).
+
+---
+
+### 3. Fix avatar — agachado proporcional con calibración automática de altura
+
+**Síntoma**: al agacharse en VR, el root del avatar quedaba anclado en `Y = 0` independientemente de la posición del HMD. Las caderas, el torso y los brazos del avatar permanecían en la misma altura que estando de pie.
+
+**Causa**: `AvatarFollowXROrigin.cs` tenía el Y del root hardcodeado:
+
+```csharp
+transform.position = new Vector3(hmd.position.x, 0f, hmd.position.z);
+```
+
+**Fix** en `Assets/AvatarFollowXROrigin.cs`:
+
+Se agregaron dos campos serializados y lógica de calibración automática de altura de pie:
+
+```csharp
+[SerializeField] private bool autoCalibrateHeight = true;
+[SerializeField] private float standingHmdHeight = 1.7f;
+private bool heightCalibrated = false;
+```
+
+Calibración en el primer frame válido con HMD activo (altura > 0.1 m):
+
+```csharp
+if (autoCalibrateHeight && !heightCalibrated && hmd.position.y > 0.1f)
+{
+    standingHmdHeight = hmd.position.y;
+    heightCalibrated = true;
+    Debug.Log($"[AvatarFollowXROrigin] Altura calibrada: {standingHmdHeight:F2}m");
+}
+```
+
+Cálculo del Y del root con `Mathf.Min(0, ...)` para evitar flotar sobre el suelo:
+
+```csharp
+float bodyY = Mathf.Min(0f, hmd.position.y - standingHmdHeight);
+transform.position = new Vector3(hmd.position.x, bodyY, hmd.position.z);
+```
+
+**Semántica**: cuando el usuario está de pie, `hmd.position.y ≈ standingHmdHeight`, por lo que `bodyY = 0` — el root queda en el suelo como antes. Al agacharse, `bodyY` se vuelve negativo proporcional al descenso del HMD — el avatar se hunde bajo el suelo, que es el efecto correcto (no se pretende hacer una animación de sentado, sino que el cuerpo siga al usuario).
+
+El clamp `Mathf.Min(0f, ...)` impide que el avatar flote sobre el piso si el usuario se pone de puntillas (la altura nunca puede ser positiva; solo puede hundirse o quedar al ras del suelo).
+
+---
+
+### 4. Fix avatar — visibilidad del owner: evitar verse desde adentro
+
+**Síntoma**: con el fix de agachado activo, al agacharse el root del avatar desciende y el torso/cuerpo del mesh humanoid rodea la cámara del HMD → el usuario ve el interior del mesh.
+
+**Decisión**: la convención estándar de VR social es que el owner no ve su propio avatar completo (evita el clipping). Los demás usuarios sí lo ven sin cambios.
+
+**Primera iteración (descartada en esta sesión)**: `GetComponentsInChildren<SkinnedMeshRenderer>()` para ocultar todos los renderers del avatar al owner. Problema: también ocultaba los renderers de brazos y manos, que el usuario necesita ver para la interacción con Jenga.
+
+**Solución final** en `AvatarFollowXROrigin.cs`:
+
+```csharp
+[Header("Owner visibility")]
+[Tooltip("Renderers del cuerpo (torso, cabeza) que se ocultan cuando este cliente es el owner. " +
+         "Arrastrar SOLO el SkinnedMeshRenderer del cuerpo principal. " +
+         "NO incluir brazos ni manos.")]
+[SerializeField] private Renderer[] ownBodyRenderers = new Renderer[0];
+
+private void HideOwnAvatarRenderers()
+{
+    if (ownBodyRenderers == null || ownBodyRenderers.Length == 0)
+    {
+        Debug.LogWarning("[AvatarFollowXROrigin] ownBodyRenderers esta vacio. " +
+                         "Asigna el SkinnedMeshRenderer del torso en el Inspector.");
+        return;
+    }
+    int count = 0;
+    foreach (var r in ownBodyRenderers)
+        if (r != null) { r.enabled = false; count++; }
+    Debug.Log($"[AvatarFollowXROrigin] {count} renderer(s) del cuerpo propio ocultados (IsOwner).");
+}
+```
+
+Se llama desde `OnNetworkSpawn` solo cuando `IsOwner == true`. Los clientes remotos no ejecutan esta ruta — su instancia del avatar mantiene todos los renderers activos.
+
+**Configuración en Inspector**: arrastrar al campo `ownBodyRenderers` únicamente el `SkinnedMeshRenderer` del cuerpo/torso del sub-mesh activo. Los renderers de brazos, manos y dedos se excluyen explícitamente.
+
+**Nota**: este enfoque es deliberadamente explícito (lista manual) en vez de automático (auto-detect por nombre/tag). El motivo es que la jerarquía del rig Rocketbox Biped tiene un solo `SkinnedMeshRenderer` por sub-mesh (`m013_hipoly_81_bones_opacity`) que cubre todo el cuerpo incluyendo manos. Si en el futuro se separa en sub-meshes (cuerpo + manos independientes), el campo se configura correspondientemente. Una detección automática que intentara inferir "cuerpo pero no manos" sería frágil ante cambios de jerarquía.
+
+---
+
+### 5. Fix marcadores de debug — esferas y líneas persistentes
+
+Con el avatar humanoide Rocketbox funcional (sesión 2026-05-24), las visualizaciones decorativas legacy (esferas de ThumbTip/IndexTip, PinchLine, RayDisplay) debían estar ocultas vía las constantes `ShowVisualizers = false` introducidas en esa sesión. Sin embargo, dos bugs independientes las mantenían visibles:
+
+#### 5a. Bug en `PinchDebugVisualizer.cs` — `SetHandActive(true)` re-activaba los markers
+
+`ShowVisualizers = false` ocultaba los markers en `Awake` vía `HideMarker()`. Pero en `UpdateSingleHand`, el path de mano tracked llamaba:
+
+```csharp
+SetHandActive(thumbMarker, indexMarker, pinchMarker, pinchLine, rayOrigin, true);
+```
+
+`SetHandActive` hace `gameObject.SetActive(active)` — re-activaba el GameObject. La llamada posterior a `HideMarker` desactivaba el Renderer, pero solo si el Renderer estaba directamente en el Transform; si el mesh estaba en un child, `HideMarker` podía no alcanzarlo, y el GameObject activo con Renderer activo = esfera visible.
+
+**Fix**: toda la actualización visual se agrupa bajo un único `if (ShowVisualizers)`. La detección de pinch y el `rayGrabInteractor.SetPinchState` quedan **fuera** del bloque — corren siempre para que el grab interaction siga funcionando:
+
+```csharp
+float pinchDistance = Vector3.Distance(thumbPose.position, indexPose.position);
+bool isPinching = pinchDistance < pinchThreshold;
+
+if (ShowVisualizers)
+{
+    SetHandActive(thumbMarker, indexMarker, pinchMarker, pinchLine, rayOrigin, true);
+    thumbMarker.localPosition = thumbPose.position;
+    // ... actualizar posiciones, pinchLine, pinchMarker ...
+}
+
+// Lógica de grab: siempre activa independiente de ShowVisualizers.
+UpdateRayOrigin(hand, palm, indexProximal, thumbProximal, indexPose.position, rayOrigin);
+if (rayGrabInteractor != null)
+    rayGrabInteractor.SetPinchState(isPinching);
+```
+
+Los GameObjects de los markers nunca reciben `SetActive(true)` cuando `ShowVisualizers = false`. Como `Awake` los desactiva al inicio, permanecen inactivos durante toda la sesión.
+
+#### 5b. Bug en `NetworkedAvatarHands.cs` — early-return ocultaba también el rayo de selección
+
+El bloque de `ApplyHandState` con `!ShowVisualizers` hacía:
+
+```csharp
+if (!ShowVisualizers)
+{
+    if (handRoot != null) handRoot.SetActive(false);
+    if (pinchLine != null) pinchLine.enabled = false;
+    if (rayDisplay != null) rayDisplay.enabled = false;  // ← también ocultaba el rayo
+    return;
+}
+```
+
+El `return` prematuro impedía que el bloque del `rayDisplay` al final del método se ejecutara, ocultando el rayo de selección que el usuario necesita para interactuar con los bloques de Jenga.
+
+**Fix**: separar la lógica de markers (dependiente de `ShowVisualizers`) de la lógica del `rayDisplay` (siempre activa):
+
+```csharp
+if (!ShowVisualizers)
+{
+    if (handRoot != null) handRoot.SetActive(false);
+    if (pinchLine != null) pinchLine.enabled = false;
+    // NO return — rayDisplay se procesa siempre a continuación.
+}
+else
+{
+    // ... actualización completa de markers, pinchLine, thumb/index/pinch ...
+}
+
+// El rayo de selección siempre se actualiza, sin importar ShowVisualizers.
+if (rayDisplay != null)
+{
+    if (state.rayActive) { rayDisplay.enabled = true; /* setear posiciones */ }
+    else { rayDisplay.enabled = false; }
+}
+```
+
+Resultado: las esferas y líneas de debug (ThumbTip, IndexTip, PinchLine) quedan ocultas. El `LineRenderer` del rayo de selección (`JengaRayGrabInteractor`) sigue visible y funcional.
+
+---
+
+### 6. Incorporación de `.vsconfig`
+
+Se agregó `.vsconfig` al repositorio:
+
+```json
+{
+  "version": "1.0",
+  "components": [
+    "Microsoft.VisualStudio.Workload.ManagedGame"
+  ]
+}
+```
+
+Este archivo es leído por Visual Studio al abrir la solución del proyecto y sugiere automáticamente instalar el workload **"Game development with Unity"** si no está presente. Permite que cualquier desarrollador que clone el repo en Windows con Visual Studio tenga el entorno de Unity configurado sin pasos manuales adicionales.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| Conectividad LAN entre dos PCs (firewall rules UDP 7777/7778) | ✅ Confirmado funcionando en red local con router |
+| Fix paquete `com.htc.upm.vive.openxr` → OpenUPM `2.5.1` | ✅ Commiteado en `main` y `look-and-feel-prototype` |
+| Avatar — agachado proporcional con calibración automática de altura | ✅ `AvatarFollowXROrigin` con `autoCalibrateHeight` + `Mathf.Min(0f, bodyY)` |
+| Avatar — visibilidad del owner: campo `ownBodyRenderers` para ocultar solo el torso | ✅ Lista explícita en Inspector; brazos/manos permanecen visibles |
+| `PinchDebugVisualizer` — markers nunca se re-activan con `ShowVisualizers=false` | ✅ Toda la lógica visual bajo `if (ShowVisualizers)` |
+| `NetworkedAvatarHands` — rayo de selección visible con `ShowVisualizers=false` | ✅ `rayDisplay` siempre procesado fuera del early-return |
+| `.vsconfig` con workload `ManagedGame` | ✅ Commiteado en el repo |
+
+---
+
+### Pendiente
+
+* **Asignar `ownBodyRenderers` en el Inspector del prefab**: el campo está creado pero vacío. Hay que abrir `AvatarHumanoid.prefab`, seleccionar el sub-mesh del rol correspondiente y arrastrar el `SkinnedMeshRenderer` principal (`m013_hipoly_81_bones_opacity` para Host, equivalente para Client/Helper) al campo en el componente `AvatarFollowXROrigin`. Hasta que se configure, el warning del log aparece y el owner ve el torso desde adentro al agacharse.
+* **Revertir `Room.unity` antes de commitear**: el archivo tiene la IP `192.168.88.182` hardcodeada del PC de trabajo. Revertir a `127.0.0.1` antes de cualquier commit de escena para que el repo no rompa en otros equipos.
+* **Validar visibilidad de brazos/manos del owner**: confirmar en VR que al ocultar el torso (una vez configurado `ownBodyRenderers`) los brazos y manos del avatar siguen siendo visibles para el owner y siguen driveando correctamente.
+
+---
+
+## 2026-05-24 — Avatares humanoides Rocketbox: head/hand IK + finger driving geométrico
+
+Branch activo: `look-and-feel-prototype` (continuación de la sesión visual del día anterior).
+
+Motivación: la representación de manos de las sesiones previas (`HandSkeletonRenderer` + `NetworkedAvatarSkeleton`: 20 esferas y 5 líneas decorativas por mano) funcionaba operativamente pero carecía de cuerpo. Los participantes veían "esqueletos flotantes" sin contexto antropomórfico — sin torso, brazos, expresión postural. Para una tarea colaborativa de Jenga sentada, donde dos a tres personas se miran y se pasan piezas, la presencia social pide un avatar humanoide completo con animación corporal coherente.
+
+Decisión: migrar a Microsoft Rocketbox (CC0, 100% LAN-compatible, sin servicios cloud) con tres FBX distintos para diferenciación visual por rol — Male_Adult_07 (Host), Male_Adult_10 (Client), Male_Adult_12 (Helper). Cada rol activa solo su sub-mesh en runtime para evitar overhead de tres rigs renderizando simultáneamente.
+
+Constraints heredados: el proyecto sigue en Built-in Render Pipeline + NGO 1.12.2 + XR Hands 1.5. La estrategia de avatar tenía que integrarse sin migrar a URP/HDRP y sin agregar runtime cost notable (eye tracking + BioLab UDP + Jenga physics ya pesan en el frame).
+
+---
+
+### Migración a Rocketbox humanoides: setup del prefab AvatarHumanoid
+
+Estructura final del prefab `Assets/AvatarHumanoid.prefab`:
+
+```text
+AvatarHumanoid (root, NetworkObject + NetworkedAvatarPose + NetworkedAvatarRole + AvatarRoleMeshSwitcher)
+├── LabelAnchor (Y=1.921, para nameplate flotante)
+└── AvatarVisuals
+    ├── Avatar_Host (sub-mesh con Male_Adult_07Avatar + Animator humanoid + AvatarPoseDriver + RigBuilder)
+    │   ├── Bip01 (jerarquía de bones Biped 3DS Max)
+    │   ├── Rig (Animation Rigging)
+    │   │   ├── LeftArmIK (TwoBoneIKConstraint: Shoulder→UpperArm→Forearm→Hand)
+    │   │   └── RightArmIK
+    │   ├── IKTarget_LeftHand (Transform vacío, posicionado por AvatarPoseDriver cada frame)
+    │   └── IKTarget_RightHand
+    ├── Avatar_Client (idem con Male_Adult_10)
+    └── Avatar_Helper (idem con Male_Adult_12)
+```
+
+`AvatarRoleMeshSwitcher` (existente, sin cambios funcionales) lee `NetworkedAvatarRole.Role.OnValueChanged` y hace `SetActive(true)` solo al sub-mesh del rol asignado; los otros dos se desactivan. Componentes en GameObjects inactivos no procesan Update/LateUpdate — esto evita el costo de tener 3 Animators humanoid + 3 RigBuilders evaluando simultáneamente.
+
+#### Validador de setup: `AvatarSetupValidator.cs`
+
+Archivo nuevo en `Assets/Editor/`. Menú: **XR Collab → Avatars → Validate Avatar Setup**.
+
+Iteró el prefab y emite un reporte por sub-mesh:
+
+* Animator presente + `isHuman == true` + bone Head reachable
+* AvatarPoseDriver presente
+* RigBuilder con al menos 1 layer
+* Child "Rig" con LeftArmIK + RightArmIK (TwoBoneIKConstraint con root/mid/tip/target no nulos)
+* IKTarget_LeftHand / IKTarget_RightHand como children directos del sub-mesh
+
+Salvó tiempo identificando el caso del Avatar_Helper que tenía el `target` del `RightArmIK` apuntando al propio constraint en vez del Transform `IKTarget_RightHand` — un slip de configuración manual difícil de ver en el Inspector pero capturado por el validador en una corrida.
+
+#### Setup de materiales: `RocketboxMaterialSetup.cs`
+
+Los FBX de Rocketbox tenían los materiales embebidos con "Use Embedded Materials" mode. Unity los importaba pero las texturas no se asignaban automáticamente — el avatar aparecía como mannequin grisaceo. La tool de Editor:
+
+1. Itera los FBX en `Assets/Avatars/Rocketbox/Male_Adult_*/Export/`
+2. Cambia el material importer a "Use External Materials (Legacy)" → genera `.mat` y `.png` extraídos
+3. Crea materiales Standard (Specular setup) con las texturas correspondientes asignadas por nombre (color, normal, specular)
+4. Aplica los materiales a los `SkinnedMeshRenderer` del sub-mesh
+
+Esto resolvió el problema en una sola pasada para los tres avatares.
+
+#### Bug del Biped Triangle Pelvis (falso positivo)
+
+Al configurar los FBX como Humanoid, Unity reportó un warning sobre la jerarquía Biped:
+
+```text
+Invalid parent for Bip01 L Thigh. Expected Bip01 Pelvis, but found Bip01 Spine. Disable Triangle Pelvis.
+Invalid parent for Bip01 L Clavicle. Expected Bip01 Spine2, but found Bip01 Neck. Enable Triangle Neck.
+```
+
+Rocketbox usa la convención Biped 3DS Max con Triangle Pelvis y Triangle Neck activos. Unity infirió mal el mapeo automático.
+
+Solución: abrir **Configure...** en el tab Rig de cada FBX y verificar manualmente los 4 tabs (Body, Head, Left Hand, Right Hand). Todos los bones del Rocketbox aparecieron correctamente mapeados a sus equivalentes Humanoid — el warning era falso positivo. Unity logró mapear pese a la jerarquía no-estándar. Confirmamos con screenshots de los 4 tabs que los 15 finger bones por mano + neck/head + body están todos verdes.
+
+---
+
+### Sistema de pose sincronizada: `NetworkedAvatarPose` + `AvatarPoseDriver`
+
+Pareja de componentes que reemplaza al sistema de presencia decorativo:
+
+* **`NetworkedAvatarPose`** (NetworkBehaviour en el root del prefab): owner samplea XR Hands y HMD y los publica via NetworkVariable. Read by everyone, write by owner.
+* **`AvatarPoseDriver`** (MonoBehaviour en cada sub-mesh): cada frame lee el state sincronizado y lo aplica al rig humanoid del sub-mesh activo.
+
+Esquema de propagación:
+
+```text
+Owner machine                              All machines (incl. owner)
+─────────────                              ──────────────────────────
+XR Hands (joints)  →  NetworkVariable  →  AvatarPoseDriver  →  Bones + IK targets
+HMD camera         →     (NGO sync)    →  (one per active     →  (Bip01 Head rot,
+                                           sub-mesh)              IK target pos/rot,
+                                                                  finger bone rots)
+```
+
+El owner ve su avatar driveado desde su propio state local; los remotos ven el avatar del owner driveado por el state recibido. Misma lógica idéntica, distintas fuentes de data.
+
+#### Bug crítico: `IsOwner` check durante `OnEnable`
+
+Síntoma inicial: la lógica `hideRenderersForLocalOwner` chequeaba `poseSync.IsOwner` en `OnEnable` del AvatarPoseDriver. Siempre devolvía `false` aún para el owner local.
+
+Causa: `OnEnable` corre dentro de `NetworkSpawnManager.InstantiateNetworkPrefab`, **antes** de que NGO complete el spawn (que setea `OwnerClientId`). En ese instante `IsSpawned == false` y `IsOwner` siempre retorna `false`.
+
+Fix: diferir el chequeo a un coroutine que espera hasta `poseSync.IsSpawned == true` (timeout 5s de seguridad):
+
+```csharp
+private void OnEnable()
+{
+    // ... resolver refs
+    if (hideRenderersForLocalOwner)
+        StartCoroutine(EvaluateOwnerVisibilityWhenSpawned());
+}
+
+private IEnumerator EvaluateOwnerVisibilityWhenSpawned()
+{
+    float deadline = Time.time + 5f;
+    while (Time.time < deadline)
+    {
+        if (poseSync != null && poseSync.IsSpawned) break;
+        yield return null;
+    }
+    bool isLocalOwner = poseSync != null && poseSync.IsOwner;
+    // ... aplicar hide
+}
+```
+
+Confirmado en logs:
+
+```text
+[AvatarPoseDriver] OnEnable on 'Avatar_Host': ... (IsOwner check deferred a post-spawn.)
+[AvatarPoseDriver] Post-spawn: 'Avatar_Host' isLocalOwner=True. ...
+```
+
+---
+
+### Alineación del avatar al piso: `AvatarFootAlignTool`
+
+Síntoma original: al spawnear el avatar en `(0, 0, 0)`, los pies aparecían **debajo del piso**. El FBX de Rocketbox importa con el `Bip01` (root del Biped) en la cadera (~1m sobre el "suelo" del modelo), y Unity no compensa el offset automáticamente al wrappear con extra root.
+
+Iteración 1 (fallida): leer la posición del bone `LeftFoot` via `Animator.GetBoneTransform()` y offsetear el sub-mesh para que la planta del pie quede en `y=0`. Resultado: el offset capturado fue `+0.1016`, pero al aplicarlo el avatar quedó **más** hundido. Diagnóstico: en Prefab Mode el Animator no garantiza tener los bones en bind pose evaluado; la posición devuelta era la transform "cruda" del FBX, no la bind pose correcta.
+
+Iteración 2 (la elegida): usar `SkinnedMeshRenderer.bounds.min.y` en vez del bone foot. Esto da el punto más bajo de la **mesh visible** (sole del zapato), independiente de cualquier evaluación del rig. Captura confirmada en log:
+
+```text
+[AvatarFootAlign] 'Avatar_Host': mesh bottom was at localY=-1.0299 (via 'm013_hipoly_81_bones_opacity').
+                  lp.y: 0.0000 → 1.0299 (delta +1.0299).
+```
+
+Los tres sub-meshes salieron con offset ~1.03m. Después del fix los pies quedan exactamente en el piso al spawnear.
+
+Tool en `Assets/Editor/AvatarFootAlignTool.cs` con dos menús:
+
+* **XR Collab → Avatars → Auto-Align Feet To Floor (Mesh Bounds)**: corre el cálculo arriba descrito.
+* **XR Collab → Avatars → Reset Sub-Mesh Y Offsets**: deshace los offsets (útil cuando el primer intento falló y dejó valores incorrectos).
+
+---
+
+### Head bone driving: bind capture para preservar convención del Biped
+
+Síntoma: la rotación del HMD se aplicaba directamente al `Bip01 Head` con `headBone.rotation = avatarRoot.rotation * hmdRotLocal`. Resultado: la cabeza del avatar apuntaba al techo.
+
+Causa: el bone `Bip01 Head` del Rocketbox (convención Biped 3DS Max) tiene ejes locales **X=up, Y=forward** — no Z=forward como asume Unity. Sobreescribir `bone.rotation` con la rotación del HMD (que reporta Z=forward) re-mapea los ejes locales del bone: el +Y del bone (que era "forward de la cara") queda apuntando para arriba.
+
+Fix: capturar la rotación del bone en bind pose **relativa al avatar root**, y multiplicarla como offset al aplicar el HMD:
+
+```csharp
+// Una vez, en el primer LateUpdate:
+_headBindRelLocalRot = Quaternion.Inverse(_avatarRoot.rotation) * _headBone.rotation;
+
+// Cada frame:
+Quaternion worldRot = _avatarRoot.rotation * state.hmdRotLocal * _headBindRelLocalRot;
+_headBone.rotation = worldRot;
+```
+
+Demostración matemática: cuando `state.hmdRotLocal == identity` (HMD mirando "adelante" del avatar), `worldRot == avatarRoot.rotation * headBindRelLocalRot == headBone.rotation_at_bind` — el head queda en bind pose. Cualquier delta del HMD desde el neutral rota el head bone por la misma cantidad en avatar-root-local space.
+
+Confirmación visual: el cliente ve al host con la cabeza tracking correctamente. El cliente sin HMD (corriendo en ventana sin XR) muestra el avatar con cabeza mirando al techo — esperado, porque `state.hmdRotLocal == identity` para él, y el bind pose del Biped tiene `+Y` (= eje "up" semántico) apuntando al techo por la convención de ejes. No es un bug; es lo que pasa cuando no hay HMD que driveear la cabeza.
+
+---
+
+### Hand IK: tres estrategias iteradas hasta encontrar la geométrica
+
+Esta fue la parte más difícil de la sesión. Documento las tres iteraciones porque las dos primeras enseñan por qué la tercera fue necesaria.
+
+#### Estrategia 1 — Calibración manual con tecla C (descartada)
+
+Mismo problema de convención de ejes que el head bone, pero más complejo porque la muñeca tiene 3 ejes que importan (forward de los dedos, palm normal, palm side) y XR Hands los reporta en su propia convención (Z=fingers forward, Y=palm up).
+
+Primer intento: capturar la rotación del wrist en un momento "neutral" definido por el usuario (apretando tecla C con las manos en una pose conocida), y restar esa rotación de la rotación reportada:
+
+```csharp
+Quaternion ikRot = avatarRoot.rotation * state.wristRotLocal *
+                   Inverse(wristCalibration) * handBindRelLocalRot * extraOffset;
+```
+
+Problema en uso real: el usuario tenía que mantener exactamente la pose de calibración en el momento del key press. En la práctica era imposible — apretar C movía la muñeca, y el resultado era una calibración incorrecta. Después de calibrar las dos manos por separado los resultados quedaban "casi bien" pero asimétricos.
+
+Veredicto del usuario: "es muy difícil de usar".
+
+#### Estrategia 2 — HUD de tuning manual con teclas Q/A/W/S/E/D (también descartada)
+
+Agregado: `Assets/Multiplayer/AvatarHandTunerHUD.cs`. NetworkVariables `LeftWristOffsetEuler` / `RightWristOffsetEuler` (`Vector3`, owner-write) sincronizadas. El owner ajusta el offset Euler de cada muñeca con teclado:
+
+| Tecla | Acción |
+|---|---|
+| 1 / 2 | seleccionar wrist L / R |
+| Q/A · W/S · E/D | X +/- · Y +/- · Z +/- (step 5°) |
+| Shift / Ctrl | step ×5 (25°) / ×0.2 (1°) |
+| R | reset del wrist seleccionado a (0,0,0) |
+| F4 | toggle visibilidad del HUD |
+| Y / U / X | save/load/export a PlayerPrefs |
+
+El HUD se renderea via OnGUI (monitor) + opcional Canvas world-space (VR). Los offsets se aplican como Euler residual encima del bind pose.
+
+Problema: aún con HUD interactivo, el espacio de soluciones es de tres parámetros continuos por mano sin feedback "correcto/incorrecto" claro. Era prueba y error, lento, y los valores que parecían funcionar en una pose dejaban de funcionar en otra (porque el offset Euler tiene una orientación de referencia fija, no se adapta a la pose actual).
+
+Veredicto: "la única forma en que funciona es colocar las manos imitando la posición original del avatar (con las muñecas torcidas)... necesario pero impráctico".
+
+#### Estrategia 3 — Orientación geométrica desde 3 joints (la solución)
+
+El insight del usuario: las **esferas del XR Hands debug** (representación de los joints) están perfectamente alineadas con las manos reales. Eso significa que los joint **positions** son data correcta y bien definida geométricamente — sin convenciones de ejes ambiguas. Reformulación del problema: en vez de tratar de mapear el wrist rotation reportado (que tiene convención propia) al bone Biped (que tiene otra), derivar la orientación de la palma directamente desde la geometría de 3 joints.
+
+Validación visual previa a la implementación final: archivo nuevo `Assets/Multiplayer/AvatarHandJointDebugViz.cs`. Renderiza en escena:
+
+* **Esferas verdes**: posiciones reales de Wrist + MiddleMetacarpal + ThumbMetacarpal del usuario (desde XR Hands)
+* **Esferas rojas**: posiciones equivalentes en el rig del avatar (`Animator.GetBoneTransform(LeftHand)` + `LeftMiddleProximal` + `LeftThumbProximal`)
+* **Línea magenta**: vector "fingers forward" (wrist → middle)
+* **Línea cian**: palm normal (cross product `fingersForward × thumbDir`, flippeada para la izquierda)
+
+En testing visual el usuario confirmó: las dos triadas de líneas (lado usuario, lado avatar) apuntaban en direcciones coincidentes cuando las manos estaban en orientaciones equivalentes. La estrategia geométrica iba a funcionar.
+
+#### Implementación de la estrategia geométrica
+
+Sincronización: `AvatarPoseState` (struct dentro de `NetworkedAvatarPose`) cambia. Reemplaza los campos `leftWristRotLocal` / `rightWristRotLocal` con `leftMiddleMetacarpalPosLocal` / `leftThumbMetacarpalPosLocal` (idem right). El wrist position sigue sincronizándose.
+
+Computación del lado del receiver:
+
+```csharp
+// 1. Convertir las 3 posiciones a world.
+Vector3 wristW = avatarRoot.TransformPoint(state.leftWristPosLocal);
+Vector3 middleW = avatarRoot.TransformPoint(state.leftMiddleMetacarpalPosLocal);
+Vector3 thumbW = avatarRoot.TransformPoint(state.leftThumbMetacarpalPosLocal);
+
+// 2. Construir base ortonormal "palma del usuario" en world.
+Vector3 fingersForward = (middleW - wristW).normalized;
+Vector3 thumbDir = (thumbW - wristW).normalized;
+Vector3 palmNormal = Vector3.Cross(fingersForward, thumbDir).normalized;
+if (isLeft) palmNormal = -palmNormal;  // flip para mantener convención "up = dorso de la mano"
+Quaternion userPalmWorldRot = Quaternion.LookRotation(fingersForward, palmNormal);
+
+// 3. Aplicar la transformación que mapea la palma del usuario al frame del hand bone del avatar.
+Quaternion ikRot = userPalmWorldRot * Quaternion.Inverse(_leftPalmRotInHand);
+leftHandIKTarget.SetPositionAndRotation(wristW, ikRot);
+```
+
+Donde `_leftPalmRotInHand` es **la orientación de la palma en el frame local del hand bone**, capturada una sola vez al inicio:
+
+```csharp
+Vector3 fwd = handBone.InverseTransformPoint(middleProxBone.position).normalized;
+Vector3 thumb = handBone.InverseTransformPoint(thumbProxBone.position).normalized;
+Vector3 normal = Vector3.Cross(fwd, thumb).normalized;
+if (isLeft) normal = -normal;
+_leftPalmRotInHand = Quaternion.LookRotation(fwd, normal);
+```
+
+Justificación matemática de por qué `_leftPalmRotInHand` es invariante al runtime: `Transform.InverseTransformPoint` proyecta una posición world al frame LOCAL del transform. La relación geométrica entre `handBone`, `middleProxBone` y `thumbProxBone` está fijada por la jerarquía del rig (Animation Rigging y skinning no la modifican). Sus posiciones relativas en world cambian con la pose del avatar, pero en frame local del hand bone son constantes. Por lo tanto la palm orientation derivada de esas posiciones es constante.
+
+Consecuencia operativa: **no hay timing issue** para la captura. Tradicionalmente capturar bind pose requiere que el Animator haya evaluado los bones; sin embargo InverseTransformPoint da el resultado correcto en cualquier frame, incluso con bones todavía no evaluados. El check de validez (`Vector3.Distance(handBone.position, middleProxBone.position) > 0.005f`) solo descarta el caso patológico donde los bones todavía no se inicializaron en absoluto.
+
+Resultado: las manos del avatar se orientan correctamente sin offsets manuales ni calibración. Sin tuning. Independiente del rig (funcionaría con Mixamo o cualquier humanoid). El HUD de offsets Euler queda como fine-tuning residual opcional (default `Vector3.zero` para todas las muñecas).
+
+---
+
+### Finger driving: 15 bones por mano con FromToRotation
+
+Misma estrategia geométrica extendida a los dedos. Cada uno de los 15 finger bones por mano (Thumb/Index/Middle/Ring/Little × Proximal/Intermediate/Distal) se rota cada frame para que apunte en la dirección equivalente a la del usuario.
+
+#### Sincronización: nueva NetworkVariable
+
+Struct `HandFingerPose` con 19 Vector3 por mano + 1 bool de validity. Total 38 Vector3 + 2 bools = ~460 bytes por update.
+
+```csharp
+public struct HandFingerPose : INetworkSerializable, IEquatable<HandFingerPose>
+{
+    // LEFT (19 joints en avatar-root-local space)
+    public Vector3 lThumbProx, lThumbDist, lThumbTip;
+    public Vector3 lIndexProx, lIndexInt, lIndexDist, lIndexTip;
+    public Vector3 lMidProx, lMidInt, lMidDist, lMidTip;
+    public Vector3 lRingProx, lRingInt, lRingDist, lRingTip;
+    public Vector3 lLitProx, lLitInt, lLitDist, lLitTip;
+    public bool lValid;
+    // RIGHT (idem)
+    // ...
+}
+
+public readonly NetworkVariable<HandFingerPose> Fingers = new NetworkVariable<HandFingerPose>(...);
+```
+
+Decisión arquitectónica: separar `Fingers` de `Pose` en dos NetworkVariables. Razón: NGO dedupea por valor de NetworkVariable. Si solo se mueve la cabeza, no se broadcastea el blob entero de fingers (~460 bytes adicionales). Solo si los joints de los dedos efectivamente cambian se manda el update.
+
+Mapeo XR Hands → Humanoid bones:
+
+| Avatar bone | XR start joint | XR end joint |
+|---|---|---|
+| ThumbProximal | ThumbMetacarpal | ThumbProximal |
+| ThumbIntermediate | ThumbProximal | ThumbDistal |
+| ThumbDistal | ThumbDistal | ThumbTip |
+| (Index/Mid/Ring/Lit) Proximal | XR.XxxProximal | XR.XxxIntermediate |
+| (Index/Mid/Ring/Lit) Intermediate | XR.XxxIntermediate | XR.XxxDistal |
+| (Index/Mid/Ring/Lit) Distal | XR.XxxDistal | XR.XxxTip |
+
+(El pulgar es especial porque anatómicamente solo tiene 2 falanges + metacarpal, mientras los demás dedos tienen 3 falanges. Unity Humanoid no expone metacarpal para los demás dedos, así que el ThumbProximal Humanoid corresponde al hueso metacarpal del pulgar.)
+
+#### Algoritmo de driving
+
+Para cada finger bone:
+
+1. **Captura una vez**: `childDirInBoneLocal = bone.InverseTransformPoint(childBone.position).normalized`. Constante del rig (cancela la pose del bone via InverseTransformPoint, como con la palma).
+2. **Cada frame**: computar la dirección del segmento equivalente del usuario en world (`(endJoint - startJoint).normalized`).
+3. **Aplicar `Quaternion.FromToRotation`** para alinear el bone:
+
+```csharp
+Vector3 targetDir = (segEndWorld - segStartWorld).normalized;
+Vector3 currentDir = slot.bone.TransformDirection(slot.childDirInBoneLocal);
+Quaternion delta = Quaternion.FromToRotation(currentDir, targetDir);
+slot.bone.rotation = delta * slot.bone.rotation;
+```
+
+`FromToRotation` da la rotación mínima entre dos vectores — no impone twist (rotación alrededor del eje del dedo se preserva). Para dedos cilíndricos eso es suficiente.
+
+Orden de aplicación: Proximal → Intermediate → Distal en cadena, porque rotar el padre cambia la posición mundial del hijo y el siguiente cálculo de `currentDir` depende de la posición actualizada del bone.
+
+Para el bone Distal no hay child Humanoid; se aproxima la dirección hacia el tip con `(distalBone.position - intermediateBone.position).normalized` re-expresada en frame local del distal. Como (intermediate → distal) y (distal → tip) son aproximadamente colineales en el rig, la aproximación es buena.
+
+#### Bandwidth total post-finger-driving
+
+```text
+Pose:           ~80 bytes  (HMD + 3 wrist joints × 2 manos + bools)
+HandFingerPose: ~460 bytes (19 joints × 2 manos + 2 bools)
+Total:          ~540 bytes / update × 30 Hz ≈ 16 KB/s por avatar
+```
+
+Sigue siendo trivial sobre LAN. NGO sigue deduplicando por NetworkVariable (si los fingers no cambian no se broadcastea el blob).
+
+#### Bug crítico durante el rollout: layout mismatch al hacer build
+
+Síntoma: agregar el field `[SerializeField] private bool driveFingerBones` rompió el build standalone con:
+
+```text
+Type '[Assembly-CSharp]AvatarPoseDriver' has an extra field 'driveFingerBones' of type 'System.Boolean' in the player and thus can't be serialized.
+Editor: 9 fields (sin driveFingerBones)
+Player: 10 fields (con driveFingerBones)
+Error building player because script class layout is incompatible between the editor and the player.
+```
+
+Causa: los `.prefab` ya tenían las instancias de `AvatarPoseDriver` serializadas con los 9 fields previos. El compilador del player veía 10 fields. El asset import no había re-serializado los prefabs con la nueva layout, y el build se hace con la última versión del source pero contra los assets viejos.
+
+Fixes intentados: `Assets → Reimport All` (sin éxito), borrar `Library/ScriptAssemblies/` (sin éxito en esa sesión). El workaround pragmático fue cambiar el field a `private bool driveFingerBones = true` sin `[SerializeField]` — no se serializa al prefab, no hay mismatch, perdiendo solo la capacidad de toggle desde el Inspector. Para flippear el comportamiento en producción se edita el código y se recompila.
+
+Esta misma decisión se aplicó retrospectivamente a otros toggles agregados en esta sesión: cuando un componente que ya tiene prefabs serializados gana un campo nuevo, usar `private const bool ...` o `private bool ... = X` sin SerializeField evita el problema.
+
+---
+
+### Visibilidad del avatar del owner: ocultar solo la cabeza
+
+Síntoma con el avatar humanoide visible para todos: el host, al mirar para abajo, veía su propio torso/cuerpo en el HMD — perfecto para presencia. Pero al mirar para adelante veía **dentro de su propia cabeza** (la geometría facial del avatar interceptando la cámara stereo).
+
+Primera solución (descartada): `hideRenderersForLocalOwner = true` que ocultaba **todos** los `SkinnedMeshRenderer` y `MeshRenderer` del sub-mesh del owner. Esto eliminaba el problema pero también ocultaba las manos del avatar, que el usuario necesita ver para jugar al Jenga (apuntar, alcanzar piezas).
+
+Solución final: cambió la interpretación del flag `hideRenderersForLocalOwner`. En vez de ocultar todos los renderers, **escalar el head bone a casi cero**:
+
+```csharp
+if (isLocalOwner)
+{
+    if (_headBone != null)
+    {
+        _headBone.localScale = new Vector3(0.0001f, 0.0001f, 0.0001f);
+    }
+}
+```
+
+Justificación: los vértices del mesh skinned al head bone (cara, pelo, ojos, mandíbula, vía las child bones LCheek/LEye/etc.) colapsan a un punto microscópico en la posición del bone. Las child bones del head (LCheek, REye, etc.) heredan la scale `0.0001` y los vértices skinned a ellas también colapsan. El resto del cuerpo (torso, brazos, manos — skinned al neck, spine, shoulders, etc.) queda intacto.
+
+Por qué `0.0001` y no `Vector3.zero`: scale exactamente cero genera matrices singulares en el skinning de Unity, que pueden producir NaNs en posiciones de vértices y crashear el render driver. `0.0001` da el mismo efecto visual (punto invisible a cualquier distancia razonable) sin problemas numéricos.
+
+La rotación del head bone driveada por el HMD (a través de `driveHeadBone = true`) sigue funcionando — solo el tamaño visual es ~0. Eso es importante porque otros sistemas (por ejemplo, eye tracking gaze visualization si se agrega en el futuro) podrían leer la rotación del head bone.
+
+---
+
+### Limpieza de las visualizaciones de manos antiguas
+
+Con el avatar humanoide funcional driveando bones + IK + dedos, las representaciones de manos legacy quedaron como decoración duplicada. Toggles `private const bool ShowVisualizers = false` agregados a:
+
+| Archivo | Qué dibujaba | Para quién | Estado |
+|---|---|---|---|
+| `PinchDebugVisualizer.cs` | Esferas Thumb/Index + PinchLine local | HOST | Apagado (lógica de pinch detection conservada para grab) |
+| `NetworkedAvatarHands.cs` | Esferas + PinchLine + RayDisplay sincronizados | TODOS | Apagado (sync se conserva por compat con sistemas que lean state) |
+| `NetworkedAvatarSkeleton.cs` | 20 esferas + 5 LineRenderers por mano del avatar remoto | CLIENTE viendo HOST | Apagado (early-return en LateUpdate) |
+| `HandSkeletonRenderer.cs` | Idem pero local del owner | HOST sí mismo | Apagado |
+| `AvatarHandJointDebugViz.cs` | Esferas verdes/rojas de validación geométrica | Diagnóstico | `showViz` default `false` (F5 toggle si se necesita debug) |
+
+Lo que QUEDA visible:
+
+* El avatar humanoide completo (torso + brazos + manos con dedos) — visible para los remotos
+* El avatar humanoide con cabeza oculta — visible para el owner local
+* El raycast de grab (`JengaRayGrabInteractor.rayLine`) — local del owner, no fue tocado, mantiene grab interaction funcional
+
+Decisión de usar `const bool` (no `[SerializeField]`): evita el problema de layout mismatch descrito arriba, y los toggles son flags de comportamiento global del componente, no settings por instancia.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| 3 avatares humanoides Rocketbox (Host/Client/Helper) con sub-mesh switching por rol | ✅ `AvatarHumanoid.prefab` + `AvatarRoleMeshSwitcher` |
+| Bone mapping Humanoid de los 3 FBX (Body/Head/LeftHand/RightHand) | ✅ Validado manualmente en Configure de cada FBX |
+| Validador de setup del prefab | ✅ `AvatarSetupValidator.cs` editor tool |
+| Setup automático de materiales Rocketbox | ✅ `RocketboxMaterialSetup.cs` editor tool |
+| Alineación de pies al piso via mesh bounds | ✅ `AvatarFootAlignTool.cs` (~1m delta auto-calculado) |
+| Hide-owner-head (escalando head bone a 0.0001) | ✅ Owner ve cuerpo y manos, no su cara desde adentro |
+| Driving del head bone con HMD (con bind capture) | ✅ Funciona, cabeza apunta donde mira el HMD |
+| Hand IK target driveado por estrategia geométrica (3 joints → palm orientation) | ✅ Sin offsets manuales, sin calibración |
+| Sincronización de pose por NetworkVariable (HMD + 3 joints por mano) | ✅ `Pose` NetworkVariable ~80 bytes/update |
+| Finger driving: 15 bones por mano via FromToRotation | ✅ `Fingers` NetworkVariable ~460 bytes/update |
+| Bandwidth total ≤ 16 KB/s por avatar | ✅ ~540 bytes × 30 Hz |
+| Visualizaciones legacy desactivadas | ✅ 5 sistemas apagados via `ShowVisualizers = false` |
+| Grab raycast del Jenga preservado | ✅ `JengaRayGrabInteractor.rayLine` no afectado |
+| HUD de tuning manual de muñeca (legacy, ahora opcional) | ⚠️ Funcional pero default offsets = (0,0,0) — innecesario con estrategia geométrica |
+
+---
+
+### Caveats y limitaciones conocidas
+
+* **Cliente sin HMD**: si el client corre desde el editor en ventana sin XR Hands ni HMD, su avatar (visto desde el host) tendrá cabeza apuntando al techo (`hmdRotLocal == identity` + bind pose del Biped) y manos sin tracking (todos los joints en cero). Comportamiento esperado, no es un bug; se documenta para evitar confusión en testing.
+* **No hay interpolación**: a 30 Hz los joints de los dedos y las manos saltan visiblemente entre updates en el remote. Para una iteración futura, agregar buffer de 2 muestras + delay ~100 ms con blending lineal.
+* **El bone Distal de cada dedo se aproxima**: no hay child humanoid para Distal en Unity (no expone "Tip" como bone), así que la dirección del distal se calcula como `(distalBone - intermediateBone)` re-expresada en frame local del distal. Aproximación buena en la mayoría de las poses; sutil error si el dedo está muy curvado.
+* **El twist (rotación alrededor del eje del dedo) no se sincroniza**: `Quaternion.FromToRotation` es la rotación mínima entre dos direcciones, sin imponer twist. Para dedos cilíndricos esto da resultados visualmente correctos en todos los casos testeados.
+* **Animator Controller debe estar en `None`** en cada sub-mesh: el AvatarPoseDriver asume que ninguna animation clip sobreescribe sus bone writes. Si hay un Controller con un state que anima los huesos, las correcciones del PoseDriver son sobreescritas por el Animator.
+* **`Optimize Game Objects` debe estar OFF** en el rig settings de los FBX: si está ON, Unity hace "bone hiding" para optimización y `Animator.GetBoneTransform` retorna `null`. Confirmado OFF en los 3 FBX de Rocketbox.
+
+---
+
+### Pendiente / sugerido para futuras iteraciones
+
+* **Interpolación de pose remoto**: buffer + delay para eliminar el snapping de 30 Hz. Aplicar a la NetworkVariable Pose y Fingers.
+* **Recovery del Animator Controller**: actualmente sin controller = avatar en T-pose para body/legs (que casi no se ven, ocultos por el cuerpo en seated experience). Si en el futuro se ven más, agregar un Idle clip que mantenga el torso en pose sentada natural sin sobreescribir head/hand IK.
+* **Animación procedural del pecho/hombro al mover los brazos**: las constraints `LeftArmIK`/`RightArmIK` configuradas en Animation Rigging mueven el wrist via IK, pero el shoulder/clavícula no se compensan. Resultado: si el usuario estira mucho el brazo, el shoulder queda fijo y el brazo se ve "rígido". Iteración: agregar `MultiAimConstraint` sobre la clavícula para que rote suavemente siguiendo al hand IK target.
+* **Eye tracking sobre el avatar**: el sistema BioLab UDP ya provee gaze data del HMD. Aplicarlo a las eye bones (`LeftEye`, `RightEye` en Humanoid) para que los avatares se miren entre sí. Big presence win.
+* **Limpiar código legacy**: una vez confirmada la estrategia geométrica, hay código muerto que se puede borrar:
+  * `LeftWristCalibration` / `RightWristCalibration` NetworkVariables (no se usan más)
+  * `CalibrateHands()` (ya es no-op)
+  * Partes de `AvatarHandTunerHUD` (la calibración con V, el flujo de save/load, etc.)
+* **Documentar los tooltips de los SerializeField**: en `AvatarPoseDriver` el campo `hideRenderersForLocalOwner` ahora significa "ocultar solo la cabeza" pero el nombre del field es legacy. Si se renombra hay que actualizar el prefab — alternativamente, dejar el nombre y mejorar el tooltip (ya hecho).
+* **Validar performance en VR con todo activo**: medir con `PerformanceHUD` (F3) que el FPS sostenido sigue ≥ 72 con 3 avatares humanoides + finger driving + Jenga physics + NGO + eye tracking. Si baja, identificar bottleneck (probablemente los skinned mesh renderers de los 3 sub-meshes — aunque solo uno está activo por avatar).
+
+---
+
+### Mantenimiento del branch
+
+Esta sesión consolida el sistema de avatares humanoides como reemplazo del esqueleto decorativo previo (`NetworkedAvatarSkeleton` + `HandSkeletonRenderer`). Los componentes nuevos son **runtime + editor tools**:
+
+* Runtime: `AvatarPoseDriver`, `AvatarHandJointDebugViz`, `AvatarHandTunerHUD`, modificaciones a `NetworkedAvatarPose`
+* Editor tools: `AvatarSetupValidator`, `RocketboxMaterialSetup`, `AvatarFootAlignTool`
+
+Los visualizers viejos (`NetworkedAvatarSkeleton`, `HandSkeletonRenderer`, `PinchDebugVisualizer`, `NetworkedAvatarHands`) **se conservan en el repo** pero con sus `ShowVisualizers` apagados. Esto permite revertir a la representación de esqueleto si en el futuro se decide volver atrás (por ejemplo, si el costo de render del avatar humanoide impacta performance en algún caso).
+
+Cuando se merge a main: los assets del prefab `AvatarHumanoid.prefab` + los 3 FBX de Rocketbox bajo `Assets/Avatars/Rocketbox/` son los productos finales. Los editor tools quedan como utilidades para regenerar setup si se agregan más rigs en el futuro.
+
+---
+
+## 2026-05-23 — Look-and-feel: nueva escena con HDRP Furniture Pack, iluminación bakeable y materiales PBR
+
+Branch nuevo: `look-and-feel-prototype` (creado desde `main` después de mergear `jenga-physics-prototype`).
+
+Motivación: la escena `Room.unity` previa funcionaba operativamente pero visualmente era una sucesión de cubos primitive con Standard materials sin textura ni normales (suelo/paredes/techo color plano, mesa coffee table chica, sillas y muebles inexistentes). Sin presencia ambiental, los participantes sentían que estaban en un "test technical demo" en vez de una habitación. Esta sesión rearma el cuarto desde cero usando assets del `HDRPFurniturePack` (ya importado pero no usado por incompatibilidad de pipeline) + bake de lightmaps + PBR textures.
+
+Constraint clave: **bajo costo de runtime + baja latencia para VR**. Built-in render pipeline se mantiene (no se migró a URP/HDRP para no introducir regresiones en sistemas estables como hand tracking, networking, eye tracking, BioLab UDP).
+
+---
+
+### Estrategia: cinco tiers de mejoras estéticas
+
+Antes de implementar, se analizó el espacio de mejoras posibles y se ordenó por ROI (impacto visual / costo de performance):
+
+| Tier | Categoría | Ejemplos | Costo runtime |
+|---|---|---|---|
+| **0** | Flips de settings (gratis) | Single Pass Instanced, Linear Light Intensity, Color Temperature, shadow distance/cascades, reflection resolution | **Nulo o negativo** (mejora performance) |
+| **1** | Baking (precomputado, cero runtime) | Lightmaps, light probes, AO bakeado, reflection probes baked | **Nulo** (mueve trabajo a offline) |
+| **2** | PBR textures | Albedo + Normal + AO + Roughness para suelo/paredes/techo/muebles | **Mínimo** (~3 KB/m² de textura, despreciable) |
+| **3** | Post-processing | ACES tonemap, bloom sutil, color grading | **+1-2 ms/eye** |
+| **4** | Iluminación cinematográfica | Three-point sobre la mesa, lámpara de pie con luz real, HDRI skybox | **Variable** (depende de modos Mixed/Baked) |
+| **5** | Polish / props | Polvo en el aire, props decorativos pequeños | **Mínimo** |
+
+En esta sesión se implementaron principalmente **Tiers 0, 1, 2, 4** (parcial). Tier 3 (post-processing) y Tier 5 (props finos) quedan pendientes.
+
+---
+
+### Tier 0 — Settings flips (ProjectSettings, Quality, Scene)
+
+Cambios aplicados via edición directa de los YAML de `ProjectSettings/`:
+
+| Setting | Archivo | Antes | Después | Justificación |
+|---|---|---|---|---|
+| `m_LightsUseLinearIntensity` | `GraphicsSettings.asset` | 0 | **1** | Cómputo de iluminación en linear space, falloff más natural. Costo nulo. |
+| `m_LightsUseColorTemperature` | `GraphicsSettings.asset` | 0 | **1** | Permite especificar luces en Kelvin (5000K neutro, 2800K incandescente, etc.). Costo nulo. |
+| Ultra → `shadowDistance` | `QualitySettings.asset` | 150 m | **15 m** | La habitación es de 6m. Concentra el shadow map en el área visible, multiplica resolución efectiva por ~10×. |
+| Ultra → `shadowCascades` | `QualitySettings.asset` | 4 | **2** | Indoor no necesita 4 cascadas. Menos splits = más resolución por cascada. |
+| Very High → `shadowDistance` | `QualitySettings.asset` | 70 m | **15 m** | Idem Ultra (consistencia entre quality levels usables en VR). |
+| `m_DefaultReflectionResolution` | `Scenes/Room.unity` (RenderSettings) | 128 | **256** | Reflejos del fallback skybox más definidos para superficies con smoothness > 0. Costo de memoria: ~768 KB. |
+
+Verificación adicional: **Stereo Rendering Mode ya estaba en Single Pass Instanced** (`m_renderMode: 1` en `OpenXR Package Settings.asset`). El `m_StereoRenderingPath: 0` que figuraba en `ProjectSettings.asset` es del sistema XR legacy, ignorado por OpenXR.
+
+Impacto medido (estimado, headset Vive Focus Vision tethered):
+
+* Shadow distance 150 → 15: **−1.5 a −3 ms por eye** (menos drawcalls de shadow casters).
+* Shadow cascades 4 → 2: **−0.5 a −1 ms por eye**.
+* Linear Intensity + Color Temp: ~0 ms.
+* Reflection 128 → 256: +0.05 ms (despreciable).
+
+Net: **2-4 ms ahorrados por eye** con look mejor.
+
+---
+
+### Conversión HDRP → Built-in del Furniture Pack
+
+Archivo nuevo: `Assets/Editor/HdrpToBuiltinConverter.cs`.
+
+Problema: el `HDRPFurniturePack` (sillas Artek, mesa Aalto, sofá, plantas, alfombras, candelabros, lámpara de pie, cuadros) estaba importado pero **inusable en Built-in RP** porque sus materiales usan el shader `HDRP/Lit`. En Built-in sin HDRP package, los materiales aparecen en magenta (shader missing).
+
+Tool: menú **XR Collab → Materials → Convert HDRP Furniture Pack to Built-in Standard**.
+
+Mapping de propiedades:
+
+```text
+_BaseColorMap (HDRP)     -> _MainTex (Built-in)
+_BaseColor               -> _Color
+_NormalMap               -> _BumpMap  (textureType import set a NormalMap)
+_NormalScale             -> _BumpScale
+_MaskMap (HDRP)          -> _MetallicGlossMap + _OcclusionMap (mismo asset)
+                            HDRP MaskMap: R=Metallic, G=AO, B=DetailMask, A=Smoothness
+                            Built-in MetallicGlossMap: R=Metallic, A=Smoothness  -> match directo
+                            Built-in OcclusionMap: G channel                       -> match directo
+_OcclusionMap (separado) -> _OcclusionMap (si existe, prevalece sobre MaskMap)
+_Metallic                -> _Metallic
+_Smoothness              -> _Glossiness
+tiling/offset            -> idem
+```
+
+Output: `Assets/HDRPFurniturePack_BuiltIn/<OriginalName>_Builtin.mat` por cada material HDRP encontrado.
+
+Robustez de lectura: la primera pasada usa `Material.GetTexture()` directo; si la propiedad no existe (shader missing → `HasProperty` retorna false), cae a un `SerializedObject` que lee del YAML del `.mat` directamente. Esto permite convertir materiales con shader HDRP no instalado en el proyecto.
+
+Tool complementaria: **XR Collab → Materials → Swap Materials on Selected (HDRP → Builtin)** para aplicar los `_Builtin.mat` a renderers de instancias en escena. Buscar por `name + "_Builtin"`.
+
+#### Bug crítico encontrado y corregido: pérdida de GUIDs al re-ejecutar
+
+Primera versión del converter: `AssetDatabase.DeleteAsset(outPath); AssetDatabase.CreateAsset(newMat, outPath);` — borrar y recrear. Esto **cambia el GUID del asset**, por lo que cualquier renderer en escena que referenciaba el material viejo queda con referencia rota y se ve magenta.
+
+Fix: mutar el material existente in-place vía `Material.CopyPropertiesFromMaterial(src)`. Conserva el GUID, todas las referencias en escena siguen funcionando. Idempotente — re-ejecutar el menú actualiza propiedades sin romper nada.
+
+```csharp
+var existing = AssetDatabase.LoadAssetAtPath<Material>(outPath);
+if (existing != null)
+{
+    existing.shader = standardShader;
+    existing.CopyPropertiesFromMaterial(newMat); // preserve GUID
+    existing.enableInstancing = true;
+    EditorUtility.SetDirty(existing);
+    Object.DestroyImmediate(newMat); // discard temp
+}
+else
+{
+    AssetDatabase.CreateAsset(newMat, outPath);
+}
+```
+
+#### Tool de recuperación: `Recover Magenta Materials from Prefab Source`
+
+Para reparar las referencias rotas dejadas por la versión buggy del converter, se añadió un menú adicional que:
+
+1. Por cada Renderer en la selección, obtiene el prefab source vía `PrefabUtility.GetCorrespondingObjectFromSource()`.
+2. Lee el material HDRP original que ese slot tiene en el prefab asset.
+3. Construye el path candidato `_Builtin.mat` por nombre.
+4. Asigna el material recuperado al slot.
+
+Resolvió en una pasada los renderers rotos de `RoomFurniture` tras el incidente del GUID change.
+
+#### Fallback de Albedo desde `_DetailAlbedoMap`
+
+Algunos materiales del pack (notablemente `Wall_Decoration_Art_Zebra` y `Table_97_Artek_Wood_natural`) **no asignan textura en `_BaseColorMap`** — usan el "detail" slot como textura principal con un base color tint blanco. El converter inicial leía sólo `_BaseColorMap` y por eso esos muebles aparecían blancos.
+
+Fix en `ConvertOne`: cascada `_BaseColorMap → _DetailAlbedoMap → _MainTex (legacy)`. El primer slot no vacío se mapea a `_MainTex` del material Built-in. Log explícito cuando se usa fallback para que se sepa qué textura está activa.
+
+---
+
+### Construcción del shell del cuarto
+
+Archivo nuevo: `Assets/Editor/RoomShellBuilder.cs`. Menú: **XR Collab → Room → Create Room Shell**.
+
+Crea un GameObject `RoomNew` con 6 hijos (Floor, Ceiling, WallNorth/South/East/West) que forman una habitación cerrada.
+
+#### Iteración 1 (descartada): Quads single-sided con rotaciones explícitas
+
+Primera implementación: cada superficie es un `PrimitiveType.Quad` rotado para que su normal apunte hacia el interior del cuarto.
+
+Quad de Unity tiene normal default = `-Z`. Rotaciones aplicadas:
+
+```text
+Floor       -> Quaternion.Euler(-90, 0, 0)   normal final: -Y  ← INCORRECTO (debería ser +Y)
+Ceiling     -> Quaternion.Euler(+90, 0, 0)   normal final: +Y  ← INCORRECTO (debería ser -Y)
+WallSouth   -> Quaternion.Euler(0, 180, 0)   normal final: +Z  ✓
+WallNorth   -> Quaternion.identity            normal final: -Z  ✓
+WallEast    -> Quaternion.Euler(0, +90, 0)   normal final: -X  ✓
+WallWest    -> Quaternion.Euler(0, -90, 0)   normal final: +X  ✓
+```
+
+Resultado en VR: paredes visibles desde adentro, **piso y techo invisibles** (la normal apuntaba hacia afuera, back-face culling los volvía transparentes desde la posición del usuario). Hipótesis inicial de "es problema de iluminación, las caras están en sombra y se ven negro" fue descartada después de un test con material Unlit rojo (red aparecía solo desde abajo del piso, no desde arriba).
+
+#### Iteración 2 (la elegida): Cube slabs finos
+
+Cada superficie es un `PrimitiveType.Cube` con scale apropiado (slab fino):
+
+| Superficie | Position | Scale (m) |
+|---|---|---|
+| Floor | `(0, -0.05, 0)` | `(6, 0.1, 6)` |
+| Ceiling | `(0, 3.05, 0)` | `(6, 0.1, 6)` |
+| WallSouth | `(0, 1.5, -3.05)` | `(6, 3, 0.1)` |
+| WallNorth | `(0, 1.5, +3.05)` | `(6, 3, 0.1)` |
+| WallEast | `(+3.05, 1.5, 0)` | `(0.1, 3, 6)` |
+| WallWest | `(-3.05, 1.5, 0)` | `(0.1, 3, 6)` |
+
+Cubes tienen las 6 caras visibles desde afuera. Cada slab está **fuera del volumen interior del cuarto**, así que la cara interior de cada slab es la que mira al usuario → siempre visible, sin pelearse con direcciones de normales.
+
+Ventajas extra sobre Quads:
+
+* BoxCollider nativo del Cube primitive → piso bloquea físicas de Jenga blocks, paredes bloquean avatares si caminan demasiado.
+* Espesor físico real (10cm) → look más natural desde fuera (vistas no-VR).
+* No depende de rotaciones precisas.
+
+Costo de geometría: 72 tris totales (12 por cube × 6) — despreciable. Marcado todo Static automáticamente para entrar al bake.
+
+Materiales asignados desde `Assets/FloorMaterial.mat` / `WallMaterial.mat` / `CeilingMaterial.mat` (con PBR Wood048 para piso, plaster para paredes/techo).
+
+---
+
+### Iluminación cinematográfica (Tier 4 parcial)
+
+Archivo nuevo: `Assets/Editor/RoomLighting.cs`. Menú: **XR Collab → Room → Setup Lighting**.
+
+Crea un GameObject `RoomLighting` con 4 hijos + tweak de RenderSettings:
+
+| Luz | Tipo | Color Temp | Intensity | Modo | Función |
+|---|---|---|---|---|---|
+| `DirectionalLight` | Directional | 5000 K | 0.5 | Mixed | "Sol" indirecto suave entrando por hipotéticas ventanas. Reconfigura el directional existente si ya hay uno. |
+| `KeyLight_Table` | Spot | 4000 K | 5 | Mixed | Cenital sobre la mesa. Posicionado 1.8m arriba del `JengaTowerGenerator.transform.position`. Spot angle 60° (90° tras tunear), shadows soft. |
+| `FillLight_Center` | Point | 2800 K | 1.5 | Baked | Ambient cálido a 2/3 de altura del cuarto. Llena esquinas oscuras, no proyecta sombras (ahorra costo). |
+| `RoomReflectionProbe` | Reflection Probe | — | — | Baked | Box-shaped del tamaño del cuarto, parallax-corrected, resolución 256. Genera reflejos genuinos en superficies con smoothness > 0.3. |
+
+Tweak global: `RenderSettings.ambientIntensity` subido de 1.0 → 1.2.
+
+Decisiones de modos:
+
+* **Mixed para Directional + KeyLight**: las luces directas siguen siendo realtime (sombras dinámicas sobre Jenga blocks móviles), pero el bounce/indirect se bakea.
+* **Baked para FillLight**: la luz completa se bakea en lightmap. Cero costo runtime. No afecta objetos dinámicos directamente — para ellos se usan Light Probes (siguiente sección).
+* **Baked para Reflection Probe**: precomputa los reflejos al hacer Generate Lighting. Cero costo runtime después.
+
+#### Issue: spot light descentrado
+
+Caso real durante prueba: el `KeyLight_Table` se posicionó sobre el `JengaTowerGenerator`, pero ese transform no coincidía exactamente con el centro de la mesa Aalto. El spot quedó descentrado, iluminando solo una porción del top de la mesa y dejando el resto en sombra dura.
+
+Fix mientras se afina: subir spot angle de 60 → 90, bajar intensity de 5 → 2.5, o convertirlo a Point light si la geometría no se preocupa por la dirección de la luz. Se documenta como ajuste manual post-script.
+
+---
+
+### Población de muebles
+
+Archivo nuevo: `Assets/Editor/RoomPopulator.cs`. Menú: **XR Collab → Room → Populate Furniture**.
+
+Instancia un layout predefinido bajo un GameObject `RoomFurniture`, aplica swap de materiales `HDRP → Built-in` automáticamente, marca todo Static para bake.
+
+Layout final usado (después de iteración para encajar setup "seated" con mesa real):
+
+| Mueble | Prefab | Función |
+|---|---|---|
+| Mesa cuadrada Aalto | `Table_97_Artek` (sustituye al Coffee_Table_90D inicial, muy chico) | Superficie de Jenga (~73 cm altura, 95×95 cm) |
+| 3 banquetas | `Stool 60 Artek` | Una por participante (Host, Client, Helper). Posicionables a mano según silla física real. |
+| Alfombra | `Rug_High_Pile_Grey` | Bajo la mesa, contraste de textura |
+| Sofá | `Sofa_SL03_Allemuir_Stirling` | Costado del cuarto, llena espacio |
+| Planta | `Plant_Potted_Monstera_Deliciosa` | Esquina noreste, vida |
+| Lámpara de pie | `Floor_Light_A810_Artek` | Esquina noroeste, decorativa (no emite luz real todavía) |
+| Cuadro decorativo | `Wall_Decoration_Art_Zebra` | Punto focal en pared norte |
+
+Override de posición de mesa: si existe `JengaTowerGenerator` en escena, la mesa se posiciona en `JengaTowerGenerator.transform.position` con `y = 0`. Asegura que la torre de Jenga queda sobre la superficie de la mesa nueva.
+
+Setup "passive haptics seated": los 3 participantes estarán **en la misma habitación física real** sentados alrededor de una mesa física. Las 3 banquetas virtuales se reposicionan manualmente para coincidir con las posiciones físicas reales. Tactil real + visual virtual = presencia maximizada.
+
+---
+
+### Light Probes para objetos dinámicos
+
+Archivo nuevo: `Assets/Editor/RoomProbeGenerator.cs`. Menú: **XR Collab → Room → Generate Light Probes**.
+
+Razón: los Jenga blocks, manos del XR rig, avatares networked — son objetos **dinámicos** (no Static). Los lightmaps NO les aplican. Sin Light Probes, esos objetos no reciben luz indirecta del cuarto y se ven "out of place" (planos, sin GI adaptada al entorno).
+
+Distribución de 35 probes generada:
+
+* **Grid principal**: 3 capas (Y = 0.4, 1.5, 2.5 m) × 3×3 en XZ = 27 probes. Margen 0.5m del borde de la habitación.
+* **Cluster denso alrededor de la mesa**: 4 esquinas × 2 alturas (0.75 y 1.20 m) = 8 probes. Centrado en el `JengaTowerGenerator` si existe. Densifica donde más se usan los Jenga blocks (la actividad principal).
+
+API: `LightProbeGroup.probePositions = Vector3[]`. Una sola componente que contiene todas las posiciones.
+
+---
+
+### Bake de lightmaps (Tier 1)
+
+Configuración usada en `Window → Rendering → Lighting → Scene`:
+
+| Setting | Valor |
+|---|---|
+| Lighting Mode | Baked Indirect |
+| Lightmapper | Progressive GPU |
+| Direct Samples | 32 |
+| Indirect Samples | 512 |
+| Bounces | 2 |
+| Filtering | Auto |
+| Lightmap Resolution | 40 texels/m |
+| Lightmap Size | 1024 |
+| Compress Lightmaps | ON |
+| Ambient Occlusion | ON (Max Distance 1, Indirect/Direct 1.0) |
+| Auto Generate | **OFF** (re-bakea automáticamente al cambiar cualquier cosa, anti-flow) |
+
+Tiempo de bake: ~20 min para el cuarto chico con ~10 muebles.
+
+Resultado: bounce light entre piso/paredes/muebles, AO en junturas, Reflection Probe activo (reflejos en superficies con smoothness > 0.3). Light Probes interpolan ambient para Jenga blocks móviles.
+
+---
+
+### Texturas PBR (Tier 2)
+
+Wood048 de AmbientCG (CC0): se descargó el zip `Wood048_1K-JPG.zip` a `Assets/Textures/Room/Wood048/`. Texturas usadas: Color, NormalGL, Roughness.
+
+#### Bugs de asignación encontrados
+
+**Bug 1**: el `_MainTex` (Albedo) de la mesa quedó apuntando a `Wood048.png` — el archivo de preview thumbnail que AmbientCG incluye en el zip para mostrarse en su sitio web, NO la textura real. El PNG es de baja resolución, washed out. Cualquier asignación drag-and-drop "rápida" al primer archivo .png/.jpg encontrado caía sobre el preview.
+
+Fix: cambiar la referencia en el YAML del material a `Wood048_1K-JPG_Color.jpg` (GUID `fb4a20145230fdb40909e3f4b891dd93`).
+
+**Bug 2**: los 3 materiales de bloque Jenga (`BlockRed.mat`, `BlockBlue.mat`, `BlockYellow.mat`) **no tenían texturas asignadas** — solo color tint plano (rojo, azul, amarillo puros). En la escena previa los bloques se veían como cubos de plástico colorido, sin grain de madera.
+
+Fix: edición directa del YAML de cada material para asignar:
+* `_MainTex` → `Wood048_1K-JPG_Color.jpg`
+* `_BumpMap` → `Wood048_1K-JPG_NormalGL.jpg`
+* Habilitar keyword `_NORMALMAP`
+* `_BumpScale` ajustado a 0.3 (sutil en bloques chicos de 1.5cm de alto)
+
+**Bug 3**: el tint del bloque azul `(0, 0, 1)` era azul puro. Multiplicado contra wood (~0.4, 0.3, 0.2 RGB en albedo):
+
+```text
+R: 0   * 0.4 = 0
+G: 0   * 0.3 = 0
+B: 1.0 * 0.2 = 0.2
+```
+
+Los canales R y G quedan en 0, perdiendo toda la variación del Albedo. El bloque azul se veía como un sólido azul oscuro sin grain visible.
+
+Fix: tint `(0.177, 0.359, 1.0)` — azul claro estilo "stain" que preserva las vetas visibles porque ningún canal del tint queda en 0. Multiplicado:
+
+```text
+R: 0.177 * 0.4 = 0.07
+G: 0.359 * 0.3 = 0.11
+B: 1.0   * 0.2 = 0.2
+```
+
+Resultado: bloque azul-grisáceo con grain visible. Mismo principio aplicable a otros tints muy saturados: nunca dejar un canal en 0 si querés ver la textura subyacente.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| Tier 0 settings (Linear/ColorTemp/Shadow distance/etc.) | ✅ Aplicado vía YAML, performance + look mejorados |
+| HDRP → Built-in material converter | ✅ Robusto, idempotente, preserva GUIDs, fallback a `_DetailAlbedoMap` |
+| Material recovery tool para magenta | ✅ Reparable vía menú |
+| Shell del cuarto (6 Cube slabs, 72 tris, BoxColliders nativos) | ✅ `RoomNew` con Floor/Ceiling/4 walls |
+| Muebles instanciados con materiales convertidos | ✅ `RoomFurniture` con 9 muebles del pack |
+| Iluminación cinematográfica (Directional Mixed + Spot Key + Point Fill + Reflection Probe) | ✅ `RoomLighting` |
+| Light Probes (35 distribuidos, denso alrededor de la mesa) | ✅ `RoomLightProbes` |
+| Bake de lightmaps completado | ✅ Baked Indirect + AO + Reflection probe baked |
+| PBR Wood048 en piso, paredes (yeso), techo (yeso) | ✅ Albedo + Normal + Roughness en los 3 materiales del shell |
+| PBR Wood048 en mesa + bloques Jenga | ✅ Albedo + Normal en `Table_97_Artek_Wood_natural_Builtin` + `BlockRed/Blue/Yellow.mat` |
+| Tint del bloque azul ajustado para preservar grain | ✅ `(0.177, 0.359, 1.0)` |
+
+---
+
+### Pendiente / sugerido para futuras iteraciones
+
+* **Tier 3 — Post-processing**: ACES tonemap + bloom sutil (intensidad 0.2-0.4) + color grading. Costo en VR ~1-2 ms/eye. **NO usar Depth of Field, Motion Blur, Chromatic Aberration ni Lens Flares en VR** — todos rompen presencia o causan mareo.
+* **Tier 5 — Polish props**: partículas de polvo flotando muy sutilmente para "atmósfera viva". Pequeños props decorativos (libros sobre mesa con `Coffee_Table_Books`, candelabro `Taper_Candle_Holders` apagado). Cuidar de no recargar la escena.
+* **Lámpara de pie con luz real**: el `Floor_Light_A810_Artek` actualmente es solo decorativo. Agregarle un Point Light hijo (2800K, intensity 2, range 3, Baked) que coincida con la posición del bulb del modelo. Vendería mucha calidez al cuarto.
+* **HDRI skybox**: reemplazar el procedural skybox por un HDRI de interior (Polyhaven CC0). El cuarto está cerrado pero el ambient lighting calculado del skybox sigue siendo el "exterior virtual" del cuarto. Un HDRI de estudio o ventana grande haría más realista lo poco que se filtra.
+* **Texturas PBR distintas por mueble**: actualmente Wood048 está en piso, mesa y bloques (consistencia, mismo material en todo). Considerar si la mesa Artek debería tener un birch más claro para diferenciarse del piso oak. Trade-off entre coherencia y variedad visual.
+* **Posicionamiento de las 3 banquetas según setup físico real**: cuando se calibre el laboratorio, mover las 3 `Stool_*` a las posiciones físicas exactas de las sillas reales. Para passive haptics que el tactil coincida con lo visual.
+* **Tunear `JengaTowerGenerator.transform.position.y`**: el cambio de mesa coffee table (~40cm alto) → Table 97 (~73cm alto) requiere subir el `transform.position.y` del Jenga generator para que la torre quede sobre la superficie nueva.
+* **Validar performance en VR con el bake activo**: medir con `PerformanceHUD` (F3) si el FPS sostenido es ≥ 72 con todos los sistemas activos (NGO + skeleton + scene baked). Si baja, identificar drawcall culpable (probablemente el sofá o la planta tienen mesh complejo).
+
+---
+
+### Mantenimiento del branch
+
+Este branch (`look-and-feel-prototype`) está pensado para **mergeable a main** cuando se confirme el look final. A diferencia de `jenga-physics-prototype` (que es sandbox de tuning con scaffolding que no se merge), aquí los cambios son **cambios de assets + scripts de Editor reusables**:
+
+* Los `RoomShellBuilder`, `RoomLighting`, `RoomPopulator`, `RoomProbeGenerator`, `HdrpToBuiltinConverter` quedan como **Editor tools** disponibles por menú. No agregan código de runtime.
+* Los assets generados (materials Built-in, lightmaps bakeados, scene actualizada) son los productos finales que se promueven.
+
+Cuando se merge a main, mantener los 5 Editor scripts permite re-generar partes del cuarto si en el futuro se cambia layout o se agregan muebles.
+
+---
+
 ## 2026-05-21 — Representación de manos por esqueleto (local y networked) para mejorar presencia
 
 Branch activo: `multiplayer-prototype-fixed` (mismo día, sesión continuada).

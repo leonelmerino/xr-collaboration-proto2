@@ -48,6 +48,13 @@ public class NetworkedAvatarHands : NetworkBehaviour
     [Tooltip("Si se deja vacio, busca FindObjectOfType<XROrigin>() en el owner para convertir poses a world space.")]
     [SerializeField] private XROrigin overrideOriginForConversion;
 
+    // Toggle de visuales (esferas + lineas + rayos sincronizados). Si esta en false, no se
+    // muestran. Las muñecas y dedos del avatar humanoid (driveados por AvatarPoseDriver) son
+    // ahora la unica representacion de mano. La sincronizacion de estado sigue corriendo por
+    // si otros sistemas la consumen (e.g. grab interaction).
+    // Flippear a true si queres re-habilitar los visualizers de debug.
+    private const bool ShowVisualizers = false;
+
     private NetworkVariable<HandPoseState> LeftHand = new NetworkVariable<HandPoseState>(
         default, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
 
@@ -271,41 +278,52 @@ public class NetworkedAvatarHands : NetworkBehaviour
         LineRenderer pinchLine,
         LineRenderer rayDisplay)
     {
-        if (handRoot != null) handRoot.SetActive(state.tracked || state.rayActive);
-
-        if (state.tracked)
+        // Si los visuales estan apagados, ocultamos el handRoot y la pinchLine pero NO el rayDisplay:
+        // el rayo de seleccion debe seguir visible independientemente de ShowVisualizers.
+        if (!ShowVisualizers)
         {
-            if (thumb != null) thumb.position = state.thumbTipPos;
-            if (index != null) index.position = state.indexTipPos;
-
-            if (pinch != null)
-            {
-                // Renderer.enabled (no SetActive) para no afectar hijos/componentes hermanos como el PinchLine.
-                var rend = pinch.GetComponent<Renderer>();
-                if (rend != null) rend.enabled = state.pinching;
-                if (state.pinching)
-                    pinch.position = (state.thumbTipPos + state.indexTipPos) * 0.5f;
-            }
-
-            if (pinchLine != null)
-            {
-                pinchLine.enabled = true;
-                pinchLine.useWorldSpace = true;
-                pinchLine.positionCount = 2;
-                pinchLine.SetPosition(0, state.thumbTipPos);
-                pinchLine.SetPosition(1, state.indexTipPos);
-            }
+            if (handRoot != null) handRoot.SetActive(false);
+            if (pinchLine != null) pinchLine.enabled = false;
         }
         else
         {
-            if (pinchLine != null) pinchLine.enabled = false;
-            if (pinch != null)
+            if (handRoot != null) handRoot.SetActive(state.tracked || state.rayActive);
+
+            if (state.tracked)
             {
-                var rend = pinch.GetComponent<Renderer>();
-                if (rend != null) rend.enabled = false;
+                if (thumb != null) thumb.position = state.thumbTipPos;
+                if (index != null) index.position = state.indexTipPos;
+
+                if (pinch != null)
+                {
+                    // Renderer.enabled (no SetActive) para no afectar hijos/componentes hermanos como el PinchLine.
+                    var rend = pinch.GetComponent<Renderer>();
+                    if (rend != null) rend.enabled = state.pinching;
+                    if (state.pinching)
+                        pinch.position = (state.thumbTipPos + state.indexTipPos) * 0.5f;
+                }
+
+                if (pinchLine != null)
+                {
+                    pinchLine.enabled = true;
+                    pinchLine.useWorldSpace = true;
+                    pinchLine.positionCount = 2;
+                    pinchLine.SetPosition(0, state.thumbTipPos);
+                    pinchLine.SetPosition(1, state.indexTipPos);
+                }
+            }
+            else
+            {
+                if (pinchLine != null) pinchLine.enabled = false;
+                if (pinch != null)
+                {
+                    var rend = pinch.GetComponent<Renderer>();
+                    if (rend != null) rend.enabled = false;
+                }
             }
         }
 
+        // El rayo de seleccion siempre se actualiza, sin importar ShowVisualizers.
         if (rayDisplay != null)
         {
             if (state.rayActive)

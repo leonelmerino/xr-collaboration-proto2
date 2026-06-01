@@ -48,6 +48,11 @@ public class LanDiscoveryService : MonoBehaviour
     private readonly Queue<DiscoveryRecord> incomingQueue = new();
     private readonly object queueLock = new();
 
+    // Tiempo del main thread, copiado en Update() para que ParseBroadcast
+    // lo pueda leer de forma segura desde el background thread.
+    // (Time.realtimeSinceStartup lanza UnityException si se llama fuera del main thread.)
+    private volatile float _mainThreadTime;
+
     private void Awake()
     {
         if (Instance == null) Instance = this;
@@ -71,6 +76,9 @@ public class LanDiscoveryService : MonoBehaviour
 
     private void Update()
     {
+        // Actualizar el timestamp del main thread antes de usarlo en ParseBroadcast.
+        _mainThreadTime = Time.realtimeSinceStartup;
+
         // Drenar paquetes recibidos en background thread.
         lock (queueLock)
         {
@@ -166,6 +174,7 @@ public class LanDiscoveryService : MonoBehaviour
 
     private IEnumerator BroadcastLoop(int gamePort)
     {
+        bool firstTick = true;
         while (serverSocket != null)
         {
             string payload = BuildBroadcastPayload(gamePort);
@@ -173,12 +182,14 @@ public class LanDiscoveryService : MonoBehaviour
 
             // Broadcast en cada NIC activa no virtual.
             int sentCount = 0;
+            var targets = new System.Text.StringBuilder();
             foreach (var subnetBroadcast in EnumerateBroadcastAddresses())
             {
                 try
                 {
                     serverSocket.Send(bytes, bytes.Length, new IPEndPoint(subnetBroadcast, discoveryPort));
                     sentCount++;
+                    targets.Append(subnetBroadcast).Append(' ');
                 }
                 catch (Exception ex)
                 {
@@ -191,8 +202,19 @@ public class LanDiscoveryService : MonoBehaviour
             {
                 serverSocket.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Broadcast, discoveryPort));
                 sentCount++;
+                targets.Append("255.255.255.255");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[LanDiscovery] Broadcast a 255.255.255.255 fallo: {ex.Message}");
+            }
+
+            // Solo loguear en el primer tick para no spam, pero mostrar todas las IPs de destino.
+            if (firstTick)
+            {
+                Debug.Log($"[LanDiscovery] DIAG HOST — enviando a {sentCount} destinos: [{targets}] payload={payload}");
+                firstTick = false;
+            }
 
             yield return new WaitForSeconds(serverBroadcastIntervalSec);
         }
@@ -255,6 +277,7 @@ public class LanDiscoveryService : MonoBehaviour
 
     private void ClientListenLoop()
     {
+        Debug.Log("[LanDiscovery] DIAG CLIENT — listener thread arrancado.");
         var remoteEP = new IPEndPoint(IPAddress.Any, 0);
         while (clientCts != null && !clientCts.IsCancellationRequested)
         {
@@ -262,22 +285,41 @@ public class LanDiscoveryService : MonoBehaviour
             {
                 byte[] data = clientSocket.Receive(ref remoteEP);
                 string msg = Encoding.UTF8.GetString(data);
-                if (!msg.StartsWith(protocolMagic + "|")) continue;
+
+                // DIAG: loguear TODO lo que llega al socket, antes del filtro.
+                Debug.Log($"[LanDiscovery] DIAG CLIENT — paquete recibido de {remoteEP.Address}:{remoteEP.Port} ({data.Length} bytes): \"{msg}\"");
+
+                if (!msg.StartsWith(protocolMagic + "|"))
+                {
+                    Debug.LogWarning($"[LanDiscovery] DIAG CLIENT — magic NO coincide. Esperado='{protocolMagic}|' Recibido='{(msg.Length > 20 ? msg.Substring(0, 20) : msg)}'");
+                    continue;
+                }
 
                 var rec = ParseBroadcast(msg, remoteEP);
-                if (rec == null) continue;
+                if (rec == null)
+                {
+                    Debug.LogWarning($"[LanDiscovery] DIAG CLIENT — ParseBroadcast devolvio null para: {msg}");
+                    continue;
+                }
 
                 lock (queueLock)
                     incomingQueue.Enqueue(rec);
             }
             catch (ObjectDisposedException) { break; }
-            catch (SocketException) { if (clientCts == null || clientCts.IsCancellationRequested) break; }
+            catch (SocketException ex)
+            {
+                // ← antes era silencioso; ahora loguea el codigo de error.
+                if (clientCts == null || clientCts.IsCancellationRequested) break;
+                Debug.LogWarning($"[LanDiscovery] DIAG CLIENT — SocketException en Receive: {ex.SocketErrorCode} ({ex.ErrorCode}) — {ex.Message}");
+                Thread.Sleep(100); // evitar spin si el socket falla repetidamente
+            }
             catch (Exception ex)
             {
                 Debug.LogWarning($"[LanDiscovery] Listener error: {ex.Message}");
                 Thread.Sleep(100);
             }
         }
+        Debug.Log("[LanDiscovery] DIAG CLIENT — listener thread terminado.");
     }
 
     private DiscoveryRecord ParseBroadcast(string msg, IPEndPoint sender)
@@ -312,10 +354,14 @@ public class LanDiscoveryService : MonoBehaviour
                 hostName = string.IsNullOrEmpty(host) ? "unknown" : host,
                 sessionId = string.IsNullOrEmpty(session) ? "unknown" : session,
                 gamePort = gamePort,
-                lastSeenLocalTime = Time.realtimeSinceStartup
+                lastSeenLocalTime = _mainThreadTime   // thread-safe: volatile float del main thread
             };
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[LanDiscovery] ParseBroadcast excepcion: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
     }
 
     private void MergeDiscovery(DiscoveryRecord newRec)
