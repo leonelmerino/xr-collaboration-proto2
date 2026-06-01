@@ -5113,6 +5113,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: cbcdda6203ed8cc41971694ca9cce55b, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  discoveryWaitSec: 6
+  fallbackToStaticIp: 0
+  showStatusHud: 1
+  hudFontSize: 15
 --- !u!114 &746418303
 MonoBehaviour:
   m_ObjectHideFlags: 0
