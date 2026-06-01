@@ -74,7 +74,8 @@ public class AvatarHandTunerHUD : MonoBehaviour
     [SerializeField] private float stepSmall = 1f;
 
     [Header("OnGUI overlay")]
-    [SerializeField] private bool showOnGUI = true;
+    // SIN [SerializeField]: siempre arranca oculto. Toggle con F4 si se necesita en debug.
+    private bool showOnGUI = false;
     [SerializeField] private Vector2 hudScreenPos = new Vector2(10, 200);
     [SerializeField] private Vector2 hudSize = new Vector2(380, 280);
 

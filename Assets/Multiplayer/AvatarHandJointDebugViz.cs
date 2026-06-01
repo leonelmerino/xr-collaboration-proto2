@@ -24,7 +24,9 @@ public class AvatarHandJointDebugViz : MonoBehaviour
     [Header("Display options")]
     // Default = false: en uso normal no se ven las esferas/lineas de diagnostico. Si querés
     // re-habilitarlo para diagnosticar problemas de alineacion de manos, apretá F5 en runtime.
-    [SerializeField] private bool showViz = false;
+    // SIN [SerializeField]: el valor guardado en escena no puede overridear este default.
+    // El toggle F5 sigue funcionando en runtime pero no persiste al guardar la escena.
+    private bool showViz = false;
     [SerializeField] private KeyCode toggleKey = KeyCode.F5;
 
     [Header("Geometry")]
