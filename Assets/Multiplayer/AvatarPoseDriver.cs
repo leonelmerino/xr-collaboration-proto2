@@ -52,14 +52,19 @@ public class AvatarPoseDriver : MonoBehaviour
     [SerializeField] private bool driveHandTargets = true;
 
     [Header("Local owner visibility")]
-    [Tooltip("Si esta activo y este avatar pertenece al OWNER local, se OCULTA SOLO LA CABEZA " +
-             "(escalando el head bone a un valor casi cero). Asi el host ve su torso, brazos y " +
-             "manos (necesario para jugar al Jenga: ver tus manos para alcanzar las piezas) pero " +
-             "no ve su propia cara desde adentro del HMD. Los OTROS jugadores siguen viendo " +
-             "este avatar completo (instancian su propia copia donde isLocalOwner=False).")]
+    [Tooltip("Si esta activo y este avatar pertenece al OWNER local, se OCULTA EL TORSO COMPLETO " +
+             "(escalando Bip01 Spine a 0.0001, lo que colapsa torso+pecho+espalda+cuello+cabeza). " +
+             "Los brazos y manos quedan visibles gracias a la contra-escala 10000 en los clavicles " +
+             "(hijos de Neck en el Biped Triangle Neck). Las piernas no se ven afectadas porque " +
+             "Bip01 L/R Thigh son hijos de Pelvis, que es PADRE de Spine. Necesario para que el " +
+             "owner pueda ver sus manos al jugar al Jenga sin ver el avatar desde adentro. Los " +
+             "OTROS jugadores siguen viendo el avatar completo (isLocalOwner=False en sus copias).")]
     [SerializeField] private bool hideRenderersForLocalOwner = true;
 
     private Transform _headBone;
+    private Transform _spineBone;          // Bip01 Spine — raíz de toda la columna (torso+cuello+cabeza)
+    private Transform _leftShoulderBone;   // Bip01 L Clavicle — hijo de Neck en Triangle Neck Biped
+    private Transform _rightShoulderBone;  // Bip01 R Clavicle
     private Transform _avatarRoot; // el root del prefab (no este sub-mesh)
 
     // Bind pose offset para la CABEZA: capturado en el primer LateUpdate. Necesario porque el
@@ -138,8 +143,11 @@ public class AvatarPoseDriver : MonoBehaviour
         bool humanoidOK = animatorOK && animator.isHuman;
         if (humanoidOK)
         {
-            _headBone = animator.GetBoneTransform(HumanBodyBones.Head);
-            _leftHandBone = animator.GetBoneTransform(HumanBodyBones.LeftHand);
+            _headBone         = animator.GetBoneTransform(HumanBodyBones.Head);
+            _spineBone        = animator.GetBoneTransform(HumanBodyBones.Spine);
+            _leftShoulderBone = animator.GetBoneTransform(HumanBodyBones.LeftShoulder);
+            _rightShoulderBone= animator.GetBoneTransform(HumanBodyBones.RightShoulder);
+            _leftHandBone     = animator.GetBoneTransform(HumanBodyBones.LeftHand);
             _rightHandBone = animator.GetBoneTransform(HumanBodyBones.RightHand);
             _leftMiddleProxBone = animator.GetBoneTransform(HumanBodyBones.LeftMiddleProximal);
             _rightMiddleProxBone = animator.GetBoneTransform(HumanBodyBones.RightMiddleProximal);
@@ -163,6 +171,7 @@ public class AvatarPoseDriver : MonoBehaviour
         Debug.Log($"[AvatarPoseDriver] OnEnable on '{gameObject.name}': " +
                   $"animator={(animatorOK ? "OK" : "NULL")} (isHuman={humanoidOK}), " +
                   $"headBone={(_headBone != null ? _headBone.name : "NULL")}, " +
+                  $"spineBone={(_spineBone != null ? _spineBone.name : "NULL")}, " +
                   $"poseSync={(poseSync != null ? "OK" : "NULL")}, " +
                   $"avatarRoot={(_avatarRoot != null ? _avatarRoot.name : "NULL")}, " +
                   $"leftIKTarget={(leftHandIKTarget != null ? leftHandIKTarget.name : "NULL")}, " +
@@ -186,24 +195,59 @@ public class AvatarPoseDriver : MonoBehaviour
         bool isLocalOwner = poseSync != null && poseSync.IsOwner;
         if (isLocalOwner)
         {
-            // En vez de ocultar TODOS los renderers (como hacíamos antes), ahora solo escalamos
-            // el head bone a casi cero. Eso colapsa los vertices skinned a la cabeza (cara, pelo,
-            // ojos, mandibula) a un punto invisible. El resto del avatar (torso, brazos, manos)
-            // queda visible — necesario para jugar al Jenga: ver tus manos para alcanzar las piezas.
+            // Estrategia de visibilidad para el owner:
             //
-            // No usamos Vector3.zero exacto para evitar matrices singulares (NaN en skinning);
-            // 0.0001 da el mismo efecto visual (un punto microscopico) sin problemas numericos.
-            if (_headBone != null)
+            // 1. Spine → escalar a 0.0001: colapsa la geometria de TODA la columna (torso, pecho,
+            //    espalda, cuello, cabeza). En el rig Rocketbox Biped, Bip01 Spine es la raiz
+            //    de la cadena: Spine → Spine1 → Spine2 → Neck → Head.
+            //    Con Triangle Neck, los clavicles (brazos) son hijos de Neck, por lo que
+            //    tambien heredarian la escala. Se compensan con contra-escala en paso 2.
+            //    Las piernas NO se ven afectadas: Bip01 L/R Thigh son hijos de Bip01 Pelvis,
+            //    que es PADRE de Spine (no hijo), asi que la escala no se propaga a ellas.
+            //
+            // 2. L/R Shoulder (= Bip01 L/R Clavicle) → contra-escalar a 10000: compensa la
+            //    escala heredada del Spine. Escala world resultante ≈ 0.0001 × 10000 = 1.0.
+            //    Los brazos y manos quedan en tamaño normal, visibles para el Jenga.
+            //
+            // 3. Head → escalar a 0.0001: ya hereda el 0.0001 del Spine via la cadena, pero
+            //    se aplica explicitamente como refuerzo por si el mapeo falla.
+            //
+            // No usamos Vector3.zero exacto para evitar matrices singulares (NaN en skinning).
+            var collapse = new Vector3(0.0001f, 0.0001f, 0.0001f);
+            var restore  = new Vector3(10000f,  10000f,  10000f);
+
+            if (_spineBone != null)
             {
-                _headBone.localScale = new Vector3(0.0001f, 0.0001f, 0.0001f);
+                _spineBone.localScale = collapse;
                 Debug.Log($"[AvatarPoseDriver] Post-spawn: '{gameObject.name}' isLocalOwner=True. " +
-                          $"Head bone scaled to 0.0001 (avatar body/arms visible to owner, head hidden).");
+                          $"Spine scaled to 0.0001 (torso+neck+head geometry hidden via inheritance; arms/legs unaffected).");
             }
             else
+                Debug.LogWarning($"[AvatarPoseDriver] '{gameObject.name}' isLocalOwner=True but _spineBone is NULL.");
+
+            if (_leftShoulderBone != null)
             {
-                Debug.LogWarning($"[AvatarPoseDriver] Post-spawn: '{gameObject.name}' isLocalOwner=True " +
-                                  $"but _headBone is NULL, cannot hide head.");
+                _leftShoulderBone.localScale = restore;
+                Debug.Log($"[AvatarPoseDriver] LeftShoulder counter-scaled to 10000 (arm world scale ≈ 1.0).");
             }
+            else
+                Debug.LogWarning($"[AvatarPoseDriver] '{gameObject.name}' isLocalOwner=True but _leftShoulderBone is NULL.");
+
+            if (_rightShoulderBone != null)
+            {
+                _rightShoulderBone.localScale = restore;
+                Debug.Log($"[AvatarPoseDriver] RightShoulder counter-scaled to 10000 (arm world scale ≈ 1.0).");
+            }
+            else
+                Debug.LogWarning($"[AvatarPoseDriver] '{gameObject.name}' isLocalOwner=True but _rightShoulderBone is NULL.");
+
+            if (_headBone != null)
+            {
+                _headBone.localScale = collapse;
+                Debug.Log($"[AvatarPoseDriver] Head scaled to 0.0001 (head geometry hidden, belt-and-suspenders).");
+            }
+            else
+                Debug.LogWarning($"[AvatarPoseDriver] '{gameObject.name}' isLocalOwner=True but _headBone is NULL.");
         }
         else
         {

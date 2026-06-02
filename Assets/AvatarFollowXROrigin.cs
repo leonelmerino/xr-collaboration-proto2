@@ -15,6 +15,14 @@ public class AvatarFollowXROrigin : NetworkBehaviour
              "Se sobreescribe automaticamente al calibrar si autoCalibrateHeight=true.")]
     [SerializeField] private float standingHmdHeight = 1.7f;
 
+    [Tooltip("Offset Y (metros) sumado al root del avatar despues del calculo de altura. " +
+             "Necesario para compensar el colapso de posicion world de los bones superiores " +
+             "cuando se escala Bip01 Spine a ~0 para ocultar el torso del owner: los clavicles " +
+             "heredan la posicion colapsada (~nivel lumbar) aunque su escala world se restaure. " +
+             "Valor tipico: 0.35 para un avatar Rocketbox en HTC Vive Focus Vision. " +
+             "Ajustar si brazos/cuerpo se ven demasiado bajos (positivo) o altos (negativo).")]
+    [SerializeField] private float bodyYOffset = 0.35f;
+
     private Transform hmd;
     private bool heightCalibrated = false;
 
@@ -85,7 +93,7 @@ public class AvatarFollowXROrigin : NetworkBehaviour
         // Root sigue al HMD en XZ y en Y relativo a la altura calibrada de pie.
         // Si el usuario se agacha, bodyY baja (el avatar se hunde bajo el suelo).
         // Clamp a 0 para no flotar: el avatar solo puede hundirse, no subir sobre el suelo.
-        float bodyY = Mathf.Min(0f, hmd.position.y - standingHmdHeight);
+        float bodyY = Mathf.Min(0f, hmd.position.y - standingHmdHeight) + bodyYOffset;
         transform.position = new Vector3(hmd.position.x, bodyY, hmd.position.z);
         transform.rotation = Quaternion.Euler(0f, hmd.eulerAngles.y, 0f);
 
