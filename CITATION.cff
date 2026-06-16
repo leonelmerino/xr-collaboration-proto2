@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "XR Collaboration Prototype 2: Multi-User Immersive Environment with Hand Tracking, Eye Tracking, and Collaborative Physics"
+authors:
+  - family-names: Merino
+    given-names: Leonel
+version: 0.0.1
+date-released: 2026-06-16
+repository-code: https://github.com/leonelmerino/xr-collaboration-proto2
+abstract: >
+  Research prototype developed in Unity 2022.3 LTS for studying collaboration
+  in extended reality (XR) environments. Implements a multi-user LAN environment
+  where participants interact with a Jenga physics simulation using OpenXR hand
+  tracking and humanoid avatars. Includes automated eye tracking data logging
+  (CSV) with gaze, pupil, head pose, and area-of-interest data.
+keywords:
+  - extended reality
+  - XR
+  - virtual reality
+  - hand tracking
+  - eye tracking
+  - multi-user collaboration
+  - Unity
+  - HTC Vive
+  - Jenga
+  - biometric data
+  - research prototype
+  - OpenXR
+license: MIT
