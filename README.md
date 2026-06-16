@@ -4,11 +4,11 @@
 
 If you use this software in your research, please cite it as:
 
-> Merino, L. & Cosmelli, D. (2026). *XR Collaboration Prototype 2: Multi-User Immersive Environment with Hand Tracking, Eye Tracking, and Collaborative Physics* (v0.0.1). Zenodo. https://doi.org/10.5281/zenodo.XXXXXXX
+> Merino, L. & Cosmelli, D. (2026). *XR Collaboration Prototype 2: Multi-User Immersive Environment with Hand Tracking, Eye Tracking, and Collaborative Physics* (v0.0.1). Zenodo. https://doi.org/10.5281/zenodo.20723485
 
 A `CITATION.cff` file is included for reference managers and GitHub's "Cite this repository" feature.
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20723485.svg)](https://doi.org/10.5281/zenodo.20723485)
 
 
 
