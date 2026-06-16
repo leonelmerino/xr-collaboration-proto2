@@ -5,6 +5,8 @@ title: "XR Collaboration Prototype 2: Multi-User Immersive Environment with Hand
 authors:
   - family-names: Merino
     given-names: Leonel
+  - family-names: Cosmelli
+    given-names: Diego
 version: 0.0.1
 date-released: 2026-06-16
 repository-code: https://github.com/leonelmerino/xr-collaboration-proto2
@@ -28,3 +30,7 @@ keywords:
   - research prototype
   - OpenXR
 license: MIT
+funding:
+  - name: "ANID Proyectos de Exploración 13250116"
+    title: "Enhancing Collaboration in Extended Reality: Towards Self-Adaptive Systems for Multi-User Spatial Computing with Multisensory and Psychophysiological Feedback"
+    funder: "Agencia Nacional de Investigación y Desarrollo (ANID), Chile"

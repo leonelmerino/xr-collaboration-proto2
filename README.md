@@ -4,7 +4,7 @@
 
 If you use this software in your research, please cite it as:
 
-> Merino, L. (2026). *XR Collaboration Prototype 2: Multi-User Immersive Environment with Hand Tracking, Eye Tracking, and Collaborative Physics* (v0.0.1). Zenodo. https://doi.org/10.5281/zenodo.XXXXXXX
+> Merino, L. & Cosmelli, D. (2026). *XR Collaboration Prototype 2: Multi-User Immersive Environment with Hand Tracking, Eye Tracking, and Collaborative Physics* (v0.0.1). Zenodo. https://doi.org/10.5281/zenodo.XXXXXXX
 
 A `CITATION.cff` file is included for reference managers and GitHub's "Cite this repository" feature.
 
