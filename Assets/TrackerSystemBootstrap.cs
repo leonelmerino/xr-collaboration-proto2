@@ -23,7 +23,8 @@ public static class TrackerSystemBootstrap
         go.AddComponent<TrackerBodyCalibration>();
         go.AddComponent<TrackerPoseDriver>();
         go.AddComponent<TrackerVisualizer>();
+        go.AddComponent<BodyTrackingSessionLogger>();
 
-        Debug.Log("[TrackerSystemBootstrap] GameObject [TrackerSystem] creado con TrackerBodyCalibration + TrackerPoseDriver + TrackerVisualizer.");
+        Debug.Log("[TrackerSystemBootstrap] GameObject [TrackerSystem] creado con TrackerBodyCalibration + TrackerPoseDriver + TrackerVisualizer + BodyTrackingSessionLogger.");
     }
 }

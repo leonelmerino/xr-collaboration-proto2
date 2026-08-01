@@ -1,5 +1,197 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-08-01 — BodyTrackingSessionLogger: registro por frame de cuerpo y manos, y análisis del primer CSV
+
+Branch activo: `feature/htc-trackers`.
+
+Con los trackers calibrados y el refinamiento via manos operativo (sección siguiente), se implementó un logger de pose corporal per-frame. El objetivo es disponer de un CSV por sesión con la posición de cintura, pies y manos en cada frame, sincronizable con los logs de eye tracking existentes usando `timestamp_utc_iso` como clave común.
+
+Se agregó un script nuevo y se actualizó el bootstrap del sistema:
+
+| Archivo | Cambio |
+|---|---|
+| `Assets/BodyTrackingSessionLogger.cs` | Script nuevo: logger per-frame de trackers + manos |
+| `Assets/TrackerSystemBootstrap.cs` | Agregado `go.AddComponent<BodyTrackingSessionLogger>()` al crear el GameObject `[TrackerSystem]` |
+
+---
+
+### 1. Diseño del BodyTrackingSessionLogger
+
+**Patrón**: idéntico al `EyeTrackingSessionLogger` en estructura de archivos, campo `autoStart`, `StreamWriter` UTF-8, helpers locales de formato declarados dentro de `Update()`, e índice incremental de run que escanea archivos existentes para evitar sobreescrituras.
+
+**Ruta de archivo**:
+
+```
+Application.persistentDataPath/EyeTrackingLogs/{participantId}/{sessionId}/{taskId}_{trialId}_{n:000}_body.csv
+```
+
+Comparte la misma carpeta raíz de logs que el CSV de gaze. El sufijo `_body.csv` distingue el tipo. Las dos series pueden sincronizarse en análisis usando `timestamp_utc_iso`.
+
+**44 columnas del CSV** organizadas por bloque semántico:
+
+| Bloque | Columnas |
+|---|---|
+| Identificación de muestra | `sample_index`, `timestamp_rel_s`, `timestamp_utc_iso` |
+| Metadata de sesión | `participant_id`, `session_id`, `task_id`, `trial_id`, `condition` |
+| Cabeza (HMD) | `head_x/y/z`, `head_qx/y/z/w` |
+| Estado de calibración | `is_calibrated` |
+| Cintura | `waist_valid`, `waist_x/y/z` |
+| Pie izquierdo | `foot_l_valid`, `foot_l_x/y/z` |
+| Pie derecho | `foot_r_valid`, `foot_r_x/y/z` |
+| Mano izquierda | `hand_l_valid`, `hand_l_x/y/z`, `hand_l_qx/y/z/w` |
+| Mano derecha | `hand_r_valid`, `hand_r_x/y/z`, `hand_r_qx/y/z/w` |
+
+Los campos de posición/rotación se dejan vacíos (`""`) cuando el flag `*_valid` correspondiente es `0`, siguiendo la misma convención del logger de gaze.
+
+**`TryGetCorrected()` — posición del tracker en espacio mundo**:
+
+Obtiene la posición raw del tracker via `InputDevices`, aplica `calibration.TrackingToWorld(raw)` (que incluye la negación de X y Z específica del VIVE Ultimate Tracker) y resta el offset calculado en calibración:
+
+```csharp
+bool TryGetCorrected(InputDevice dev, Vector3 offset, out Vector3 corrected)
+{
+    corrected = Vector3.zero;
+    if (!dev.isValid) return false;
+    if (!dev.TryGetFeatureValue(CommonUsages.isTracked, out bool tracked) || !tracked) return false;
+    if (!dev.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 raw)) return false;
+    corrected = calibration.TrackingToWorld(raw) - offset;
+    return true;
+}
+```
+
+**`TryGetHandPose()` — palma de la mano via XRHandSubsystem**:
+
+Usa `XRHandJointID.Palm` con fallback a `XRHandJointID.Wrist`. Las poses de XRHands están en session-local space con coordenadas OpenXR estándar — **sin** la inversión X/Z específica de los trackers VIVE. Se convierten a mundo con `TrackingParent.TransformPoint()` sin ninguna negación adicional:
+
+```csharp
+XRHandJoint joint = hand.GetJoint(XRHandJointID.Palm);
+if (!joint.TryGetPose(out Pose pose))
+{
+    joint = hand.GetJoint(XRHandJointID.Wrist);
+    if (!joint.TryGetPose(out pose)) return false;
+}
+
+// Sin negación de X/Z — XRHands usa OpenXR estándar (igual que el HMD).
+pos = parent.TransformPoint(pose.position);
+rot = parent.rotation * pose.rotation;
+```
+
+**Invariante**: la negación de X/Z del VIVE Tracker en `TrackingToWorld()` es específica del `InputDevices` API para ese hardware. Los hand joints de `XRHandSubsystem` usan coordenadas OpenXR estándar y nunca deben negarse.
+
+---
+
+### 2. Errores de compilación y sus fixes
+
+#### Error 1 — Namespace incorrecto: `Unity.XR.Hands` vs `UnityEngine.XR.Hands`
+
+```
+Assets\BodyTrackingSessionLogger.cs(9,16): error CS0234:
+The type or namespace name 'Hands' does not exist in the namespace 'Unity.XR'
+```
+
+El mismo error que ya había aparecido en `TrackerBodyCalibration.cs`. El using inicial usaba `using Unity.XR.Hands;` en lugar del correcto `using UnityEngine.XR.Hands;`. Se confirmó el namespace correcto leyendo `PinchDebugVisualizer.cs` y `HandSkeletonRenderer.cs`, que ya usaban `XRHandSubsystem` con la declaración correcta.
+
+**Invariante**: el paquete `com.unity.xr.hands` (XR Hands 1.4.3) expone su API bajo `UnityEngine.XR.Hands`, no bajo `Unity.XR.Hands`. El prefijo `Unity.XR.*` corresponde a otros paquetes como `Unity.XR.CoreUtils`.
+
+#### Error 2 — CS0165: variable `out` sin inicializar con cortocircuito `&&`
+
+```
+Assets\BodyTrackingSessionLogger.cs(114): error CS0165: Use of unassigned local variable 'wPos'
+Assets\BodyTrackingSessionLogger.cs(117): error CS0165: Use of unassigned local variable 'lPos'
+Assets\BodyTrackingSessionLogger.cs(120): error CS0165: Use of unassigned local variable 'rPos'
+```
+
+**Causa raíz**: el código declaraba la variable `out` inline dentro de la expresión cortocircuitada:
+
+```csharp
+// INCORRECTO: si cal == false, TryGetCorrected() no corre y wPos nunca se asigna.
+bool wValid = cal && TryGetCorrected(calibration.TrackerWaist, calibration.WaistOffset, out Vector3 wPos);
+// El compilador detecta un camino en el que wPos se usa sin haber sido asignada.
+```
+
+El operador `&&` en C# es cortocircuito: si el lado izquierdo (`cal`) es `false`, el lado derecho no se evalúa. Cuando `TryGetCorrected` no se llama, el parámetro `out Vector3 wPos` nunca recibe un valor. El compilador no puede garantizar asignación en todos los caminos de ejecución.
+
+**Fix**: pre-inicializar las variables antes de la expresión condicional:
+
+```csharp
+// CORRECTO: valor garantizado antes del cortocircuito.
+Vector3 wPos = Vector3.zero, lPos = Vector3.zero, rPos = Vector3.zero;
+bool wValid = cal && TryGetCorrected(calibration.TrackerWaist, calibration.WaistOffset, out wPos);
+bool lValid = cal && TryGetCorrected(calibration.TrackerFootL, calibration.FootLOffset,  out lPos);
+bool rValid = cal && TryGetCorrected(calibration.TrackerFootR, calibration.FootROffset,  out rPos);
+```
+
+Si `cal == false`, las variables quedan en `Vector3.zero` — valor correcto porque `wValid == false` y el logger no escribirá esas columnas al CSV.
+
+---
+
+### 3. Análisis del primer CSV de prueba
+
+Se realizó una sesión de prueba de ~24 segundos y se analizó el CSV resultante (1962 filas, 44 columnas). Hallazgos en orden de severidad:
+
+#### 🔴 CRÍTICO — `is_calibrated = 0` en todo el archivo
+
+La calibración nunca se ejecutó durante la sesión de prueba. Consecuencia directa: `waist_valid`, `foot_l_valid` y `foot_r_valid` son `0` en todas las filas, y las columnas de posición de trackers están vacías en todo el CSV. **El registro de trackers fue completamente nulo en esta sesión.**
+
+El logger arranca inmediatamente al entrar en Play Mode (`autoStart = true`) sin esperar calibración — mismo comportamiento que el gaze logger. El flujo correcto de una sesión experimental es: Play → C (calibrar, verificar las esferas de diagnóstico) → iniciar tarea.
+
+#### 🔴 HMD en posición por defecto `(0, 0, −0.7)` al arrancar
+
+Samples 1–61 (t ≈ 2.33–4.73 s): `head_x=0, head_y=0, head_z=−0.7`. La posición `head_y=0` es físicamente imposible (cabeza al nivel del suelo) y corresponde al valor de `Camera.main.transform` antes de que el subsistema XR la posicione en espacio mundo:
+
+- La **rotación** del HMD comienza a ser válida desde el sample 4 (quaternion deja de ser identidad)
+- La **posición** queda frozen hasta el sample 62, donde salta a `(0.403, 1.287, 0.215)`
+
+Estos ~60 samples deben descartarse en post-procesamiento. Criterio sugerido para filtrar: `head_y > 0.3`.
+
+#### 🔴 Dropout completo del HMD: samples 149–322 (~1.9 segundos)
+
+El HMD volvió a `(0, 0, −0.7)` con rotación identidad durante 1.9 s. Al recuperar, la posición cambió a `(−0.083, 1.590, −0.423)` — el usuario se movió durante el dropout. Sin un flag `head_valid` en el CSV, este período es indistinguible de datos válidos en post-procesamiento.
+
+| Sample | t (s) | head_y | Estado |
+|--------|--------|--------|--------|
+| 148 | 5.69 | 1.287 | válido |
+| 149 | 5.70 | 0 | **dropout** |
+| 322 | 7.62 | 0 | **dropout** |
+| 323 | 7.63 | 1.590 | recuperado |
+
+#### 🟡 Mano izquierda ausente durante los primeros 18 segundos
+
+| Mano | Primer sample válido | t (s) |
+|------|---------------------|-------|
+| Derecha (`hand_r_valid=1`) | 295 | 7.33 s |
+| Izquierda (`hand_l_valid=1`) | 1315 | 18.66 s |
+
+La mano izquierda no se detecta hasta los 18.7 s, dejando solo ~5 s de datos con ambas manos al final de la sesión de 24 s. Causa probable: la mano izquierda estaba fuera del campo visual del hand tracking durante la sesión de prueba.
+
+#### 🟡 XR Hands actualiza a frecuencia menor que `Update()`
+
+Muchos frames consecutivos tienen valores de mano idénticos (posición y cuaternión). El hardware de hand tracking actualiza a ~30–60 Hz mientras Unity corre a ~90 Hz — comportamiento esperado del SDK. Para análisis de velocidad/aceleración, aplicar un filtro `diff() != 0` sobre las columnas de posición antes de calcular derivadas.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| `BodyTrackingSessionLogger.cs` — logger per-frame de trackers y manos | ✅ Implementado, compilando, primer CSV generado |
+| Namespace `using UnityEngine.XR.Hands` (corregido desde `Unity.XR.Hands`) | ✅ Fix aplicado en `BodyTrackingSessionLogger.cs` y `TrackerBodyCalibration.cs` |
+| Pre-inicialización de `Vector3` antes de `&&` con `out` (CS0165) | ✅ `Vector3 wPos = Vector3.zero` previo al cortocircuito |
+| `TrackerSystemBootstrap` con `BodyTrackingSessionLogger` | ✅ `go.AddComponent<BodyTrackingSessionLogger>()` |
+| Estructura de archivo: `{taskId}_{trialId}_{n:000}_body.csv` | ✅ Índice incremental, misma carpeta que gaze logs |
+| Sincronización temporal con gaze logger via `timestamp_utc_iso` | ✅ Ambos loggers usan `DateTime.UtcNow.ToString("o")` |
+
+---
+
+### Pendiente
+
+* **Agregar flag `head_valid` al CSV**: sin este flag los períodos de inicialización tardía y dropout del HMD son indistinguibles de datos válidos. Criterio propuesto: `head_y > 0.3f`. Implica agregar una columna más al header y al `_writer.WriteLine`.
+* **Sesión de prueba completa con calibración activa**: la primera prueba no generó datos de trackers porque no se presionó C. La siguiente sesión debe verificar el flujo Play → C → log con `is_calibrated=1` y columnas de trackers con datos reales.
+* **Configurar metadata de sesión por experimento**: `participantId`, `sessionId`, `taskId`, `trialId`, `condition` están hardcodeados a valores de prueba en el Inspector. Definir workflow para actualizarlos entre sesiones, alineado al mismo procedimiento que el `EyeTrackingSessionLogger`.
+* **Verificar inicialización de mano izquierda**: confirmar que con ambas manos visibles al HMD desde el inicio, `hand_l_valid` aparece desde los primeros frames y no tarda ~18 s como en la primera prueba.
+
+---
+
 ## 2026-08-01 — VIVE Ultimate Tracker 3+1: integración, coordinate space y refinamiento con manos
 
 Branch activo: `feature/htc-trackers`.
