@@ -1,5 +1,222 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-08-01 — VIVE Ultimate Tracker 3+1: integración, coordinate space y refinamiento con manos
+
+Branch activo: `feature/htc-trackers`.
+
+Sesión de integración del kit VIVE Ultimate Tracker 3+1 (dongle USB-A, PCVR) para tracking de pies y cintura. El objetivo es extender el avatar humanoide con datos de lower-body — pie izquierdo, pie derecho y cintura — sin base stations ni hardware adicional: los tres trackers se comunican vía dongle al host PCVR que corre el HTC Vive Focus Vision.
+
+Se crearon cuatro scripts nuevos en `Assets/`:
+
+| Script | Responsabilidad |
+|---|---|
+| `TrackerBodyCalibration.cs` | Identifica los 3 trackers, los asigna a roles (waist/footL/footR), calcula offsets en espacio mundo. Tecla C para calibrar, R para refinar con manos. |
+| `TrackerVisualizer.cs` | Esferas de diagnóstico por tracker: raw (coloreadas por índice) y calibradas (naranja=cintura, cian=pie izq, magenta=pie der). |
+| `TrackerPoseDriver.cs` | Aplica los offsets cada frame a los huesos del avatar (Hips, LeftFoot, RightFoot). Incluye filtro anti-saltos por frame y detección de tracker atascado. |
+| `TrackerSystemBootstrap.cs` | Crea el GameObject `[TrackerSystem]` con los tres componentes al iniciar Play Mode; sin setup manual en Editor. |
+
+---
+
+### 1. Coordinate space del VIVE Ultimate Tracker: eje X invertido y Z negado
+
+**Síntoma**: al calibrar con los tres trackers puestos en el cuerpo, las esferas se movían en la dirección opuesta al movimiento físico lateral — mover la mano a la derecha desplazaba la esfera a la izquierda. Al caminar hacia adelante la esfera retrocedía (Z invertido).
+
+**Diagnóstico**: los trackers VIVE Ultimate reportados vía `InputDevices.GetDevices()` usan un sistema de coordenadas donde:
+
+- `+X` = **izquierda física** del usuario (invertido respecto al estándar OpenXR y respecto a Unity world space, donde `+X` = derecha)
+- `-Z` = **adelante físico** (componente Z negativa cuando el tracker apunta en la dirección de la mirada)
+
+El HMD y los hand joints de XRHandSubsystem reportan correctamente en coordenadas estándar (+X = derecha). La inversión es específica del VIVE Ultimate Tracker accedido como dispositivo genérico. La causa exacta no está documentada en el SDK; se determinó empíricamente observando las posiciones raw en el log mientras se movían los trackers de forma controlada.
+
+**Intentos que no funcionaron**:
+
+1. **Negar solo X**: corregía el movimiento lateral pero dejaba el eje Z invertido — avanzar desplazaba las esferas hacia atrás. Se confirmó moviendo cada tracker sobre el eje frontal y observando el signo de la posición raw en el log.
+
+2. **Fix vía SteamVR role assignment**: se asignaron roles de SteamVR (Left Foot, Right Foot, Waist) a cada tracker desde SteamVR → Dispositivos → Configurar roles del tracker. La hipótesis era que los roles aplicarían una corrección de ejes internamente. El usuario confirmó de inmediato que el problema persistía sin cambio — SteamVR no aplica ninguna transformación de coordenadas al reportar posiciones vía `InputDevices`; el rol solo afecta la representación visual en el overlay de SteamVR y las APIs de pose de alto nivel de OpenXR, no los valores raw de posición.
+
+**Fix final en `Assets/TrackerBodyCalibration.cs`**:
+
+```csharp
+public Vector3 TrackingToWorld(Vector3 trackingPos)
+{
+    // El VIVE XR Tracker reporta en un sistema donde +X = izquierda física y -Z = adelante.
+    // Para convertir a Unity (+X = derecha, +Z = adelante): negar tanto X como Z.
+    trackingPos.x = -trackingPos.x;
+    trackingPos.z = -trackingPos.z;
+    return TrackingParent != null
+        ? TrackingParent.TransformPoint(trackingPos)
+        : trackingPos;
+}
+```
+
+`TrackingParent` es `hmd.parent` (Camera Offset / XR Origin transform) — la misma transformación que el subsistema XR aplica al HMD para llevarlo de tracking-local space a world space. Después de las dos negaciones más la transformación del XR Origin, las posiciones del tracker y del HMD están en el mismo espacio mundo y se pueden comparar directamente.
+
+**Invariante a mantener**: esta negación aplica **únicamente** a los VIVE Ultimate Trackers vía `InputDevices`. No debe aplicarse a hand joints (XRHandSubsystem) ni al HMD — esos usan OpenXR estándar con `+X` = derecha.
+
+---
+
+### 2. Identificación automática de pie izquierdo y derecho
+
+**Síntoma**: la calibración asignaba el tracker izquierdo al rol FootR y viceversa. Las esferas magenta (FootR) aparecían a la izquierda del HMD y las cian (FootL) a la derecha.
+
+**Causa raíz**: el algoritmo comparaba las posiciones raw en tracking space directamente contra `hmd.right` (que está en world space):
+
+```csharp
+// INCORRECTO: foot0.pos está en tracking space con X invertido;
+// hmd.right está en world space con X correcto → dot product compara sistemas opuestos.
+float dot0 = Vector3.Dot(foot0.pos - hmd.position, hmd.right);
+```
+
+Con el eje X invertido en tracking space, `foot0.pos.x` positivo significaba "izquierda física" mientras `hmd.right.x` positivo significaba "derecha en mundo". El dot product siempre daba el pie equivocado.
+
+**Fix**: convertir las posiciones de ambos pies a espacio mundo antes del dot product:
+
+```csharp
+Vector3 foot0World = TrackingToWorld(foot0.pos);
+Vector3 foot1World = TrackingToWorld(foot1.pos);
+float dot0 = Vector3.Dot(foot0World - hmd.position, hmd.right);
+float dot1 = Vector3.Dot(foot1World - hmd.position, hmd.right);
+```
+
+El pie con mayor dot product positivo queda asignado a `FootR` (está más a la derecha del HMD en mundo). Ahora ambos vectores están en el mismo espacio y la comparación es correcta.
+
+---
+
+### 3. Offset anatómico de pies: los pies están detrás del HMD
+
+**Síntoma**: después de calibrar y corregir la identificación L/R, las esferas calibradas de los pies aparecían ~8–10 cm adelante de la posición real de los pies.
+
+**Causa**: la calibración calculaba la posición esperada de los pies como la proyección vertical del HMD al piso, asumiendo que los pies están exactamente debajo de la nariz:
+
+```csharp
+ExpectedFootR = hmdFloor + hmd.right * half;
+ExpectedFootL = hmdFloor + hmd.right * -half;
+```
+
+Anatómicamente los pies están detrás del centro de la cabeza en la dirección de la mirada, no debajo de la nariz. La distancia horizontal entre la proyección de la nariz y el centro del pie es típicamente 7–15 cm en la dirección opuesta al forward del HMD.
+
+**Fix**: campo serializable `footForwardOffset` (negativo = detrás del HMD):
+
+```csharp
+[Tooltip("Desplazamiento de los pies en la dirección que mira el HMD. " +
+         "Negativo = los pies están detrás del HMD (valor típico: -0.07 a -0.15 m).")]
+[SerializeField] private float footForwardOffset = -0.08f;
+
+// En Calibrate():
+Vector3 hmdForwardXZ = new Vector3(hmd.forward.x, 0f, hmd.forward.z).normalized;
+ExpectedFootR = hmdFloor + hmd.right *  half + hmdForwardXZ * footForwardOffset;
+ExpectedFootL = hmdFloor + hmd.right * -half + hmdForwardXZ * footForwardOffset;
+```
+
+El valor `-0.08f` (8 cm) es el default; se puede ajustar en Inspector en runtime. Se aplica igualmente a ambos pies ya que la posición frontal relativa al HMD es simétrica cuando el usuario mira al frente.
+
+---
+
+### 4. Desplazamiento residual de ~15 cm por tracker al sostenerlo en la mano
+
+**Síntoma**: al tomar cada tracker en la mano para verificar su posición, la esfera calibrada aparecía desplazada ~15 cm de la mano real. El error era distinto para cada tracker — diferente dirección y magnitud. Log de calibración representativo:
+
+```
+[Calibration] Raw (local)   → waist=(1.16, -0.27, -0.46) | footL=(0.43, -1.43, -0.51) | footR=(-0.12, -1.11, -0.36)
+[Calibration] Raw (mundo)   → waist=(-1.15, -0.27, -0.27) | footL=(-0.42, -1.43, -0.25) | footR=(0.13, -1.11, -0.41)
+[Calibration] Esperado      → waist=(-0.09, 0.85, -0.50)  | footL=(-0.09, 0.00, -0.58) | footR=(-0.09, 0.00, -0.58)
+[Calibration] Offsets mundo → waist=(-1.06, -1.12, 0.23)  | footL=(-0.33, -1.43, 0.34) | footR=(0.21, -1.11, 0.18)
+```
+
+Los offsets Y del orden de -1.1 a -1.4 m evidencian que la posición raw de los trackers en tracking space tiene una componente vertical muy negativa (los trackers ven su propio espacio con Y≈0 en la cabeza, no en el piso). La calibración estática compensa esto, pero el offset calculado depende de que la pose de calibración sea exactamente la asumida.
+
+**Causa raíz**: la calibración asume una pose específica (pies separados exactamente `footSeparation` metros, cintura a `waistHeightRatio × hmdHeight`). En la práctica:
+- La separación exacta de pies varía entre calibraciones
+- El HMD puede tener algunos grados de error de orientación en el instante de presionar C
+- Cada tracker tiene un pequeño offset intrínseco de su propia calibración inercial
+
+Estos errores se acumulan en el offset calculado y resultan en desplazamientos visibles al verificar la posición real del tracker contra la esfera.
+
+**Solución: refinamiento asistido por hand tracking (tecla R)**
+
+El hand tracking (`XRHandSubsystem`) ya operaba correctamente — las posiciones de las manos en mundo son confiables. La estrategia: tomar el tracker en la mano, leer simultáneamente la posición raw del tracker y la posición de la palma, y recomputar el offset para que coincidan exactamente.
+
+Matemática: si el tracker tiene posición corregida actual `curPos = TrackingToWorld(raw) - currentOffset`, y la palma está en `handPos`, el error es `curPos - handPos`. El nuevo offset que fuerza `correctedPos == handPos` es:
+
+```
+newOffset = TrackingToWorld(raw) - handPos
+```
+
+El método `RefineWithHands()` (tecla R) itera los tres trackers calibrados. Para cada uno, calcula su posición corregida actual y busca qué mano está dentro del radio `refineMatchRadius` (30 cm por default). Si encuentra una coincidencia, recomputa el offset:
+
+```csharp
+int TryRefineOne(InputDevice dev, Vector3 currentOffset,
+                 Vector3? lHand, Vector3? rHand, string label,
+                 System.Text.StringBuilder sb, out Vector3 outOffset)
+{
+    outOffset = currentOffset;
+    // ... obtener raw position del tracker ...
+
+    Vector3 rawWorld = TrackingToWorld(raw);
+    Vector3 curPos   = rawWorld - currentOffset;
+
+    float dL = lHand.HasValue ? Vector3.Distance(curPos, lHand.Value) : float.MaxValue;
+    float dR = rHand.HasValue ? Vector3.Distance(curPos, rHand.Value) : float.MaxValue;
+
+    if (Mathf.Min(dL, dR) > refineMatchRadius) return 0;
+
+    Vector3 handPos = dL < dR ? lHand.Value : rHand.Value;
+    outOffset = rawWorld - handPos;   // nuevo offset exacto
+    return 1;
+}
+```
+
+Para obtener la posición de la palma en mundo se usa `XRHandSubsystem` directamente. Las poses de joints de XRHands están en session-local space (el mismo origen que el HMD) pero **sin** la inversión X/Z específica de los trackers VIVE — se convierten a mundo con `TrackingParent.TransformPoint()` sin ninguna negación:
+
+```csharp
+Vector3? TryGetHandWorld(bool isLeft)
+{
+    // ... obtener XRHandSubsystem ...
+    var hand = isLeft ? _handSubsystem.leftHand : _handSubsystem.rightHand;
+    if (!hand.isTracked) return null;
+
+    // Palm primero (centro de la mano), fallback a Wrist.
+    XRHandJoint joint = hand.GetJoint(XRHandJointID.Palm);
+    if (!joint.TryGetPose(out Pose pose))
+    {
+        joint = hand.GetJoint(XRHandJointID.Wrist);
+        if (!joint.TryGetPose(out pose)) return null;
+    }
+
+    // Sin negación de X/Z — XRHands usa OpenXR estándar (igual que el HMD).
+    return TrackingParent.TransformPoint(pose.position);
+}
+```
+
+**Procedimiento de uso**: calibrar (C) con trackers en posición. Luego tomar cada tracker en la mano izquierda o derecha y presionar R. El sistema detecta automáticamente qué tracker está más cerca de cada mano. El log muestra el error anterior en cm y el offset nuevo. Se puede presionar R varias veces sobre el mismo tracker si se quiere mayor precisión.
+
+**Error de compilación detectado durante la implementación**: se usó `using Unity.XR.Hands` cuando el namespace correcto es `using UnityEngine.XR.Hands`. Confirmado leyendo los encabezados de `PinchDebugVisualizer.cs` y `HandSkeletonRenderer.cs`, que ya usaban el subsistema correctamente.
+
+---
+
+### Estado actual
+
+| Sistema | Estado |
+|---|---|
+| Inversión de ejes X y Z del VIVE Ultimate Tracker en `TrackingToWorld()` | ✅ `trackingPos.x = -x; trackingPos.z = -z` antes de `TransformPoint()` |
+| Identificación automática L/R de pies (dot product en world space) | ✅ `foot0World = TrackingToWorld(foot0.pos)` previo al dot product |
+| Offset anatómico de pies (`footForwardOffset = -0.08f`, ajustable en Inspector) | ✅ Aplicado en `Calibrate()` como `hmdForwardXZ * footForwardOffset` |
+| Refinamiento con manos: `RefineWithHands()` tecla R | ✅ Implementado; pendiente verificación en Play Mode |
+| `TrackerBodyCalibration` — identificación, calibración, offsets | ✅ Tecla C para calibrar |
+| `TrackerVisualizer` — esferas raw + calibradas con colores por rol | ✅ Naranja=waist, cian=footL, magenta=footR |
+| `TrackerPoseDriver` — aplicación a huesos del avatar, filtro anti-saltos y tracker atascado | ✅ Aplica a Hips, LeftFoot, RightFoot |
+| `TrackerSystemBootstrap` — auto-creación del sistema al entrar en Play Mode | ✅ Sin setup manual en Editor |
+
+---
+
+### Pendiente
+
+* **Verificar `RefineWithHands()` en Play Mode**: la implementación se completó en esta sesión pero no pudo verificarse por un problema de conectividad con uno de los trackers (parpadeo verde intermitente, probable batería baja o interferencia del dongle USB 3.0).
+* **Ajuste fino de `footForwardOffset`**: el default `-0.08f` reduce el error frontal pero puede necesitar ajuste según la anatomía del usuario. El campo es configurable en Inspector en runtime.
+* **Integrar lower-body al NetworkVariable del avatar**: `TrackerPoseDriver` aplica los huesos localmente al avatar del host. Para sincronizar pies y cintura al cliente remoto, las posiciones corregidas deben incluirse en `AvatarPoseState` y sincronizarse vía NGO.
+
+---
+
 ## 2026-06-01 — Tres bugs de regresión: LAN Discovery, interacción Jenga y marcadores de debug
 
 Branch activo: `look-and-feel-prototype`.

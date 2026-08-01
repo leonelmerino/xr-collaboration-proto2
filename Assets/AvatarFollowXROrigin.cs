@@ -15,6 +15,17 @@ public class AvatarFollowXROrigin : NetworkBehaviour
              "Se sobreescribe automaticamente al calibrar si autoCalibrateHeight=true.")]
     [SerializeField] private float standingHmdHeight = 1.7f;
 
+    [Header("Camera offset (para evitar ver el interior del avatar)")]
+    [Tooltip("Desplazamiento del cuerpo del avatar hacia adelante en la direccion que mira el HMD (plano XZ). " +
+             "Empuja el cuerpo delante de la camara: al mirar hacia abajo se ve el exterior del torso. " +
+             "Rango sugerido: 0.1 – 0.25 m.")]
+    [SerializeField] private float bodyForwardOffset = 0.15f;
+
+    [Tooltip("Desplazamiento vertical adicional del cuerpo respecto al suelo. " +
+             "Negativo = baja el cuerpo (camara queda mas arriba dentro del avatar). " +
+             "Rango sugerido: 0.0 – (-0.10) m.")]
+    [SerializeField] private float bodyVerticalOffset = 0.0f;
+
     private Transform hmd;
     private bool heightCalibrated = false;
 
@@ -85,8 +96,20 @@ public class AvatarFollowXROrigin : NetworkBehaviour
         // Root sigue al HMD en XZ y en Y relativo a la altura calibrada de pie.
         // Si el usuario se agacha, bodyY baja (el avatar se hunde bajo el suelo).
         // Clamp a 0 para no flotar: el avatar solo puede hundirse, no subir sobre el suelo.
-        float bodyY = Mathf.Min(0f, hmd.position.y - standingHmdHeight);
-        transform.position = new Vector3(hmd.position.x, bodyY, hmd.position.z);
+        float bodyY = Mathf.Min(0f, hmd.position.y - standingHmdHeight) + bodyVerticalOffset;
+
+        // Offset forward: desplaza el cuerpo en la direccion XZ que mira el HMD
+        // para que la camara quede ligeramente detras del torso y al mirar hacia
+        // abajo se vea el exterior del avatar en lugar del interior.
+        Vector3 hmdForwardXZ = new Vector3(hmd.forward.x, 0f, hmd.forward.z);
+        if (hmdForwardXZ.sqrMagnitude > 0.001f)
+            hmdForwardXZ.Normalize();
+        // Empujar el body HACIA ATRAS del HMD forward:
+        // la camara queda delante del torso → mirando abajo se ve el exterior (frente del avatar).
+        Vector3 bodyPos = new Vector3(hmd.position.x, bodyY, hmd.position.z)
+                          - hmdForwardXZ * bodyForwardOffset;
+
+        transform.position = bodyPos;
         transform.rotation = Quaternion.Euler(0f, hmd.eulerAngles.y, 0f);
 
         // Head = local pose relative to body
