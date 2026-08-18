@@ -16,3 +16,5 @@ MemoryCaptures/
 *.tmp
 
 .DS_Store
+# Recordings
+Recordings/
