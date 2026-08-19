@@ -12123,8 +12123,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d7afc6b561989cd4e8ffa9694c3c58dc, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  disableXROnBuild: 1
-  disableTrackedPoseDrivers: 1
+  disableXROnBuild: 0
+  disableTrackedPoseDrivers: 0
 --- !u!114 &2081781172
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -12413,7 +12413,6 @@ MonoBehaviour:
   stepNormal: 5
   stepBig: 25
   stepSmall: 1
-  showOnGUI: 1
   hudScreenPos: {x: 10, y: 200}
   hudSize: {x: 380, y: 280}
 --- !u!4 &2122822133
@@ -12444,7 +12443,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 79ccf81acc221ca46a33b6bfd358986a, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  showViz: 1
   toggleKey: 286
   sphereRadius: 0.012
   axisLength: 0.08

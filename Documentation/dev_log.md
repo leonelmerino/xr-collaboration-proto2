@@ -1,5 +1,483 @@
 # XR Collaboration Prototype – Development Log
 
+## 2026-08-18 — Fixes varios: brazo Helper, rayo remoto, poke/grab Jenga en Client/Helper, y eventos BioLab que no llegaban al acquisition server real
+
+Branch activo: `fixes-ui` (creado desde `look-and-feel-prototype`).
+
+Sesión de fixes: dos sobre la representación de avatares en la sala compartida, dos sobre la interacción física con los bloques de Jenga (poke + grab), y uno sobre la telemetría BioLab (eventos no llegaban al acquisition server real).
+
+---
+
+### 1. Brazo derecho del Helper caído (no se movía)
+
+**Síntoma**: en las 3 pruebas con el rol Helper, el brazo derecho del avatar quedaba en pose T-pose caída, sin seguir la mano del usuario. Los otros dos sub-meshes (`Avatar_Host`, `Avatar_Client`) funcionaban bien con el mismo código y la misma infra IK.
+
+**Causa raíz**: en el `TwoBoneIKConstraint` del brazo derecho del sub-mesh `Avatar_Helper`, el GameObject que correspondía al **Target** estaba asignado al slot **Hint** por error de configuración manual en el prefab. El slot Target quedaba vacío. Sin Target, el Two-Bone IK no tiene destino al que resolver → el brazo se queda en su pose de bind → apariencia de "caído".
+
+**Fix**: cambio manual en el prefab `Assets/AvatarHumanoid.prefab` — reasignar los GameObjects a los slots correctos del `TwoBoneIKConstraint` (`Target` = `IKTarget_RightHand`, `Hint` = el objeto de hint del codo). Sin cambios de código.
+
+**Aprendizaje**: los `TwoBoneIKConstraint` no reportan warning cuando `Target` es null; simplemente no hacen nada. En una revisión futura conviene:
+- Comparar side-by-side los tres sub-meshes cuando aparece un problema aislado a uno.
+- Agregar un `OnValidate()` propio o un editor script que loguee si algún constraint del rig tiene slots vacíos.
+
+---
+
+### 2. El rayo de selección era local: los otros usuarios no veían con qué elemento interactuaba cada uno
+
+**Síntoma**: cada usuario veía el rayo que sale de su propia mano (el que usa `JengaRayGrabInteractor` para seleccionar bloques). Pero los otros usuarios en la sala no lo veían — imposible entender remotamente qué estaba mirando/apuntando el otro.
+
+**Causa raíz**: la infra de sincronización del rayo YA existía en el código (`HandPoseState.rayActive/rayStart/rayEnd` en `Assets/Multiplayer/HandPoseState.cs`, y la lógica de publicar/consumir en `Assets/Multiplayer/NetworkedAvatarHands.cs`). Pero estaba rota en el prefab `Assets/AvatarHumanoid.prefab` por **dos configuraciones incompatibles**:
+
+1. El componente `NetworkedAvatarHands` en el root del prefab tenía `m_Enabled: 0` (**desactivado**). Sin él enabled, ni `Awake` puede llamar a `OnNetworkSpawn` (NGO omite el spawn en behaviours disabled), ni `Update` corre para publicar el estado desde el owner.
+2. Los campos `leftRayDisplay` y `rightRayDisplay` (los LineRenderers donde los remotos dibujarían el rayo del avatar) estaban en `{fileID: 0}` — sin asignar.
+
+Por qué el owner igual veía "su" rayo: porque el rayo local lo dibuja `JengaRayGrabInteractor.rayLine` en el rig del XR Origin, completamente local. Nunca pasaba por la red.
+
+**Fix parcial en código** en `Assets/Multiplayer/NetworkedAvatarHands.cs`:
+
+Agregado `EnsureRayDisplays()` — llamado desde `OnNetworkSpawn`. Si `leftRayDisplay` o `rightRayDisplay` están sin asignar en el prefab, crea automáticamente en runtime un GameObject hijo del avatar (`AutoRayDisplay_Left`, `AutoRayDisplay_Right`) con un `LineRenderer` en world-space, ancho 3 mm, material `Sprites/Default` con color rojo (para distinguirlo del rayo local blanco/cyan del rig del owner):
+
+```csharp
+private void EnsureRayDisplays()
+{
+    if (leftRayDisplay == null)
+        leftRayDisplay = CreateRayDisplayChild("AutoRayDisplay_Left");
+    if (rightRayDisplay == null)
+        rightRayDisplay = CreateRayDisplayChild("AutoRayDisplay_Right");
+}
+```
+
+Como los `rayStart`/`rayEnd` sincronizados están en world coords, no importa dónde queden parenteados los LineRenderers — se ubican correctamente cuadro a cuadro.
+
+Agregado también un `Awake()` que loguea un warning claro si el componente está disabled en el prefab. Esto es informativo — no puede reenable a sí mismo (si el componente está disabled, `OnNetworkSpawn` no corre), pero al menos deja evidencia visible en consola de por qué no funciona.
+
+**Ajuste extra: rayo remoto oculto para el owner.** Como el owner ya ve su propio rayo local (el que dibuja `JengaRayGrabInteractor.rayLine` en el rig del XR Origin), agregar además el `rayDisplay` sincronizado hacía que se vieran dos rayos solapados. En `ApplyHandState` se agregó un check `if (IsOwner) rayDisplay.enabled = false;` — así el rayo del avatar solo se dibuja para los observadores remotos, que son quienes lo necesitan. El owner sigue viendo únicamente su rayo local original.
+
+**Fix manual requerido en el prefab** (única acción que quedó fuera del código):
+
+Abrir `Assets/AvatarHumanoid.prefab` → seleccionar el root → en el Inspector, tildar el checkbox **Enabled** del componente `NetworkedAvatarHands` → guardar.
+
+Sin ese cambio, la sincronización no arranca. Los LineRenderers se auto-crean, pero nunca reciben data porque el owner no publica nada.
+
+**TODO(cleanup) pendiente**: la clase `NetworkedAvatarHands` es legacy. Fue diseñada para la primera versión de las manos (esferas + pinch line + rayo) antes de la migración al humanoid Rocketbox. Hoy las manos las driveá `AvatarPoseDriver` con IK, y solo se usa el sub-sistema del rayo. Cuando toque limpiar, conviene:
+- Extraer el rayo a un componente propio `AvatarRemoteRay` con solo la lógica de rayo (state + LineRenderers).
+- Borrar el resto de `NetworkedAvatarHands` (esferas, pinch line, hand root, materiales).
+- Eliminar el flag `ShowVisualizers` y el warning `EnsureLineDefaults`.
+
+**Por qué habilitar el componente legacy hoy es seguro (no van a reaparecer las esferas encima del avatar humanoide)**: existen dos protecciones independientes:
+
+1. **Const gate**: `private const bool ShowVisualizers = false;` en el propio archivo. Todo el bloque que dibuja esferas / `pinchLine` en `ApplyHandState` está gateado por eso — si `false`, se ejecuta el branch `if (!ShowVisualizers)` que hace `handRoot.SetActive(false)` + `pinchLine.enabled = false` (y nada más).
+2. **Refs vacías en el prefab**: `leftHandRoot`, `leftThumbMarker`, `leftIndexMarker`, `leftPinchMarker`, `leftPinchLine` (idem right) están todas en `{fileID: 0}` en `AvatarHumanoid.prefab`. Aunque alguien flippeara la const a `true` en debugging, no habría GameObjects que activar — las esferas/líneas no existen en el prefab humanoide, fueron limpiadas cuando se migró al Rocketbox.
+
+Es decir: el subsistema legacy está protegido "doble". Lo único que corre al habilitar el componente es el ray sync (que agregamos con `EnsureRayDisplays` + el bloque final de `ApplyHandState`), que usa sus propios `AutoRayDisplay_Left/Right` sin vinculación al pipeline legacy.
+
+Aun así, la extracción a `AvatarRemoteRay` sigue valiendo la pena en el futuro para no depender de que ambas protecciones se mantengan intactas (una edición inocente al prefab podría wirear un `handRoot` viejo y filtrar visuales encima del avatar).
+
+---
+
+### 3. Poke a los bloques Jenga solo funcionaba en el Host
+
+**Síntoma**: al empujar un bloque con el dedo índice, el Host lo movía correctamente pero el Client y el Helper "atravesaban" el bloque sin efecto — el dedo pasaba a través del bloque y este no reaccionaba, como si no hubiera colisión física.
+
+**Causa raíz**: los bloques son `NetworkObject`s con `OwnerNetworkTransform` (owner-authoritative, ver `Assets/OwnerNetworkTransform.cs` — sobreescribe `OnIsServerAuthoritative()` a `false`). Por default el owner es el server (Host), que simula la física de los bloques libres. `OwnerNetworkTransform` sincroniza posición desde el owner hacia todos los otros clientes cuadro a cuadro.
+
+En `Assets/Jenga/JengaPokeInteractor.cs`, el código de poke original llamaba directamente:
+
+```csharp
+Rigidbody rb = hit.attachedRigidbody;
+rb.AddForce(forceDir * pokeForce, ForceMode.Impulse);
+```
+
+Este `AddForce` opera sobre el Rigidbody **local** del cliente. Consecuencia asimétrica:
+
+- **Host** aplica poke → es el server-owner del bloque libre → la fuerza mueve el bloque en la simulación autoritativa → `OwnerNetworkTransform` propaga la nueva pose al Client y Helper → todos ven al bloque moverse. **Funciona**.
+- **Client/Helper** aplican poke → el `AddForce` mueve el Rigidbody local en la simulación del cliente, pero al siguiente frame `OwnerNetworkTransform` sobreescribe la posición del transform con la del server (que nunca vio el push) → el bloque vuelve a su posición inmediatamente → el dedo parece atravesarlo. **No funciona**.
+
+Ningún error en consola porque el `AddForce` no tira warnings; el efecto de "no colisión" es una consecuencia de la sobrescritura de pose desde el owner.
+
+**Fix**: rutear el push por `ServerRpc` al owner del bloque. El server aplica el impulso autoritativo, y `OwnerNetworkTransform` propaga a todos.
+
+Cambio 1 en `Assets/Jenga/NetworkedJengaBlock.cs`: nueva API pública `RequestPush(Vector3 forceWorld, Vector3 applicationPointWorld)` con optimización — si ya soy el owner (Host cuando el bloque está libre) aplico local sin roundtrip. Si no, envío ServerRpc:
+
+```csharp
+public void RequestPush(Vector3 forceWorld, Vector3 applicationPointWorld)
+{
+    if (!IsSpawned) { /* fallback offline */; return; }
+
+    if (IsOwner)
+    {
+        var rb = GetComponent<Rigidbody>();
+        if (rb != null) rb.AddForceAtPosition(forceWorld, applicationPointWorld, ForceMode.Impulse);
+        return;
+    }
+
+    ApplyPushServerRpc(forceWorld, applicationPointWorld);
+}
+
+[ServerRpc(RequireOwnership = false)]
+private void ApplyPushServerRpc(Vector3 forceWorld, Vector3 applicationPointWorld)
+{
+    // Solo aplicar si el server es el owner (bloque libre). Si otro cliente lo esta agarrando,
+    // ignorar — no queremos pushes ajenos interfiriendo con su grab.
+    if (OwnerClientId != NetworkManager.ServerClientId) return;
+
+    var rb = GetComponent<Rigidbody>();
+    if (rb == null) return;
+
+    rb.AddForceAtPosition(forceWorld, applicationPointWorld, ForceMode.Impulse);
+}
+```
+
+Se usa `AddForceAtPosition` (en vez de `AddForce`) porque tenemos la posición exacta del contacto (`pokePoint.position`); esto genera además el torque natural del impulso off-center, más realista para un empujoncito con el dedo en un extremo del bloque.
+
+El check `OwnerClientId != ServerClientId` en el ServerRpc es importante: si un jugador está agarrando el bloque, es el nuevo owner. Un poke ajeno mientras alguien lo agarra sería intrusivo — se ignora.
+
+Cambio 2 en `Assets/Jenga/JengaPokeInteractor.cs`: detectar el `NetworkedJengaBlock` en el bloque y usar la nueva API cuando existe; fallback a `AddForce` local para modo standalone:
+
+```csharp
+var netBlock = hit.GetComponentInParent<NetworkedJengaBlock>();
+if (netBlock != null)
+{
+    netBlock.RequestPush(force, pokePoint.position);
+}
+else
+{
+    // Fallback offline/standalone
+    rb.AddForce(force, ForceMode.Impulse);
+}
+```
+
+El cooldown local en `JengaPokeInteractor` (`Time.time - lastPokeTime < cooldown`) sigue vigente y limita el rate de ServerRpc — no hace falta agregar throttling adicional en el server side.
+
+**Patrón general a recordar**: en NGO con owner-authoritative transforms, cualquier interacción física que un no-owner quiera hacer sobre un objeto tiene que rutearse por RPC al owner. `AddForce`, `AddTorque`, `MovePosition`, `MoveRotation` — todos son no-ops efectivos desde el no-owner porque `NetworkTransform` los pisa. Sintomatología típica: "funciona en el Host, no funciona en los clientes".
+
+---
+
+### 4. Grab del bloque Jenga: en Client/Helper el bloque salta ~20cm al hacer pinch
+
+**Síntoma**: en el Host, el flujo raycast → pinch → mover funciona perfecto: el bloque queda pegado a la mano y se mueve suave. En el Client y en el Helper, al hacer pinch sobre un bloque intersectado por el rayo, el bloque **salta bruscamente ~20cm** (algunos horizontalmente en el plano de la mesa, otros verticalmente hacia arriba — dependiendo de la geometría con los bloques adyacentes). Al soltar el pinch el bloque vuelve a su posición original. Efectivamente el grab no funciona.
+
+**Causa raíz**: gestión ausente de `Rigidbody.isKinematic` según ownership en `NetworkedJengaBlock.cs`. El prefab `JengaBlock.prefab` (verificado en YAML línea 88: `m_IsKinematic: 0`) tiene el Rigidbody dinámico por default, y **no incluye `NetworkRigidbody`**. Un comentario incorrecto en el código anterior decía "NetworkRigidbody maneja el isKinematic automaticamente segun ownership" — pero nadie estaba gestionando ese estado.
+
+Consecuencia: en Client y Helper, el Rigidbody de **cada bloque** queda en `isKinematic = false` **todo el tiempo**, aún cuando no son owners:
+
+- El motor de física local de cada cliente simula cada bloque en paralelo (gravedad + colisiones entre bloques adyacentes de la torre, que se tocan por construcción).
+- Pero `OwnerNetworkTransform` (owner-authoritative) sobreescribe la pose cada frame con la del server.
+- La simulación local **acumula corrección de overlaps** entre vecinos — el motor de física está constantemente tratando de "empujar" el bloque para separarlo del vecino, pero esa corrección se descarta al frame siguiente cuando NetworkTransform lo devuelve a la pose autoritativa.
+
+**Momento exacto del salto (grab en Client)**:
+
+1. Client hace pinch. `JengaRayGrabInteractor.TryGrab` detecta el hit y llama a `net.RequestGrab(pinchPoint)`.
+2. `RequestGrab` en no-owner: guarda `pendingGrabHand`, envía `RequestGrabServerRpc`.
+3. Server recibe, valida (`OwnerClientId == ServerClientId`), llama a `NetworkObject.ChangeOwnership(client)`.
+4. Ownership change se replica al client. En el client se dispara `OnGainedOwnership()`.
+5. **NetworkTransform deja de pisar la pose** en el client (ahora el client es el owner autoritativo).
+6. La corrección acumulada de overlap se libera de golpe → el bloque salta ~20cm en la dirección del gradiente del overlap con los vecinos:
+   - Bloques del medio de la torre → empuje horizontal desde los vecinos del mismo nivel.
+   - Bloques del borde (columnas exteriores) → empuje diagonal ascendente desde los niveles inferiores.
+7. `OnGainedOwnership` llama a `grabbable.BeginGrab(pendingGrabHand)`.
+8. `BeginGrab` captura `initialGrabOffset = transform.position - grabPoint.position` — pero `transform.position` ya está en la posición saltada, así que el offset queda incorrecto.
+9. `FixedUpdate` con la constraint `allowedAxisWorld = transform.right` intenta llevarlo con `MovePosition + Lerp 0.35`, pero el ángulo/posición inicial son inconsistentes con el estado antes del pinch.
+10. Al soltar (release), el server retoma ownership y envía la pose original → visualmente el bloque "vuelve".
+
+Por qué **Host funciona bien**: es el server y por lo tanto el owner inicial. `IsOwner = true` desde el spawn de cada bloque. Su Rigidbody nunca es pisado por `OwnerNetworkTransform` (owner-authoritative = el owner escribe, no lee). No hay corrección acumulada. En el grab, `RequestGrab` toma el path `IsOwner=true` → `BeginGrab` inmediato sin cambio de ownership → sin salto.
+
+**Fix** en `Assets/Jenga/NetworkedJengaBlock.cs`:
+
+Cachear el Rigidbody en `Awake`, y agregar gestión explícita de `isKinematic` sincronizada con `IsOwner` en tres puntos:
+
+1. `OnNetworkSpawn`: setea `isKinematic = !IsOwner`. Server-owner → dinámico (simula). Clientes → kinematic (no simulan, reciben pose via NetworkTransform).
+
+```csharp
+public override void OnNetworkSpawn()
+{
+    materialIndex.OnValueChanged += OnMaterialChanged;
+    ApplyMaterial(materialIndex.Value);
+    ApplyOwnershipKinematic();
+}
+
+private void ApplyOwnershipKinematic()
+{
+    if (rb == null) return;
+    rb.isKinematic = !IsOwner;
+}
+```
+
+2. `OnGainedOwnership`: salgo de kinematic y limpio velocidades. Sin el reset de velocidades habría residuos stale (aunque el Rigidbody era kinematic, la conversión a dinámico puede arrastrar valores previos).
+
+```csharp
+public override void OnGainedOwnership()
+{
+    if (rb != null)
+    {
+        rb.isKinematic = false;
+        rb.velocity = Vector3.zero;
+        rb.angularVelocity = Vector3.zero;
+    }
+
+    if (pendingGrabHand != null)
+    {
+        grabbable.BeginGrab(pendingGrabHand);
+        pendingGrabHand = null;
+    }
+}
+```
+
+3. `OnLostOwnership`: vuelvo a kinematic (después de EndGrab si hace falta).
+
+```csharp
+public override void OnLostOwnership()
+{
+    if (grabbable.IsGrabbed())
+        grabbable.EndGrab();
+    pendingGrabHand = null;
+
+    if (rb != null)
+    {
+        rb.isKinematic = true;
+        rb.velocity = Vector3.zero;
+        rb.angularVelocity = Vector3.zero;
+    }
+}
+```
+
+Aprovechando el cache de `rb`, se limpió también `RequestPush` / `ApplyPushServerRpc` (fix del poke de esta misma sesión) para no hacer `GetComponent<Rigidbody>()` repetido.
+
+**Nota sobre `JengaTowerGenerator.cs:168`**: la línea `rb.isKinematic = false;` sigue existiendo en el generator. En el Host, tras el `Spawn(true)`, mi `OnNetworkSpawn` corre con `IsOwner=true` y setea `isKinematic = false` (redundante pero consistente). En clients, el generator no ejecuta (los blocks se instancian remotamente vía NGO spawn), y mi `OnNetworkSpawn` corre con `IsOwner=false` → `isKinematic = true`. Todo alineado.
+
+**Consideración de perf**: en un tower con 54 bloques, tener 53 bloques kinematic en Client/Helper ahorra el costo de simular 53 Rigidbodies + colisiones que nunca se aplican visualmente. El cliente que agarra flippea solo 1 bloque a dinámico durante la duración del grab. Mejora neta.
+
+**Patrón general (extensión del patrón anterior)**: con NGO + `OwnerNetworkTransform` sin `NetworkRigidbody`, hay que gestionar `isKinematic` manualmente en `OnNetworkSpawn` + `OnGainedOwnership` + `OnLostOwnership`. La alternativa "cleaner" es agregar `NetworkRigidbody` al prefab, que lo hace automáticamente — pero implica un componente más a wirear y depende del comportamiento de un package. Para 4 líneas de código propio es preferible el control explícito.
+
+---
+
+### 5. Eventos BioLab no llegaban al acquisition server real
+
+**Síntoma**: los eventos generados durante el gameplay (grab / release / task_start / etc.) no llegaban al server real de BioLab (4ta máquina en la LAN corriendo el acquisition endpoint). En los logs locales aparecía todo normal, pero el server externo no recibía nada.
+
+**Causa raíz** en `Assets/BiolabUDPSync/AcquisitionEventManager.cs`. Dos issues acumulados:
+
+**Issue 1 — semántica invertida del mock**: el flag `useEmbeddedAcquisitionMock` estaba pensado como fallback ("si no hay BioLab real, arrancá uno local para no bloquear pruebas"), pero el código lo implementaba como override ("si mock=true, IGNORÁ la IP real y hablale al mock"). En `Awake` (líneas 73-85):
+
+```csharp
+if (config.IsHost && config.useEmbeddedAcquisitionMock)
+{
+    // ... arranca mock local ...
+    config.acquisitionIp = "127.0.0.1";   // ← pisa la IP real sin importar qué haya en la escena
+}
+
+udpClient = new BioLabUdpClient(config.acquisitionIp, ...);   // udpClient hablándole a loopback
+```
+
+Con `useEmbeddedAcquisitionMock: 1` en `Room.unity` (que era el valor por default), el Host siempre le hablaba al mock local. Aunque uno editara `acquisitionIp` en el Inspector para apuntar al server real, el código lo sobreescribía en Awake antes de crear el UDP client. Los Client/Helper (que no cumplían `IsHost` con la config actual, pero cargaban la misma escena con `role: 0`) también se comportaban como Host y arrancaban su propio mock.
+
+**Issue 2 — `BeginTask` no propagaba el nuevo `taskId`**: la API pública era:
+
+```csharp
+public void BeginTask(string taskId)
+{
+    ...
+    currentTaskId = taskId;    // se guarda en el manager
+    LogAndForward("TASK_START", BuildMetadataPayload("TASK_START"));
+}
+```
+
+Pero `BuildMetadataPayload` (línea 398) leía `eventLogger.taskId`, no `currentTaskId`:
+
+```csharp
+taskId = eventLogger.taskId;   // valor inicial de escena, nunca actualizado
+```
+
+Consecuencia: aunque llamaras `BeginTask("jenga_colab")`, los eventos posteriores salían tagueados con `task=task_01` (el valor de la escena, `Room.unity:5789`). No es un bug de conectividad — los eventos SÍ salen — pero contamina los datos de análisis.
+
+**Fix A: mock como fallback automático.** El manager ahora hace ping al server real (IP configurada en el Inspector) al iniciar la sesión. Si responde `PONG`, usa esa. Si no responde **y** el mock está habilitado, arranca mock local, recrea el UDP client apuntando a loopback, y re-verifica con ping. Extracción de método `ActivateMockFallback` para no ensuciar la coroutine de session start:
+
+```csharp
+private IEnumerator BeginExperimentalSessionRoutine()
+{
+    ...
+    // Ping al server real (IP del Inspector).
+    var pingTask = udpClient.PingAsync();
+    yield return new WaitUntil(() => pingTask.IsCompleted);
+    acquisitionReachable = pingTask.Result == "PONG";
+
+    // FALLBACK: si el real no respondio y el mock esta habilitado, arranco mock local.
+    if (!acquisitionReachable && config.useEmbeddedAcquisitionMock)
+    {
+        bool mockOk = false;
+        yield return StartCoroutine(ActivateMockFallback(ok => mockOk = ok));
+        acquisitionReachable = mockOk;
+    }
+    ...
+}
+
+private IEnumerator ActivateMockFallback(Action<bool> mockReady)
+{
+    if (mockServer == null) mockServer = gameObject.AddComponent<AcquisitionMockServer>();
+    mockServer.listenPort = config.acquisitionPort;
+    mockServer.autoStart = false;
+    mockServer.StartServer();
+
+    config.acquisitionIp = "127.0.0.1";
+    udpClient = new BioLabUdpClient(config.acquisitionIp, config.acquisitionPort, config.responseTimeoutMs);
+
+    var pingTask = udpClient.PingAsync();
+    yield return new WaitUntil(() => pingTask.IsCompleted);
+    mockReady?.Invoke(pingTask.Result == "PONG");
+}
+```
+
+Se removió el bloque de mock-start-en-Awake. Ahora el `udpClient` de `Awake` siempre apunta a la IP del Inspector; el fallback ocurre solo en runtime tras ping fallido.
+
+**Fix B: propagar taskId al eventLogger.** Una línea en `BeginTask`:
+
+```csharp
+public void BeginTask(string taskId)
+{
+    ...
+    currentTaskId = taskId;
+    if (eventLogger != null) eventLogger.taskId = taskId;   // ← agregada
+    LogAndForward("TASK_START", BuildMetadataPayload("TASK_START"));
+}
+```
+
+**Paso manual pendiente en Unity (por máquina o antes de build)**: setear `acquisitionIp` a la IP LAN de la 4ta máquina que corre el server BioLab. En `Room.unity` GameObject con `AcquisitionNodeConfig` (líneas 5805+), campo `Acquisition Ip`. Y firewall en la 4ta máquina: permitir UDP entrante en 1776:
+
+```powershell
+New-NetFirewallRule -DisplayName "BioLab Acquisition" -Direction Inbound -Protocol UDP -LocalPort 1776 -Action Allow
+```
+
+**Semántica del `trialId` (documentación)**: reviewing en esta sesión — actualmente en el schema del payload aparece `|trial={trialId}` pero **no hay API `BeginTrial()` / `EndTrial()`** que lo cambie en runtime. Queda fijo al valor inicial de la escena (`trial_01`). Estructura conceptual:
+
+```
+participantId  →  sujeto humano                              (P001, P002...)
+sessionId      →  bloque de trabajo con el sujeto            (S001 primera visita, S002 retest)
+taskId         →  fase experimental con objetivo             (jenga_colab, warmup, debriefing)
+trialId        →  instancia repetible dentro de una task     (trial_01, trial_02... cada partida)
+```
+
+Task ≠ Trial: task = *qué tipo de actividad*, trial = *qué instancia específica*. Una task puede contener N trials (ej. task="jenga colaborativo x 3 partidas" → 3 trials). Hasta que se defina el modelo experimental concreto, el `trialId` queda como campo "muerto" en el schema — no se rompe nada por dejarlo fijo. Ver TODO abajo.
+
+**TODO pendientes** post-sesión (ver especificación detallada de TODO 1 al final del documento):
+
+1. **Role/nodeId per máquina** — próxima sesión. Ver spec completa abajo.
+2. **API de trials**: agregar `BeginTrial(string id)` / `EndTrial()` en `AcquisitionEventManager` si el diseño experimental los va a usar. Enganchar a eventos de gameplay (ej. `NetworkedJengaBlock.RequestGrab` → BeginTrial, release → EndTrial) o dejar como llamadas manuales del experimentador. Depende de definir primero el modelo experimental (unidad de análisis).
+3. **Reset de `eventLogger.taskId` en `EndTask`**: hoy queda con el último valor tras EndTask, lo cual etiqueta eventos post-task con la task anterior. Discutible si es lo correcto o si conviene resetear a `"no_task"`.
+
+---
+
+### 6. XR deshabilitado en builds standalone por diseño (documentación de pitfall)
+
+Al planificar el build multi-usuario para las 3 laptops (una sola executable + tecla `H`/`C` en runtime) se descubrió que el proyecto tiene una configuración deliberada que **impide que las builds standalone driveen el headset**. Sin este arreglo, el build se lanza pero la cámara queda estática y el headset no se ocupa.
+
+**Los dos componentes involucrados**:
+
+1. `Assets/XR/XRGeneralSettingsPerBuildTarget.asset`: para el target Standalone tenía `m_InitManagerOnStart: 0`. O sea, el setting **Initialize XR on Startup** desmarcado en `Edit → Project Settings → XR Plug-in Management → PC, Mac & Linux Standalone`.
+2. `Assets/NetworkAudit/BuildXRDisabler.cs`: script que corre solo en builds (`#if !UNITY_EDITOR`). En Awake, si `disableXROnBuild = true`, hace `StopSubsystems()` + `DeinitializeLoader()` y además deshabilita todos los `TrackedPoseDriver` de la escena. En `Room.unity` estaba con `disableXROnBuild: 1`.
+
+Complementariamente:
+
+3. `Assets/NetworkAudit/EditorXRBootstrap.cs`: script que corre solo en el Editor (`#if UNITY_EDITOR`). En Start inicializa manualmente el XR loader. Este script **es la razón por la que Play Mode funciona** sin el "Initialize on Startup" del setting global.
+
+**Por qué existía este setup**: la configuración es coherente con builds "audit / server-only" — corridas headless en laptops sin headset que sirven de host de red o para tests automatizados y no deben pelearse con el Editor por el hardware VR cuando corren lado a lado.
+
+**Estado tras esta sesión (aplicado manualmente en Unity)**:
+- `XRGeneralSettingsPerBuildTarget.asset` → `m_InitManagerOnStart: 1` (Initialize XR on Startup ✓).
+- `Room.unity` → `BuildXRDisabler.disableXROnBuild: 0` y `disableTrackedPoseDrivers: 0`.
+- `EditorXRBootstrap` queda tal cual (no molesta al build; solo compensa en el Editor).
+
+Con esta config el build standalone drivea el headset normalmente. Si en el futuro se necesita re-generar un build audit/server-only, invertir ambos flags.
+
+**Pitfall documentado en `README.md`** en las secciones "Pre-build checks" y "Troubleshooting" para que futuras builds no se topen con esto en frío.
+
+---
+
+## Pendiente para próxima sesión — TODO 1: Role/nodeId per máquina
+
+### Contexto
+
+Con el fix del mock-como-fallback aplicado en esta sesión, los eventos ya llegan al server real de BioLab. Pero los 3 builds (Host / Client / Helper) cargan la misma escena `Room.unity` con `AcquisitionNodeConfig.role: 0 (Host)` y `nodeId: VR_HOST` hardcodeados. Consecuencia:
+
+- Los 3 payloads que llegan a BioLab se taguean idénticamente:
+  ```
+  ...|node=VR_HOST|participant=P001|session=S001|...
+  ```
+- No se puede distinguir en el análisis qué evento vino de qué laptop / rol.
+- Además, en `BeginExperimentalSessionRoutine` hay ramas condicionadas a `config.IsHost` (líneas 259, 324): solo el que "cree que es Host BioLab" manda `START_ACQUISITION` / `STOP_ACQUISITION` al server. Hoy, los 3 lo mandan → el server recibe 3 START seguidos y 3 STOP. Puede confundir el estado del server.
+
+### Objetivo
+
+Que cada build sepa su propio rol en runtime, sin editar la escena antes de compilar. El rol de BioLab debe alinearse con el rol de red NGO (quien apreta `H` es `AcquisitionNodeRole.Host` para BioLab; quien apreta `C` es `Client` o `Helper` según el rol asignado por `RoleAssignmentService`).
+
+### Estrategias evaluadas
+
+**Estrategia A — Editar la escena por build** (descartada como solución permanente pero útil como workaround).
+- Antes de cada build, cambiar `AcquisitionNodeConfig.role` y `nodeId` en la escena y buildear con nombre distinto (`build_host/`, `build_client/`, `build_helper/`).
+- Pros: cero código nuevo.
+- Contras: 3 builds a mantener, propenso a errores, incompatible con el "one build fits all" que ya funciona para NGO.
+
+**Estrategia B — Runtime override en `NetworkLauncher`** (recomendada).
+- Cuando el operador aprieta `H`, el `NetworkLauncher` setea `AcquisitionNodeConfig.role = Host` y `nodeId = "VR_HOST"` antes de arrancar NGO.
+- Cuando aprieta `C`, arranca NGO como cliente y **espera** a que `NetworkedAvatarRole` reciba el rol asignado por el server. Luego setea `AcquisitionNodeConfig.role` y `nodeId` en función del rol asignado (`Client` → `VR_CLIENT`; `Helper` → `VR_HELPER`).
+- Pros: usa la fuente de verdad que ya existe (el `RoleAssignmentService` server-side). Un solo build. Sin argumentos de línea de comandos.
+- Contras: hay una ventana de tiempo entre `StartClient` y "rol asignado" en la cual `AcquisitionEventManager` puede haber inicializado ya con el `role/nodeId` de la escena. Hay que asegurar que el `BeginExperimentalSession` (que hoy corre en `Start` tras `autoStartDelaySeconds`) se dispare **después** de que el rol está confirmado, o desactivar `autoStartSession` y disparar `BeginExperimentalSession` explícitamente desde el `NetworkLauncher` una vez confirmado el rol.
+
+**Estrategia C — Command-line arguments** (alternativa simple).
+- Leer `Environment.GetCommandLineArgs()` al arranque y setear `role/nodeId/participantId` desde ahí. Ej: `xr-collaboration-proto2.exe --role Host --node VR_HOST --participant P001`.
+- Pros: cero coordinación entre sistemas, funciona antes de conectarse a nada. Fácil de scriptear (batch file por máquina).
+- Contras: hay que crear/mantener 3 batch files o accesos directos por máquina. El operador puede olvidarse. Menos "auto".
+
+### Recomendación
+
+**Combinación B + C**: implementar la estrategia B como default, y agregar override por CLI (estrategia C) para casos edge o testing manual. La CLI gana si está presente; sino, el override runtime hace su trabajo cuando el rol se asigna.
+
+### Diseño detallado (estrategia B)
+
+Cambios de código:
+
+1. **En `Assets/BiolabUDPSync/AcquisitionEventManager.cs`**:
+   - Cambiar `autoStartSession = true` por default a `false` (opcional; alternativa: agregar un flag `waitForRoleConfirmation`).
+   - Exponer un método público `BeginExperimentalSessionWithRole(AcquisitionNodeRole role, string nodeId)` que primero actualice `config.role` + `config.nodeId` + `eventLogger.nodeId`, y después llame a `BeginExperimentalSession()`.
+
+2. **En `Assets/NetworkLauncher.cs`**:
+   - Al presionar `H`: llamar a `AcquisitionEventManager.Instance.BeginExperimentalSessionWithRole(Host, "VR_HOST")` justo antes o después de `nm.StartHost()`.
+   - Al presionar `C`: arrancar client, luego usar `NetworkManager.Singleton.OnClientConnectedCallback` o suscribirse a `NetworkedAvatarRole.Role.OnValueChanged` del player object para esperar la asignación de rol, y una vez confirmado disparar `BeginExperimentalSessionWithRole(role_asignado, node_id_correspondiente)`.
+
+3. **Mapeo rol NGO → rol/nodeId BioLab**:
+   ```
+   PlayerRole.Host   → AcquisitionNodeRole.Host,   nodeId = "VR_HOST"
+   PlayerRole.Client → AcquisitionNodeRole.Client, nodeId = "VR_CLIENT"
+   PlayerRole.Helper → AcquisitionNodeRole.Helper, nodeId = "VR_HELPER"
+   ```
+
+4. **Extensión CLI (opcional)** en el `Awake` de un componente bootstrap:
+   ```csharp
+   var args = System.Environment.GetCommandLineArgs();
+   for (int i = 0; i < args.Length - 1; i++)
+   {
+       if (args[i] == "--role" && Enum.TryParse<AcquisitionNodeRole>(args[i+1], out var role))
+           config.role = role;
+       if (args[i] == "--node") config.nodeId = args[i+1];
+       if (args[i] == "--participant") eventLogger.participantId = args[i+1];
+       if (args[i] == "--session") eventLogger.sessionId = args[i+1];
+   }
+   ```
+
+### Casos de test para validar el fix
+
+- **Test 1**: arrancar 3 builds. Host presiona H, Client y Helper presionan C en ese orden. Verificar en los payloads BioLab que aparecen 3 `node` distintos (`VR_HOST`, `VR_CLIENT`, `VR_HELPER`).
+- **Test 2**: solo el Host debe mandar `SESSION_START` con `START_ACQUISITION` al server (los otros dos deben loguear `START_SKIPPED_NON_HOST`).
+- **Test 3**: correr un solo build standalone sin apretar nada; verificar que no arranque sesión BioLab hasta que se apriete H o C.
+- **Test 4**: pasar `--role Client --node VR_CLIENT --participant P042` como argumento; verificar que la config se aplica y que el runtime NO la sobreescribe con el rol asignado por NGO (o decidir si el override runtime tiene prioridad — a discutir).
+
+### Preguntas abiertas para la próxima sesión
+
+1. ¿El CLI override tiene prioridad sobre el runtime override (estrategia B)? O al revés? O son excluyentes (si hay CLI, no se aplica el runtime)?
+2. Para `participantId`: ¿tiene sentido asignarlo también runtime (podría venir de un menú de arranque OnGUI), o siempre queda como config de escena / CLI arg?
+3. ¿Qué hacer si el `RoleAssignmentService` no llega a asignar rol antes de un timeout? (ej: el server nunca acepta la conexión). ¿Fallback a un `Unknown` rol? ¿Silenciar BioLab?
+
+---
+
 ## 2026-06-01 — Tres bugs de regresión: LAN Discovery, interacción Jenga y marcadores de debug
 
 Branch activo: `look-and-feel-prototype`.

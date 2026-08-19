@@ -66,6 +66,7 @@ public class NetworkedAvatarHands : NetworkBehaviour
 
     public override void OnNetworkSpawn()
     {
+        EnsureRayDisplays();     // asegura que existan LineRenderers para el rayo remoto (todos los clients).
         EnsureLineMaterials();
         LogWiringStatus();
         LeftHand.OnValueChanged += OnLeftChanged;
@@ -80,6 +81,52 @@ public class NetworkedAvatarHands : NetworkBehaviour
             TryAttachHandSubsystem();
             AutoWireRaySources();
         }
+    }
+
+    /// <summary>
+    /// Si el prefab no tiene asignados los LineRenderers de rayo remoto (leftRayDisplay /
+    /// rightRayDisplay), los crea automaticamente como hijos del avatar. Esto evita tener que
+    /// wirearlos a mano en el prefab.
+    ///
+    /// Uso previsto: solo se llama si el campo esta null. Los LineRenderers creados aca son
+    /// world-space (positions son world coords que vienen por red), rojos y de ~3 mm de ancho
+    /// para que sean visibles desde cualquier angulo.
+    ///
+    /// TODO(cleanup): migrar el sync del rayo a un componente propio (AvatarRemoteRay) y matar
+    /// el resto de NetworkedAvatarHands (esferas, pinch line, hand root, etc.), que quedaron
+    /// como legacy despues de la migracion al humanoid Rocketbox. Ver dev_log 2026-08-18.
+    /// </summary>
+    private void EnsureRayDisplays()
+    {
+        if (leftRayDisplay == null)
+            leftRayDisplay = CreateRayDisplayChild("AutoRayDisplay_Left");
+        if (rightRayDisplay == null)
+            rightRayDisplay = CreateRayDisplayChild("AutoRayDisplay_Right");
+    }
+
+    private LineRenderer CreateRayDisplayChild(string name)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(transform, worldPositionStays: false);
+        var lr = go.AddComponent<LineRenderer>();
+        lr.useWorldSpace = true;
+        lr.positionCount = 2;
+        lr.startWidth = lineWidth;
+        lr.endWidth = lineWidth;
+        lr.enabled = false;   // arranca oculto; ApplyHandState lo prende cuando rayActive=true.
+
+        // Material simple con color visible. EnsureLineDefaults lo reemplaza con Sprites/Default
+        // si esto falla, pero preferimos setearlo aca para evitar el warning.
+        var shader = Shader.Find("Sprites/Default");
+        if (shader != null)
+        {
+            var mat = new Material(shader);
+            mat.color = new Color(1f, 0.2f, 0.2f, 1f);   // rojo, para que se distinga del rayo local.
+            lr.material = mat;
+        }
+
+        Debug.Log($"[NetworkedAvatarHands] Auto-creado LineRenderer '{name}' para el rayo remoto.");
+        return lr;
     }
 
     private bool autoWireLogged;
@@ -203,6 +250,21 @@ public class NetworkedAvatarHands : NetworkBehaviour
         handSubsystem = null;
     }
 
+    private bool _disabledWarningLogged;
+
+    private void Awake()
+    {
+        // Aviso temprano: si el componente esta desactivado en el prefab, Update() nunca corre y
+        // el rayo remoto no se publica. Este log en Awake() es informativo solamente — no puede
+        // habilitar el componente porque Awake tampoco corre si esta disabled. En ese caso hay
+        // que tildar 'Enabled' a mano en el prefab.
+        if (!enabled && !_disabledWarningLogged)
+        {
+            Debug.LogWarning("[NetworkedAvatarHands] Componente DESACTIVADO en el prefab. El rayo remoto NO se va a sincronizar. Tildar el checkbox 'Enabled' en el Inspector del AvatarHumanoid prefab.");
+            _disabledWarningLogged = true;
+        }
+    }
+
     private void Update()
     {
         if (!IsOwner) return;
@@ -323,10 +385,19 @@ public class NetworkedAvatarHands : NetworkBehaviour
             }
         }
 
-        // El rayo de seleccion siempre se actualiza, sin importar ShowVisualizers.
+        // El rayo de seleccion se actualiza para OBSERVADORES REMOTOS solamente.
+        // El owner ya ve su rayo local dibujado por JengaRayGrabInteractor.rayLine (que vive en
+        // el rig del XR Origin). Si tambien mostraramos aca el rayDisplay sincronizado, los dos
+        // se solaparian en pantalla — se veria un doble rayo (o z-fighting entre ambos) sin
+        // aportar informacion. Solo los remotos necesitan este rayo para saber a que apunta el
+        // otro.
         if (rayDisplay != null)
         {
-            if (state.rayActive)
+            if (IsOwner)
+            {
+                rayDisplay.enabled = false;
+            }
+            else if (state.rayActive)
             {
                 rayDisplay.enabled = true;
                 rayDisplay.useWorldSpace = true;

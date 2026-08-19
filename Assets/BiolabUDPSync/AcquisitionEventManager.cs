@@ -70,25 +70,45 @@ public class AcquisitionEventManager : MonoBehaviour
             return;
         }
 
-        if (config.IsHost && config.useEmbeddedAcquisitionMock)
-        {
-            Debug.Log("[AcquisitionEventManager] Starting embedded acquisition mock.");
-
-            if (mockServer == null)
-                mockServer = gameObject.AddComponent<AcquisitionMockServer>();
-
-            mockServer.listenPort = config.acquisitionPort;
-            mockServer.autoStart = false;
-            mockServer.StartServer();
-
-            config.acquisitionIp = "127.0.0.1";
-        }
-
+        // Nota: NO decidimos aca si arrancar el mock local. El mock es un FALLBACK — se activa
+        // solo si el server real de BioLab no responde al ping. Ver
+        // BeginExperimentalSessionRoutine para la logica de fallback. Esto permite dejar
+        // useEmbeddedAcquisitionMock=1 en la escena en todas las builds sin bloquear la
+        // conectividad al server real cuando existe.
         udpClient = new BioLabUdpClient(
             config.acquisitionIp,
             config.acquisitionPort,
             config.responseTimeoutMs
         );
+    }
+
+    /// <summary>
+    /// Arranca el mock local, reapunta el udpClient a loopback, y devuelve true si el mock
+    /// respondio al ping despues del arranque. Usado como fallback cuando el server real de
+    /// BioLab no esta accesible.
+    /// </summary>
+    private System.Collections.IEnumerator ActivateMockFallback(System.Action<bool> mockReady)
+    {
+        Debug.Log("[AcquisitionEventManager] Server real no responde. Fallback: arrancando mock local en loopback.");
+        LogLocal("SESSION_CONTROL", "MOCK_FALLBACK_ACTIVATED");
+
+        if (mockServer == null)
+            mockServer = gameObject.AddComponent<AcquisitionMockServer>();
+
+        mockServer.listenPort = config.acquisitionPort;
+        mockServer.autoStart = false;
+        mockServer.StartServer();
+
+        // Recreo el udpClient apuntando a loopback (el mock corre en 127.0.0.1:acquisitionPort).
+        config.acquisitionIp = "127.0.0.1";
+        udpClient = new BioLabUdpClient(config.acquisitionIp, config.acquisitionPort, config.responseTimeoutMs);
+
+        // Verifico que el mock haya arrancado bien haciendo ping.
+        var pingTask = udpClient.PingAsync();
+        yield return new WaitUntil(() => pingTask.IsCompleted);
+        bool ok = pingTask.Result == "PONG";
+        LogLocal("SESSION_CONTROL", "MOCK_PING_RESULT", pingTask.Result);
+        mockReady?.Invoke(ok);
     }
 
     private void OnDestroy()
@@ -167,6 +187,12 @@ public class AcquisitionEventManager : MonoBehaviour
         taskRunning = true;
         currentTaskId = taskId;
 
+        // Propagar al eventLogger para que los payloads siguientes salgan con el taskId correcto.
+        // Sin esta linea, BuildMetadataPayload leia el valor inicial de escena (task_01) aunque
+        // BeginTask hubiera recibido otro id -> eventos mal etiquetados en BioLab.
+        if (eventLogger != null)
+            eventLogger.taskId = taskId;
+
         LogAndForward("TASK_START", BuildMetadataPayload("TASK_START"));
     }
 
@@ -212,15 +238,25 @@ public class AcquisitionEventManager : MonoBehaviour
 
         LogLocal("SESSION_CONTROL", "SESSION_START_REQUEST");
 
-        // PING: cada nodo verifica conectividad por su cuenta.
+        // PING: cada nodo verifica conectividad por su cuenta al server real (IP configurada).
         var pingTask = udpClient.PingAsync();
         yield return new WaitUntil(() => pingTask.IsCompleted);
 
         string pingResponse = pingTask.Result;
         acquisitionReachable = pingResponse == "PONG";
 
-        Debug.Log($"[AcquisitionEventManager] Ping response: {pingResponse}");
+        Debug.Log($"[AcquisitionEventManager] Ping response ({config.acquisitionIp}:{config.acquisitionPort}): {pingResponse}");
         LogLocal("SESSION_CONTROL", "PING_RESULT", pingResponse);
+
+        // FALLBACK: si el server real no respondio y el mock esta habilitado, arranco mock local
+        // y me reapunto a el. Asi el sistema sigue corriendo sin depender del server externo
+        // (util en dev / pruebas sin BioLab / server caido).
+        if (!acquisitionReachable && config.useEmbeddedAcquisitionMock)
+        {
+            bool mockOk = false;
+            yield return StartCoroutine(ActivateMockFallback(ok => mockOk = ok));
+            acquisitionReachable = mockOk;
+        }
 
         if (!acquisitionReachable)
         {

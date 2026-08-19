@@ -42,7 +42,24 @@ public class JengaPokeInteractor : MonoBehaviour
             if (rb != null && hit.GetComponentInParent<JengaBlockTag>() != null)
             {
                 Vector3 forceDir = movement.normalized;
-                rb.AddForce(forceDir * pokeForce, ForceMode.Impulse);
+                Vector3 force = forceDir * pokeForce;
+
+                // Si el bloque es networked, ruteamos el push al owner (server) via ServerRpc.
+                // Sin esto, Client/Helper aplicarian AddForce local que el OwnerNetworkTransform
+                // pisa inmediatamente con la pose del server — parece que el dedo atraviesa el
+                // bloque. Con el ruteo, el server aplica el impulso autoritativamente y
+                // OwnerNetworkTransform propaga la nueva pose a todos.
+                var netBlock = hit.GetComponentInParent<NetworkedJengaBlock>();
+                if (netBlock != null)
+                {
+                    netBlock.RequestPush(force, pokePoint.position);
+                }
+                else
+                {
+                    // Fallback offline/standalone: aplicar directo.
+                    rb.AddForce(force, ForceMode.Impulse);
+                }
+
                 lastPokeTime = Time.time;
                 break;
             }
