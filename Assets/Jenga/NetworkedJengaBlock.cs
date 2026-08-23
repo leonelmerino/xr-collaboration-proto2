@@ -147,4 +147,57 @@ public class NetworkedJengaBlock : NetworkBehaviour
 
         NetworkObject.RemoveOwnership();
     }
+
+    /// <summary>
+    /// API publica para pedir un push al bloque desde cualquier cliente. La fisica del bloque es
+    /// autoritativa en el owner (server-owned cuando el bloque esta libre). Client/Helper llaman
+    /// esto en vez de hacer AddForce local — su AddForce no tiene efecto porque el
+    /// OwnerNetworkTransform sobreescribe la pose cuadro a cuadro con la del server.
+    ///
+    /// Path del Host: si YO soy el owner del bloque, aplico el force local sin roundtrip por red.
+    /// Comportamiento identico al que tenia antes de este fix — solo cambia el comportamiento de
+    /// los no-owners (Client/Helper).
+    /// </summary>
+    public void RequestPush(Vector3 force)
+    {
+        var rb = GetComponent<Rigidbody>();
+        if (rb == null) { Debug.LogWarning($"[NetworkedJengaBlock] RequestPush '{name}' abortado: rb=null"); return; }
+
+        if (!IsSpawned)
+        {
+            // Fallback offline/single-player.
+            Debug.Log($"[NetworkedJengaBlock] RequestPush '{name}' path=OFFLINE (not spawned). force={force.magnitude:F3}");
+            rb.AddForce(force, ForceMode.Impulse);
+            return;
+        }
+
+        if (IsOwner)
+        {
+            // Host cuando el bloque esta libre: fisica local, sin cambio de comportamiento pre-fix.
+            Debug.Log($"[NetworkedJengaBlock] RequestPush '{name}' path=LOCAL_OWNER. force={force.magnitude:F3}");
+            rb.AddForce(force, ForceMode.Impulse);
+            return;
+        }
+
+        Debug.Log($"[NetworkedJengaBlock] RequestPush '{name}' path=SERVER_RPC (IsOwner=false, OwnerClientId={OwnerClientId}). force={force.magnitude:F3}");
+        ApplyPushServerRpc(force);
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void ApplyPushServerRpc(Vector3 force)
+    {
+        // Solo aplicar si el server es el owner del bloque (bloque libre). Si otro cliente lo
+        // esta agarrando, ignorar — no queremos pushes ajenos interfiriendo con su grab.
+        if (OwnerClientId != NetworkManager.ServerClientId)
+        {
+            Debug.Log($"[NetworkedJengaBlock] ApplyPushServerRpc '{name}' IGNORADO: OwnerClientId={OwnerClientId} != Server. force={force.magnitude:F3}");
+            return;
+        }
+
+        var rb = GetComponent<Rigidbody>();
+        if (rb == null) { Debug.LogWarning($"[NetworkedJengaBlock] ApplyPushServerRpc '{name}' abortado: rb=null"); return; }
+
+        Debug.Log($"[NetworkedJengaBlock] ApplyPushServerRpc '{name}' APLICADO en server. force={force.magnitude:F3}");
+        rb.AddForce(force, ForceMode.Impulse);
+    }
 }
