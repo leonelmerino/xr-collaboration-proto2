@@ -89,6 +89,12 @@ public class NetworkedJengaBlock : NetworkBehaviour
 
     public override void OnGainedOwnership()
     {
+        bool preKinematic = rb != null && rb.isKinematic;
+        Vector3 preTPos = transform.position;
+        Vector3 preRbPos = rb != null ? rb.position : Vector3.zero;
+        Vector3 handPos = pendingGrabHand != null ? pendingGrabHand.position : Vector3.zero;
+        Debug.Log($"[JengaGrab] OnGainedOwnership '{name}' IsServer={IsServer} preKinematic={preKinematic} tPos={preTPos:F3} rbPos={preRbPos:F3} handPos={handPos:F3} hasPending={(pendingGrabHand != null)}");
+
         // Solo el server necesita simular fisica local del bloque. Cuando un Client/Helper gana
         // ownership por un grab remoto, mantenemos el bloque kinematic — JengaGrabbable.MovePosition
         // funciona sobre kinematic, no se pierde nada.
@@ -106,6 +112,10 @@ public class NetworkedJengaBlock : NetworkBehaviour
             rb.angularVelocity = Vector3.zero;
             rb.isKinematic = false;
         }
+
+        Vector3 postTPos = transform.position;
+        Vector3 postRbPos = rb != null ? rb.position : Vector3.zero;
+        Debug.Log($"[JengaGrab] OnGainedOwnership '{name}' POST tPos={postTPos:F3} rbPos={postRbPos:F3} tPosDelta={(postTPos - preTPos).magnitude:F4} rbPosDelta={(postRbPos - preRbPos).magnitude:F4}");
 
         if (pendingGrabHand != null)
         {
@@ -137,6 +147,7 @@ public class NetworkedJengaBlock : NetworkBehaviour
         if (!IsSpawned)
         {
             // Fallback single-player.
+            Debug.Log($"[JengaGrab] RequestGrab '{name}' path=OFFLINE blockPos={transform.position:F3} handPos={handTransform.position:F3}");
             grabbable.BeginGrab(handTransform);
             return;
         }
@@ -146,11 +157,13 @@ public class NetworkedJengaBlock : NetworkBehaviour
         if (IsOwner)
         {
             // Soy host y dueño actual (el server agarra su propio bloque): grab inmediato.
+            Debug.Log($"[JengaGrab] RequestGrab '{name}' path=LOCAL_OWNER blockPos={transform.position:F3} handPos={handTransform.position:F3}");
             grabbable.BeginGrab(handTransform);
             pendingGrabHand = null;
             return;
         }
 
+        Debug.Log($"[JengaGrab] RequestGrab '{name}' path=SERVER_RPC blockPos={transform.position:F3} rbPos={(rb != null ? rb.position : Vector3.zero):F3} handPos={handTransform.position:F3} kinematic={(rb != null && rb.isKinematic)}");
         RequestGrabServerRpc();
     }
 
