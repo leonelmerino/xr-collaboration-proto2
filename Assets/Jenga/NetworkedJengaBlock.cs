@@ -13,7 +13,13 @@ using UnityEngine;
 /// - Cliente pide grab via ServerRpc. Server cambia ownership al cliente.
 /// - Cliente recibe OnGainedOwnership y arranca el grab local (JengaGrabbable.BeginGrab).
 /// - Cliente pide release. Server reasume ownership y la fisica continua.
-/// - Rigidbody.isKinematic se ajusta automaticamente segun ownership.
+///
+/// Rigidbody.isKinematic se maneja aca segun ownership (no hay NetworkRigidbody en el prefab).
+/// Sin este manejo, los no-owners tienen el Rigidbody simulando localmente (gravedad + colisiones
+/// entre bloques adyacentes en la torre), pero OwnerNetworkTransform pisa la pose cada frame
+/// desde el owner. La simulacion local acumula correccion de overlaps sin poder aplicarla
+/// visualmente. Cuando ownership cambia al cliente (grab), NetworkTransform deja de pisar y la
+/// correccion se descarga de un golpe -> el bloque salta ~20cm en el momento del grab.
 /// </summary>
 [RequireComponent(typeof(NetworkObject))]
 [RequireComponent(typeof(Rigidbody))]
@@ -21,6 +27,7 @@ using UnityEngine;
 public class NetworkedJengaBlock : NetworkBehaviour
 {
     private JengaGrabbable grabbable;
+    private Rigidbody rb;
     private Renderer cachedRenderer;
     private Transform pendingGrabHand;
 
@@ -35,6 +42,7 @@ public class NetworkedJengaBlock : NetworkBehaviour
     private void Awake()
     {
         grabbable = GetComponent<JengaGrabbable>();
+        rb = GetComponent<Rigidbody>();
         cachedRenderer = GetComponentInChildren<Renderer>();
     }
 
@@ -42,6 +50,18 @@ public class NetworkedJengaBlock : NetworkBehaviour
     {
         materialIndex.OnValueChanged += OnMaterialChanged;
         ApplyMaterial(materialIndex.Value);
+        ApplyOwnershipKinematic();   // owner simula fisica; no-owners quedan kinematic (visual driveado por NetworkTransform).
+    }
+
+    /// <summary>
+    /// Sincroniza isKinematic con IsOwner. Llamado en el spawn inicial.
+    /// Sin esto, los clientes no-owner corren simulacion local de fisica que compite con
+    /// OwnerNetworkTransform y produce el "salto" al pasar a ser owner (ver comentario del summary).
+    /// </summary>
+    private void ApplyOwnershipKinematic()
+    {
+        if (rb == null) return;
+        rb.isKinematic = !IsOwner;
     }
 
     public override void OnNetworkDespawn()
@@ -69,7 +89,15 @@ public class NetworkedJengaBlock : NetworkBehaviour
 
     public override void OnGainedOwnership()
     {
-        // NetworkRigidbody maneja el isKinematic automaticamente segun ownership.
+        // Salgo de kinematic y arranco limpio: sin velocidades stale acumuladas ni residuos de la
+        // simulacion local que corria antes de recibir ownership. Esto elimina el "salto" de 20cm.
+        if (rb != null)
+        {
+            rb.isKinematic = false;
+            rb.velocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
+
         if (pendingGrabHand != null)
         {
             grabbable.BeginGrab(pendingGrabHand);
@@ -82,6 +110,15 @@ public class NetworkedJengaBlock : NetworkBehaviour
         if (grabbable.IsGrabbed())
             grabbable.EndGrab();
         pendingGrabHand = null;
+
+        // Vuelvo a kinematic: no soy owner, no simulo. El visual lo maneja OwnerNetworkTransform
+        // recibiendo la pose del nuevo owner.
+        if (rb != null)
+        {
+            rb.isKinematic = true;
+            rb.velocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
     }
 
     public void RequestGrab(Transform handTransform)
@@ -154,50 +191,50 @@ public class NetworkedJengaBlock : NetworkBehaviour
     /// esto en vez de hacer AddForce local — su AddForce no tiene efecto porque el
     /// OwnerNetworkTransform sobreescribe la pose cuadro a cuadro con la del server.
     ///
+    /// Usa AddForceAtPosition para aplicar el impulso en el punto exacto del contacto (dedo),
+    /// no en el centro de masa. Esto genera torque ademas de traslacion — el bloque rota un poco
+    /// en vez de "volar" en linea recta, comportamiento mas natural y contenido.
+    ///
     /// Path del Host: si YO soy el owner del bloque, aplico el force local sin roundtrip por red.
-    /// Comportamiento identico al que tenia antes de este fix — solo cambia el comportamiento de
-    /// los no-owners (Client/Helper).
     /// </summary>
-    public void RequestPush(Vector3 force)
+    public void RequestPush(Vector3 forceWorld, Vector3 applicationPointWorld)
     {
-        var rb = GetComponent<Rigidbody>();
         if (rb == null) { Debug.LogWarning($"[NetworkedJengaBlock] RequestPush '{name}' abortado: rb=null"); return; }
 
         if (!IsSpawned)
         {
             // Fallback offline/single-player.
-            Debug.Log($"[NetworkedJengaBlock] RequestPush '{name}' path=OFFLINE (not spawned). force={force.magnitude:F3}");
-            rb.AddForce(force, ForceMode.Impulse);
+            Debug.Log($"[NetworkedJengaBlock] RequestPush '{name}' path=OFFLINE (not spawned). force={forceWorld.magnitude:F3}");
+            rb.AddForceAtPosition(forceWorld, applicationPointWorld, ForceMode.Impulse);
             return;
         }
 
         if (IsOwner)
         {
-            // Host cuando el bloque esta libre: fisica local, sin cambio de comportamiento pre-fix.
-            Debug.Log($"[NetworkedJengaBlock] RequestPush '{name}' path=LOCAL_OWNER. force={force.magnitude:F3}");
-            rb.AddForce(force, ForceMode.Impulse);
+            // Host cuando el bloque esta libre: fisica local, sin roundtrip.
+            Debug.Log($"[NetworkedJengaBlock] RequestPush '{name}' path=LOCAL_OWNER. force={forceWorld.magnitude:F3}");
+            rb.AddForceAtPosition(forceWorld, applicationPointWorld, ForceMode.Impulse);
             return;
         }
 
-        Debug.Log($"[NetworkedJengaBlock] RequestPush '{name}' path=SERVER_RPC (IsOwner=false, OwnerClientId={OwnerClientId}). force={force.magnitude:F3}");
-        ApplyPushServerRpc(force);
+        Debug.Log($"[NetworkedJengaBlock] RequestPush '{name}' path=SERVER_RPC (IsOwner=false, OwnerClientId={OwnerClientId}). force={forceWorld.magnitude:F3}");
+        ApplyPushServerRpc(forceWorld, applicationPointWorld);
     }
 
     [ServerRpc(RequireOwnership = false)]
-    private void ApplyPushServerRpc(Vector3 force)
+    private void ApplyPushServerRpc(Vector3 forceWorld, Vector3 applicationPointWorld)
     {
         // Solo aplicar si el server es el owner del bloque (bloque libre). Si otro cliente lo
         // esta agarrando, ignorar — no queremos pushes ajenos interfiriendo con su grab.
         if (OwnerClientId != NetworkManager.ServerClientId)
         {
-            Debug.Log($"[NetworkedJengaBlock] ApplyPushServerRpc '{name}' IGNORADO: OwnerClientId={OwnerClientId} != Server. force={force.magnitude:F3}");
+            Debug.Log($"[NetworkedJengaBlock] ApplyPushServerRpc '{name}' IGNORADO: OwnerClientId={OwnerClientId} != Server. force={forceWorld.magnitude:F3}");
             return;
         }
 
-        var rb = GetComponent<Rigidbody>();
         if (rb == null) { Debug.LogWarning($"[NetworkedJengaBlock] ApplyPushServerRpc '{name}' abortado: rb=null"); return; }
 
-        Debug.Log($"[NetworkedJengaBlock] ApplyPushServerRpc '{name}' APLICADO en server. force={force.magnitude:F3}");
-        rb.AddForce(force, ForceMode.Impulse);
+        Debug.Log($"[NetworkedJengaBlock] ApplyPushServerRpc '{name}' APLICADO en server. force={forceWorld.magnitude:F3}");
+        rb.AddForceAtPosition(forceWorld, applicationPointWorld, ForceMode.Impulse);
     }
 }

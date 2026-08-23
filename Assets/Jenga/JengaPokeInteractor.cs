@@ -53,12 +53,15 @@ public class JengaPokeInteractor : MonoBehaviour
 
                 if (netBlock != null)
                 {
-                    netBlock.RequestPush(force);
+                    // Pasamos el punto de contacto (pokePoint) — el server aplica la fuerza
+                    // ahi con AddForceAtPosition, no en el centro de masa. Genera torque
+                    // ademas de traslacion, el bloque rota un poco en vez de "volar" lineal.
+                    netBlock.RequestPush(force, pokePoint.position);
                 }
                 else
                 {
                     // Fallback offline/standalone (bloque sin NetworkedJengaBlock).
-                    rb.AddForce(force, ForceMode.Impulse);
+                    rb.AddForceAtPosition(force, pokePoint.position, ForceMode.Impulse);
                 }
 
                 lastPokeTime = Time.time;
