@@ -112,12 +112,14 @@ public class NetworkedJengaBlock : NetworkBehaviour
         pendingGrabHand = null;
 
         // Vuelvo a kinematic: no soy owner, no simulo. El visual lo maneja OwnerNetworkTransform
-        // recibiendo la pose del nuevo owner.
+        // recibiendo la pose del nuevo owner. Orden: velocidades a cero PRIMERO (mientras aun es
+        // no-kinematic), despues isKinematic=true. Setear velocity/angularVelocity en un body ya
+        // kinematic dispara warning "Setting linear velocity of a kinematic body is not supported".
         if (rb != null)
         {
-            rb.isKinematic = true;
             rb.velocity = Vector3.zero;
             rb.angularVelocity = Vector3.zero;
+            rb.isKinematic = true;
         }
     }
 
