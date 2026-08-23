@@ -89,13 +89,22 @@ public class NetworkedJengaBlock : NetworkBehaviour
 
     public override void OnGainedOwnership()
     {
-        // Salgo de kinematic y arranco limpio: sin velocidades stale acumuladas ni residuos de la
-        // simulacion local que corria antes de recibir ownership. Esto elimina el "salto" de 20cm.
-        if (rb != null)
+        // Solo el server necesita simular fisica local del bloque. Cuando un Client/Helper gana
+        // ownership por un grab remoto, mantenemos el bloque kinematic — JengaGrabbable.MovePosition
+        // funciona sobre kinematic, no se pierde nada.
+        //
+        // Por que NO sacar kinematic en el Client: los vecinos siguen kinematic con su transform
+        // interpolado por OwnerNetworkTransform (pose ~1-2 frames atras). Al activar fisica local
+        // en el bloque agarrado, Unity detecta overlap contra las interpolaciones ligeramente
+        // desalineadas de los vecinos y dispara una correccion instantanea de colision — el bloque
+        // "salta" ~20cm en direccion para salir del overlap. Por eso la direccion depende del
+        // bloque (con que vecino tiene overlap) y por eso no ocurre en el Host (donde IsOwner=true
+        // desde el spawn, no hay ChangeOwnership ni transicion kinematic al agarrar).
+        if (rb != null && IsServer)
         {
-            rb.isKinematic = false;
             rb.velocity = Vector3.zero;
             rb.angularVelocity = Vector3.zero;
+            rb.isKinematic = false;
         }
 
         if (pendingGrabHand != null)

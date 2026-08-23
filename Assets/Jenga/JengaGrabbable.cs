@@ -41,8 +41,11 @@ public class JengaGrabbable : MonoBehaviour
         //    allowedAxisWorld = forward.normalized;
         //}
 
-        rb.velocity = Vector3.zero;
-        rb.angularVelocity = Vector3.zero;
+        if (!rb.isKinematic)
+        {
+            rb.velocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
         rb.constraints = RigidbodyConstraints.FreezeRotation;
     }
 
