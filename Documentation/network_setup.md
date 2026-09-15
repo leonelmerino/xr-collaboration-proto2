@@ -300,6 +300,7 @@ Ejecutar en los tres equipos al terminar la configuración:
 
 ## Referencias
 
+* [`architecture.md`](architecture.md) — mapa de subsistemas, flujos de datos y acoplamientos del sistema
 * [`bug_dev.md`](bug_dev.md) — Bug 13 (reservas de IP) y Bug 5 (HUD del Host)
 * [`test_protocol.md`](test_protocol.md) — verificación de conectividad al inicio de cada sesión
 * [`dev_log.md`](dev_log.md) — entrada del 2026-05-27, diagnóstico original de conectividad LAN

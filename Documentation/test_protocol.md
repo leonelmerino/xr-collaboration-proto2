@@ -281,6 +281,7 @@ Sin el branch y el commit, un reporte de bug no es accionable.
 
 ## 8. Referencias
 
+* [`architecture.md`](architecture.md) — mapa de subsistemas, flujos de datos y acoplamientos del sistema
 * [`bug_dev.md`](bug_dev.md) — registro de bugs conocidos con causa raíz y correcciones propuestas
 * [`body_tracking_guide.md`](body_tracking_guide.md) — guía operativa de calibración y registro de trackers
 * [`eye_tracking_data_format.md`](eye_tracking_data_format.md) — especificación del CSV de mirada
