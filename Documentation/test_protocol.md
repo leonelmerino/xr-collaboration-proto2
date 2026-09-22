@@ -2,7 +2,8 @@
 
 **Proyecto:** XR Collaboration Prototype 2 · ANID Proyectos de Exploración 13250116
 **Fecha de redacción:** 2026-08-27
-**Branch a ejecutar:** `fixes-ui-new`
+**Branch a ejecutar:** `main`, después de integrar `fixes-ui-new @ dc9c506`
+**Actualización de la base de trabajo:** 2026-09-22
 **Duración estimada:** 90 minutos (45 de preparación, 45 de pruebas)
 
 ---
@@ -38,14 +39,18 @@ El Host debe arrancar primero. Los otros dos no encuentran nada por LAN discover
 
 ### Verificación de versión
 
-Los tres equipos ya están en `fixes-ui-new` y deben seguir ahí. **No cambiar de branch.** Verificar y registrar en cada equipo:
+La referencia histórica de esta sesión era `fixes-ui-new`. Después de su integración, usar `main` como base común. Antes de cambiar de rama, comprobar `git status --short` y conservar cualquier trabajo local; no forzar el cambio ni descartar archivos. Con el árbol limpio, sincronizar y verificar en cada equipo:
 
 ```bash
+git fetch origin
+git switch main
+git pull --ff-only origin main
+git merge-base --is-ancestor dc9c506 HEAD
 git branch --show-current
 git log -1 --oneline
 ```
 
-Los tres deben coincidir. Si alguno difiere, detener la preparación y sincronizar antes de continuar: varios de los defectos conocidos tienen correcciones parciales en commits distintos, y un reporte sin la versión exacta no es accionable.
+La comprobación de ascendencia debe terminar con código 0 y los tres equipos deben coincidir en commit. Si alguno difiere, detener la preparación y sincronizar antes de continuar: varios de los defectos conocidos tienen correcciones parciales en commits distintos, y un reporte sin la versión exacta no es accionable. Crear las nuevas ramas de registro e infraestructura desde este `main` actualizado. La integración conserva los bugs conocidos descritos abajo; no implica que hayan sido corregidos.
 
 ---
 
