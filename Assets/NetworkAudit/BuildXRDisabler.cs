@@ -7,10 +7,10 @@ using UnityEngine.InputSystem.XR;
 public class BuildXRDisabler : MonoBehaviour
 {
     [Tooltip("Si esta activo, la build deshabilita XR al iniciar. En el Editor no tiene efecto.")]
-    [SerializeField] private bool disableXROnBuild = true;
+    [SerializeField] private bool disableXROnBuild = false;
 
     [Tooltip("Tambien deshabilita los TrackedPoseDriver de la escena para que la camara no sea movida por inputs XR fantasma.")]
-    [SerializeField] private bool disableTrackedPoseDrivers = true;
+    [SerializeField] private bool disableTrackedPoseDrivers = false;
 
     private void Awake()
     {

@@ -277,11 +277,9 @@ public class AvatarHandJointDebugViz : MonoBehaviour
         var rend = go.GetComponent<MeshRenderer>();
         rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         rend.receiveShadows = false;
-        // Material desechable basado en Unlit/Color para que el color se vea aun sin lights.
-        var mat = new Material(Shader.Find("Unlit/Color"));
-        if (mat.shader == null) mat = new Material(Shader.Find("Standard"));
+        // Reuse the primitive's built-in material; Shader.Find may return null in a player build.
+        var mat = rend.material;
         mat.color = color;
-        rend.sharedMaterial = mat;
         return go.transform;
     }
 

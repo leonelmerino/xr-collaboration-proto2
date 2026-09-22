@@ -12123,8 +12123,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d7afc6b561989cd4e8ffa9694c3c58dc, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  disableXROnBuild: 1
-  disableTrackedPoseDrivers: 1
+  disableXROnBuild: 0
+  disableTrackedPoseDrivers: 0
 --- !u!114 &2081781172
 MonoBehaviour:
   m_ObjectHideFlags: 0

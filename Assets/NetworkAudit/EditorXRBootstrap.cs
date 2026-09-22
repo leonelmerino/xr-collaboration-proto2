@@ -4,8 +4,7 @@ using UnityEngine.XR.Management;
 
 /// <summary>
 /// Inicializa XR explicitamente al entrar en Play Mode dentro del Editor.
-/// Requiere que en Project Settings -> XR Plug-in Management -> Windows Standalone
-/// este DESMARCADO "Initialize XR on Startup", para que el build no reclame el headset.
+/// Runs only in the Editor when XR has not already initialized.
 /// En builds standalone este script no hace nada.
 /// </summary>
 public class EditorXRBootstrap : MonoBehaviour
