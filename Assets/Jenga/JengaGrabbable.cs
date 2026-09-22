@@ -9,6 +9,10 @@ public class JengaGrabbable : MonoBehaviour
     private Vector3 initialGrabOffset;
     private Vector3 allowedAxisWorld;
 
+    // Debug: contador de FixedUpdate post-grab para log rate-limited (primeros N frames).
+    private int fixedFramesPostGrab;
+    private const int kDebugFixedFrames = 5;
+
     void Awake()
     {
         rb = GetComponent<Rigidbody>();
@@ -25,8 +29,10 @@ public class JengaGrabbable : MonoBehaviour
 
         isGrabbed = true;
         grabPoint = pinchTransform;
+        fixedFramesPostGrab = 0;
 
         initialGrabOffset = transform.position - grabPoint.position;
+        Debug.Log($"[JengaGrab] BeginGrab '{name}' isKinematic={rb.isKinematic} blockPos={transform.position:F3} rbPos={rb.position:F3} grabPos={grabPoint.position:F3} offset={initialGrabOffset:F3} right={transform.right:F3}");
 
         //Vector3 right = transform.right;
         //Vector3 forward = transform.forward;
@@ -41,8 +47,11 @@ public class JengaGrabbable : MonoBehaviour
         //    allowedAxisWorld = forward.normalized;
         //}
 
-        rb.velocity = Vector3.zero;
-        rb.angularVelocity = Vector3.zero;
+        if (!rb.isKinematic)
+        {
+            rb.velocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
         rb.constraints = RigidbodyConstraints.FreezeRotation;
     }
 
@@ -65,6 +74,14 @@ public class JengaGrabbable : MonoBehaviour
         Vector3 constrainedDelta = Vector3.Project(delta, allowedAxisWorld);
         Vector3 target = transform.position + constrainedDelta;
 
-        rb.MovePosition(Vector3.Lerp(rb.position, target, 0.35f));
+        Vector3 lerpTarget = Vector3.Lerp(rb.position, target, 0.35f);
+
+        if (fixedFramesPostGrab < kDebugFixedFrames)
+        {
+            Debug.Log($"[JengaGrab] FixedUpdate f={fixedFramesPostGrab} '{name}' tPos={transform.position:F3} rbPos={rb.position:F3} grabPos={grabPoint.position:F3} desired={desired:F3} target={target:F3} lerpTarget={lerpTarget:F3} deltaMag={delta.magnitude:F4} constrMag={constrainedDelta.magnitude:F4}");
+            fixedFramesPostGrab++;
+        }
+
+        rb.MovePosition(lerpTarget);
     }
 }

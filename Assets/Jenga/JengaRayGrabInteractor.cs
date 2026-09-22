@@ -67,6 +67,7 @@ public class JengaRayGrabInteractor : MonoBehaviour
             if (g != null && !IsBlockTaken(g))
             {
                 currentGrabbed = g;
+                Debug.Log($"[JengaGrab] PINCH block='{g.gameObject.name}' handPos={pinchPoint.position:F3} blockPos={g.transform.position:F3} rayHitPoint={hit.point:F3} distHand={(g.transform.position - pinchPoint.position).magnitude:F3}");
                 var net = g.GetComponent<NetworkedJengaBlock>();
                 if (net != null)
                     net.RequestGrab(pinchPoint);

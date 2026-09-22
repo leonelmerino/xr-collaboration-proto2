@@ -507,6 +507,11 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   head: {fileID: 0}
+  autoCalibrateHeight: 1
+  standingHmdHeight: 1.7
+  bodyForwardOffset: 0.15
+  bodyVerticalOffset: 0
+  ownBodyRenderers: []
 --- !u!114 &-5374739967418200848
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -641,6 +646,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   xrOrigin: {fileID: 0}
   hmdCamera: {fileID: 0}
+  calibrationKey: 99
 --- !u!1 &3975884963818398253
 GameObject:
   m_ObjectHideFlags: 0
@@ -1137,8 +1143,8 @@ MonoBehaviour:
     m_Root: {fileID: 2889981449297492557}
     m_Mid: {fileID: 8446556964355096019}
     m_Tip: {fileID: 2766716791817812370}
-    m_Target: {fileID: 8190725587314103454}
-    m_Hint: {fileID: 6773923594722368199}
+    m_Target: {fileID: 6773923594722368199}
+    m_Hint: {fileID: 0}
     m_TargetPositionWeight: 1
     m_TargetRotationWeight: 1
     m_HintWeight: 1
