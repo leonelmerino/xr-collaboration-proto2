@@ -233,6 +233,7 @@ MonoBehaviour:
   - {fileID: 252212891666740942}
   - {fileID: 8507849565684740717}
   - {fileID: 7703235377713406373}
+  - {fileID: 5663694260791413918}
   - {fileID: 7225609767677178927}
   - {fileID: 5937136806997623654}
   m_renderMode: 1
@@ -544,6 +545,26 @@ MonoBehaviour:
   company: Unity
   priority: 0
   required: 0
+--- !u!114 &5663694260791413918
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6223cbe45d979824fb9f998ab329aab9, type: 3}
+  m_Name: PassthroughUnderlayFeature Standalone
+  m_EditorClassIdentifier: 
+  m_enabled: 1
+  nameUi: 'XR Collab: Passthrough underlay (PC)'
+  version: 1.0.0
+  featureIdInternal: cl.dictuc.xrcollab.passthrough-underlay
+  openxrExtensionStrings: XR_HTC_passthrough
+  company: DICTUC
+  priority: 0
+  required: 0
 --- !u!114 &5937136806997623654
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -656,7 +677,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 78bb1f33f93dd034d90b1d1a27a5eb27, type: 3}
   m_Name: VivePassthrough Standalone
   m_EditorClassIdentifier: 
-  m_enabled: 1
+  m_enabled: 0
   nameUi: VIVE XR Passthrough
   version: 1.0.0
   featureIdInternal: vive.openxr.feature.passthrough

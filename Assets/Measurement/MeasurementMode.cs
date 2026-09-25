@@ -1,10 +1,6 @@
 using System;
-using System.Collections;
 using UnityEngine;
 using UnityEngine.SceneManagement;
-using UnityEngine.XR.Management;
-using VIVE.OpenXR;
-using VIVE.OpenXR.Passthrough;
 
 /// <summary>
 /// Modo medición: passthrough con Jenga físico para el equipo de registro.
@@ -12,9 +8,10 @@ using VIVE.OpenXR.Passthrough;
 /// Se activa solo al cargar la escena (no requiere setup en el Editor) y:
 ///   1. Desactiva — no borra — el entorno virtual, el Jenga virtual, la locomoción
 ///      y las interacciones de poke/pinch/rayo.
-///   2. Deja la cámara transparente y sin renderizar capas virtuales, para que
-///      se vea la sala real detrás.
-///   3. Crea un passthrough planar como underlay (XR_HTC_passthrough).
+///   2. Deja la cámara transparente (alpha 0, sin HDR) y sin renderizar capas virtuales.
+///   3. Enciende PassthroughUnderlayFeature, que crea el passthrough HTC planar y lo envía como
+///      capa inferior en cada frame (ahí se explica por qué no se usan las features de passthrough
+///      de VIVE: una congela la app junto al Eye Tracker en Mono y la otra nunca envía la capa).
 /// Los loggers de mirada y cuerpo, los eventos y la sincronía de reloj siguen corriendo.
 ///
 /// Encendido por defecto en este branch. Para volver a VR:
@@ -22,6 +19,7 @@ using VIVE.OpenXR.Passthrough;
 ///   - Editor: menú XR Collab → Modo medición (passthrough)
 ///
 /// Requiere VIVE Streaming por USB o Wi-Fi: el modo DisplayPort no soporta passthrough.
+/// Build con las features OpenXR correctas: menú XR Collab → Build medición (Win64) (MeasurementBuild).
 /// </summary>
 public class MeasurementMode : MonoBehaviour
 {
@@ -39,12 +37,6 @@ public class MeasurementMode : MonoBehaviour
 
     [Tooltip("Capas que la cámara sigue renderizando sobre el passthrough. Vacío = nada virtual visible.")]
     [SerializeField] private LayerMask visibleLayers = 0;
-
-    [SerializeField] private int maxPassthroughAttempts = 30;
-
-    private XrPassthroughHTC _passthrough;
-    private bool _hasPassthrough;
-    private string _status = "esperando sesión XR";
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void Init()
@@ -95,7 +87,8 @@ public class MeasurementMode : MonoBehaviour
             cal.enabled = false;
 
         ConfigureCamera();
-        StartCoroutine(StartPassthroughWhenReady());
+        PassthroughUnderlayFeature.Active = true;
+        Debug.Log("[MeasurementMode] Passthrough underlay solicitado (PassthroughUnderlayFeature).");
     }
 
     private void ConfigureCamera()
@@ -107,55 +100,17 @@ public class MeasurementMode : MonoBehaviour
             return;
         }
 
-        // Alpha 0 en el fondo deja ver el underlay de passthrough.
+        // Alpha 0 en el fondo deja ver el underlay de passthrough. Sin HDR para que el alpha
+        // llegue intacto a la textura del ojo.
         cam.clearFlags = CameraClearFlags.SolidColor;
         cam.backgroundColor = new Color(0f, 0f, 0f, 0f);
         cam.cullingMask = visibleLayers;
-    }
-
-    private IEnumerator StartPassthroughWhenReady()
-    {
-        for (int attempt = 1; attempt <= maxPassthroughAttempts; attempt++)
-        {
-            var manager = XRGeneralSettings.Instance != null ? XRGeneralSettings.Instance.Manager : null;
-            if (manager != null && manager.activeLoader != null)
-            {
-                XrResult res = PassthroughAPI.CreatePlanarPassthrough(
-                    out _passthrough,
-                    VIVE.OpenXR.CompositionLayer.LayerType.Underlay,
-                    OnPassthroughSessionDestroyed);
-
-                if (res == XrResult.XR_SUCCESS)
-                {
-                    _hasPassthrough = true;
-                    _status = "ON";
-                    Debug.Log("[MeasurementMode] Passthrough creado (underlay).");
-                    yield break;
-                }
-                _status = $"falló ({res}), intento {attempt}/{maxPassthroughAttempts}";
-            }
-            else
-            {
-                _status = $"XR no inicializado, intento {attempt}/{maxPassthroughAttempts}";
-            }
-            yield return new WaitForSeconds(1f);
-        }
-
-        _status = "NO DISPONIBLE — revisar VIVE Streaming por USB y 'MR with passthrough'";
-        Debug.LogError("[MeasurementMode] No se pudo crear el passthrough: " + _status);
-    }
-
-    private void OnPassthroughSessionDestroyed(XrPassthroughHTC passthrough)
-    {
-        PassthroughAPI.DestroyPassthrough(passthrough);
-        _hasPassthrough = false;
-        _status = "sesión XR cerrada";
+        cam.allowHDR = false;
     }
 
     private void OnDestroy()
     {
-        if (_hasPassthrough) PassthroughAPI.DestroyPassthrough(_passthrough);
-        _hasPassthrough = false;
+        PassthroughUnderlayFeature.Active = false;
     }
 
     // Solo se ve en la ventana del PC, no en el visor.
@@ -163,6 +118,6 @@ public class MeasurementMode : MonoBehaviour
     {
         const float w = 520f, h = 44f;
         GUI.Box(new Rect(10f, Screen.height - h - 10f, w, h),
-            $"MODO MEDICIÓN · passthrough: {_status}\nLogs: {Application.persistentDataPath}/EyeTrackingLogs");
+            $"MODO MEDICIÓN · passthrough: {PassthroughUnderlayFeature.Status}\nLogs: {Application.persistentDataPath}/EyeTrackingLogs");
     }
 }

@@ -37,17 +37,42 @@
 5. Jugar la tarea con el Jenga físico. Los logs se escriben solos desde que abre la aplicación.
 6. Al terminar, cerrar la aplicación normalmente (Alt+F4) para que los archivos se cierren bien.
 
-La ventana del PC se ve negra en modo medición: es esperado. El passthrough se compone en el visor, no en el PC.
+La ventana del PC se ve negra en modo medición: es esperado. El passthrough se compone en el visor, no en el PC (ver más abajo cómo espejar el visor en el PC).
 
 ## Dónde quedan los archivos
 
+Todo queda bajo `Application.persistentDataPath` del build:
+`%USERPROFILE%\AppData\LocalLow\DefaultCompany\xr-collaboration-proto2\`
+
 ```
-%USERPROFILE%\AppData\LocalLow\<Company>\<Product>\EyeTrackingLogs\{participantId}\{sessionId}\
-    {taskId}_{trialId}_{NNN}_gaze.csv
-    {taskId}_{trialId}_{NNN}_body.csv
+EyeTrackingLogs\{participantId}\{sessionId}\          (hoy P001\S001 en todos los PC, ver Bug 2)
+    {taskId}_{trialId}_{NNN}_gaze.csv                 mirada + pose de cabeza, ~90 Hz
+    {taskId}_{trialId}_{NNN}_body.csv                 cabeza, manos (y trackers), ~90 Hz
+    {taskId}_{trialId}_{nodeId}_{NNN}_events.csv      eventos del experimento y sync de reloj (nodeId p. ej. VR_HOST)
+NetworkAudit\network_audit_{yyyyMMdd_HHmmss}.csv      host/cliente, conexiones, fallos de transporte
+Player.log / Player-prev.log                          log de Unity (sesión actual / anterior)
+acquisition_mock_log.txt                              solo si corre el mock de adquisición
 ```
 
-La ruta exacta de cada PC aparece en la pantalla, en el recuadro `MODO MEDICIÓN`.
+- `NNN` sube en cada ejecución (001, 002, …); nunca se sobrescribe.
+- La ruta exacta de cada PC aparece en la pantalla, en el recuadro `MODO MEDICIÓN`.
+- **Cerrar con Alt+F4** (o `Start-LabSession.ps1 <pc> -Stop`): los CSV se cierran en `OnApplicationQuit`. Matar el proceso puede dejar la última parte sin escribir.
+- Verificación de solo lectura (¿se creó?, ¿tiene datos?, ¿se ve razonable?): `dictuc\tools\lab-remote\Check-LabTelemetry.ps1`.
+
+**Valores de referencia (STIMULUS1, 2026-09-24, USB, passthrough visible):** gaze y body a **89,9 Hz**, tiempos siempre crecientes, cuaterniones y direcciones de mirada unitarios, manos válidas **91–94 %**, `is_calibrated = 0` (esperado). La mirada solo es válida con el visor bien puesto: en ventanas de 10 s con el visor puesto, 64–82 % válida; con el visor en la frente, 0 %.
+
+## Passthrough en PC: cómo funciona (y por qué no con las features de VIVE)
+
+El passthrough lo crea y lo envía **`Assets/Measurement/PassthroughUnderlayFeature.cs`** (feature OpenXR propia "XR Collab: Passthrough underlay (PC)"): llama a `xrCreatePassthroughHTC` y en cada `xrEndFrame` agrega una capa `XrCompositionLayerPassthroughHTC` **debajo** de la proyección de Unity (con `BLEND_TEXTURE_SOURCE_ALPHA`), igual que `dictuc\tools\xr-passthrough-test`. Las dos features de passthrough de VIVE (com.htc.upm.vive.openxr 2.5.1) **no sirven en PC con backend Mono**:
+
+| Feature VIVE | Qué pasa en PC | Síntoma |
+| --- | --- | --- |
+| VIVE XR Passthrough | Su hook de `xrWaitFrame` (ViveInterceptors) usa otro tipo de delegate que el del VIVE XR Eye Tracker; `Marshal.GetDelegateForFunctionPointer` lanza `InvalidCastException` dentro del callback nativo | La app se congela en el primer frame, **no se crea ningún CSV** |
+| VIVE XR Composition Layer (Passthrough) | Crea el passthrough, pero `XR_HTC_passthrough_impls` no implementa `SubmitLayers` en Standalone | La capa nunca llega al visor: **negro** |
+
+Ambas quedan apagadas y la nuestra encendida. **Build siempre con el menú `XR Collab → Build medición (Win64)`** (o `-executeMethod MeasurementBuild.BuildWin64`), que fuerza esa configuración.
+
+**La ventana del PC se ve negra: es esperado.** La imagen de las cámaras nunca llega al PC; el visor compone la sala con la capa de la app. Para ver en el PC lo que ve el visor: `dictuc\tools\launch\mirror-headset.vbs` (scrcpy con el adb de VIVE Hub, sin audio).
 
 ## Problemas conocidos y qué hacer
 
