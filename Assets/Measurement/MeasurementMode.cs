@@ -2,6 +2,7 @@ using System;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using XRCollab.Measurement.Mirroring;
+using XRCollab.Measurement.Recording;
 
 /// <summary>
 /// Modo medición: passthrough con Jenga físico para el equipo de registro.
@@ -14,6 +15,7 @@ using XRCollab.Measurement.Mirroring;
 ///      capa inferior en cada frame (ahí se explica por qué no se usan las features de passthrough
 ///      de VIVE: una congela la app junto al Eye Tracker en Mono y la otra nunca envía la capa).
 ///   4. En la ventana del PC muestra lo que ve el visor (HeadsetMirror, Assets/Measurement/HeadsetMirror).
+///   5. Graba esa ventana en video como respaldo (SessionRecorder, Assets/Measurement/SessionRecording).
 /// Los loggers de mirada y cuerpo, los eventos y la sincronía de reloj siguen corriendo.
 ///
 /// Encendido por defecto en este branch. Para volver a VR:
@@ -97,6 +99,11 @@ public class MeasurementMode : MonoBehaviour
         // Flags -nomirror / -mirror-*: Assets/Measurement/HeadsetMirror/README.md
         HeadsetMirrorSettings mirror = HeadsetMirrorSettings.FromCommandLine(Environment.GetCommandLineArgs());
         if (mirror.enabled) HeadsetMirror.Create(transform, mirror, MirrorAppState);
+
+        // Respaldo en video de la ventana del PC (espejo + HUDs + reloj con ms). Flags -norecord / -rec-*:
+        // Assets/Measurement/SessionRecording/README.md
+        SessionRecorderSettings recording = SessionRecorderSettings.FromCommandLine(Environment.GetCommandLineArgs());
+        if (recording.enabled) SessionRecorder.Create(transform, recording);
 #endif
     }
 

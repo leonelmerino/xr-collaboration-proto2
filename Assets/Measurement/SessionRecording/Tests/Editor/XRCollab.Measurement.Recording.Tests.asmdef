@@ -1,0 +1,25 @@
+{
+    "name": "XRCollab.Measurement.Recording.Tests",
+    "rootNamespace": "XRCollab.Measurement.Recording.Tests",
+    "references": [
+        "XRCollab.Measurement.Recording",
+        "XRCollab.Measurement.Mirroring",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

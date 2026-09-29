@@ -38,9 +38,9 @@ namespace XRCollab.Measurement.Mirroring
 
     /// <summary>
     /// Proceso externo sin ventana, con stdout y stderr redirigidos, registrado en <see cref="KillOnCloseJob"/>.
-    /// stderr siempre se drena (si no, el hijo se bloquea al llenar el pipe).
+    /// stderr siempre se drena (si no, el hijo se bloquea al llenar el pipe). Lo usan el espejo y la grabación.
     /// </summary>
-    internal sealed class ChildProcess : IDisposable
+    public sealed class ChildProcess : IDisposable
     {
         private readonly Process _process;
 
@@ -48,6 +48,9 @@ namespace XRCollab.Measurement.Mirroring
 
         /// <summary>stdout en binario. Solo si se lanzó sin <c>onOutputLine</c>.</summary>
         public Stream Output => _process.StandardOutput.BaseStream;
+
+        /// <summary>stdin en binario. Solo si se lanzó con <c>redirectInput</c>.</summary>
+        public Stream Input => _process.StandardInput.BaseStream;
 
         private ChildProcess(Process process, string name)
         {
@@ -57,9 +60,11 @@ namespace XRCollab.Measurement.Mirroring
 
         /// <param name="onOutputLine">Recibe stdout por líneas; null deja stdout para leerlo en binario con <see cref="Output"/>.</param>
         /// <param name="onErrorLine">Recibe stderr por líneas (puede ser null).</param>
-        public static ChildProcess Start(string exe, string arguments, Action<string> onOutputLine, Action<string> onErrorLine)
+        /// <param name="redirectInput">Abre stdin para escribirle en binario con <see cref="Input"/>.</param>
+        public static ChildProcess Start(string exe, string arguments, Action<string> onOutputLine, Action<string> onErrorLine, bool redirectInput = false)
         {
             var process = new Process { StartInfo = HiddenStartInfo(exe, arguments) };
+            process.StartInfo.RedirectStandardInput = redirectInput;
             process.ErrorDataReceived += (_, e) => Deliver(onErrorLine, e.Data);
             if (onOutputLine != null)
                 process.OutputDataReceived += (_, e) => Deliver(onOutputLine, e.Data);
@@ -108,6 +113,22 @@ namespace XRCollab.Measurement.Mirroring
                 try { return _process.HasExited; }
                 catch (InvalidOperationException) { return true; }
             }
+        }
+
+        /// <summary>
+        /// Lanza sin ventana, sin redirecciones y fuera del job: sigue corriendo aunque la app se cierre (por ejemplo,
+        /// para armar el video final después de salir).
+        /// </summary>
+        public static void StartDetached(string exe, string arguments)
+        {
+            using (var process = new Process { StartInfo = new ProcessStartInfo(exe, arguments) { UseShellExecute = false, CreateNoWindow = true } })
+                process.Start();
+        }
+
+        public bool WaitForExit(int timeoutMs)
+        {
+            try { return _process.WaitForExit(timeoutMs); }
+            catch (InvalidOperationException) { return true; }
         }
 
         public void Kill() => TryKill(_process);
