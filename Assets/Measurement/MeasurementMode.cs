@@ -1,6 +1,7 @@
 using System;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using XRCollab.Measurement.Mirroring;
 
 /// <summary>
 /// Modo medición: passthrough con Jenga físico para el equipo de registro.
@@ -12,6 +13,7 @@ using UnityEngine.SceneManagement;
 ///   3. Enciende PassthroughUnderlayFeature, que crea el passthrough HTC planar y lo envía como
 ///      capa inferior en cada frame (ahí se explica por qué no se usan las features de passthrough
 ///      de VIVE: una congela la app junto al Eye Tracker en Mono y la otra nunca envía la capa).
+///   4. En la ventana del PC muestra lo que ve el visor (HeadsetMirror, Assets/Measurement/HeadsetMirror).
 /// Los loggers de mirada y cuerpo, los eventos y la sincronía de reloj siguen corriendo.
 ///
 /// Encendido por defecto en este branch. Para volver a VR:
@@ -89,6 +91,13 @@ public class MeasurementMode : MonoBehaviour
         ConfigureCamera();
         PassthroughUnderlayFeature.Active = true;
         Debug.Log("[MeasurementMode] Passthrough underlay solicitado (PassthroughUnderlayFeature).");
+
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        // La ventana del PC queda negra (la sala se compone en el visor): se muestra lo que ve el visor.
+        // Flags -nomirror / -mirror-*: Assets/Measurement/HeadsetMirror/README.md
+        HeadsetMirrorSettings mirror = HeadsetMirrorSettings.FromCommandLine(Environment.GetCommandLineArgs());
+        if (mirror.enabled) HeadsetMirror.Create(transform, mirror);
+#endif
     }
 
     private void ConfigureCamera()

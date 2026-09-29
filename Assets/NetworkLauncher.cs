@@ -53,6 +53,22 @@ public class NetworkLauncher : MonoBehaviour
         if (Input.GetKeyDown(KeyCode.C)) TryStartClient();
     }
 
+    // Argumento de lanzamiento "-role host|client": equivale a presionar H o C, sin depender de que
+    // la ventana tenga el foco (Start-LabSession lanza las apps en los PCs del laboratorio por SSH).
+    private IEnumerator Start()
+    {
+        string[] args = System.Environment.GetCommandLineArgs();
+        int i = System.Array.IndexOf(args, "-role");
+        if (i < 0 || i + 1 >= args.Length) yield break;
+        string role = args[i + 1].ToLowerInvariant();
+
+        yield return new WaitForSeconds(1f);   // NetworkManager y LanDiscoveryService ya inicializados
+        Debug.Log($"[NetworkLauncher] -role {role} desde la línea de comandos.");
+        if (role == "host") StartHost();
+        else if (role == "client") TryStartClient();
+        else Debug.LogWarning($"[NetworkLauncher] -role desconocido: {role} (usar host o client)");
+    }
+
     // ─────────────────────────────────────────────────────────────
     // Host
     // ─────────────────────────────────────────────────────────────
