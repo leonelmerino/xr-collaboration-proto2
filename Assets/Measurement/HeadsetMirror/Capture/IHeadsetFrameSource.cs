@@ -2,6 +2,7 @@ using System;
 
 namespace XRCollab.Measurement.Mirroring
 {
+    /// <summary>En qué parte del ciclo de vida está la fuente.</summary>
     public enum MirrorState
     {
         Stopped,
@@ -17,21 +18,56 @@ namespace XRCollab.Measurement.Mirroring
         Reconnecting,
     }
 
+    /// <summary>Por qué la fuente está en su estado actual. Es lo que usa <see cref="MirrorDiagnosis"/> para explicar una pantalla negra.</summary>
+    public enum MirrorIssue
+    {
+        None,
+        AdbMissing,
+        FfmpegMissing,
+        ServerAssetMissing,
+        /// <summary>adb no ve ningún visor (cable desconectado, o conectado solo por Wi-Fi).</summary>
+        NoDevice,
+        /// <summary>El visor está conectado pero no aceptó la depuración USB.</summary>
+        DeviceUnauthorized,
+        /// <summary>Se pidió un serial con -mirror-serial y ese visor no está.</summary>
+        DeviceNotFound,
+        /// <summary>adb mismo falló (servidor adb caído o colgado).</summary>
+        AdbFailed,
+        DeviceAsleep,
+        /// <summary>La sesión arrancó pero el visor nunca mandó un cuadro.</summary>
+        NoImage,
+        /// <summary>Había imagen y se cortó (cable, reposo, proceso caído).</summary>
+        StreamCut,
+        /// <summary>Error inesperado al armar la sesión (el detalle trae el mensaje).</summary>
+        SessionFailed,
+    }
+
+    /// <summary>Si el visor está sobre la cara (sensor de proximidad). Solo se consulta cuando la imagen se ve mal.</summary>
+    public enum HeadsetWear
+    {
+        Unknown,
+        OnFace,
+        /// <summary>En la frente o sobre la mesa: VIVE Streaming pausa la imagen y muestra su pantalla de espera.</summary>
+        OffFace,
+    }
+
     /// <summary>
     /// Instantánea inmutable del estado de una fuente. Se reemplaza entera en cada cambio, así que se puede
     /// leer desde cualquier hilo sin locks.
     /// </summary>
     public sealed class MirrorStatus
     {
-        public static readonly MirrorStatus Stopped = new MirrorStatus(MirrorState.Stopped, "detenido");
+        public static readonly MirrorStatus Stopped = new MirrorStatus(MirrorState.Stopped, MirrorIssue.None, "detenido");
 
         public MirrorState State { get; }
+        public MirrorIssue Issue { get; }
         public string Detail { get; }
         public string DeviceSerial { get; }
 
-        public MirrorStatus(MirrorState state, string detail, string deviceSerial = null)
+        public MirrorStatus(MirrorState state, MirrorIssue issue, string detail, string deviceSerial = null)
         {
             State = state;
+            Issue = issue;
             Detail = detail ?? "";
             DeviceSerial = deviceSerial;
         }
@@ -56,6 +92,15 @@ namespace XRCollab.Measurement.Mirroring
         /// <summary>Cuadros recibidos desde que se creó la fuente (diagnóstico).</summary>
         long FramesReceived { get; }
 
+        /// <summary>Segundos desde el último cuadro de la sesión actual; infinito si todavía no llegó ninguno.</summary>
+        double SecondsSinceLastFrame { get; }
+
+        /// <summary>Segundos seguidos con cuadros casi negros (ver <see cref="FrameAnalysis"/>); 0 si el último tiene imagen.</summary>
+        double SecondsDark { get; }
+
+        /// <summary>Si el visor está puesto, cuando la imagen está negra o detenida; Unknown si la imagen está bien o no se pudo saber.</summary>
+        HeadsetWear Wear { get; }
+
         void Start();
         void Stop();
     }
@@ -64,7 +109,12 @@ namespace XRCollab.Measurement.Mirroring
     public sealed class MirrorSetupException : Exception
     {
         public MirrorState State { get; }
+        public MirrorIssue Issue { get; }
 
-        public MirrorSetupException(MirrorState state, string message) : base(message) => State = state;
+        public MirrorSetupException(MirrorState state, MirrorIssue issue, string message) : base(message)
+        {
+            State = state;
+            Issue = issue;
+        }
     }
 }

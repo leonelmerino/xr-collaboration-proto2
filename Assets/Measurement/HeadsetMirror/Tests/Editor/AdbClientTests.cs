@@ -85,6 +85,40 @@ namespace XRCollab.Measurement.Mirroring.Tests
             Assert.AreEqual(0, AdbClient.ParseForwards(null).Count);
         }
 
+        private const string ProximityDump =
+            "ucs148c1 Proximity Sensor Wakeup: last 30 events\r\n" +
+            "\t 1 (ts=17526.953717673, wall=14:10:16.144) 0.00, 0.00, 0.00, \r\n" +
+            "\t29 (ts=20255.128445537, wall=14:55:44.310) 0.00, 0.00, 0.00, \r\n" +
+            "\t30 (ts=20260.024543193, wall=14:55:49.210) 1.00, 0.00, 0.00, \r\n" +
+            "Active sensors:\r\n" +
+            "\t 5 (ts=1.0, wall=00:00:00.000) 0.00, 0.00, 0.00, \r\n";
+
+        [Test]
+        public void ParseLastProximity_TakesTheNewestEventOfTheSection()
+        {
+            // Tomado del Focus Vision el 2026-09-29 (pantalla de espera de VIVE: 1.00 = lejos, no puesto).
+            Assert.IsTrue(AdbClient.ParseLastProximity(ProximityDump, out float value));
+            Assert.AreEqual(1f, value);
+        }
+
+        [Test]
+        public void ParseLastProximity_NearValue()
+        {
+            Assert.IsTrue(AdbClient.ParseLastProximity(
+                "Proximity Sensor Wakeup: last 2 events\n\t 1 (ts=1.0, wall=10:00:00.000) 1.00, 0.00, 0.00, \n\t 2 (ts=2.0, wall=10:00:01.000) 0.00, 0.00, 0.00, \n",
+                out float value));
+            Assert.AreEqual(0f, value);
+        }
+
+        [TestCase("")]
+        [TestCase(null)]
+        [TestCase("ucs148c1 Proximity Sensor Wakeup: last 0 events\nActive sensors:\n")]
+        [TestCase("\t 1 (ts=1.0, wall=10:00:00.000) 0.00, 0.00, 0.00, \n")]   // evento fuera de la sección
+        public void ParseLastProximity_NoEvents(string output)
+        {
+            Assert.IsFalse(AdbClient.ParseLastProximity(output, out _));
+        }
+
         [TestCase("  mWakefulness=Awake\n", "Awake")]
         [TestCase("  mWakefulness=Asleep\n  mWakefulnessChanging=false\n", "Asleep")]
         [TestCase("  mWakefulnessChanging=true\n  mWakefulness=Dozing\n", "Dozing")]

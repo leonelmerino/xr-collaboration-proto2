@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace XRCollab.Measurement.Mirroring
@@ -50,6 +51,12 @@ namespace XRCollab.Measurement.Mirroring
 
         private static readonly Regex SizePattern = new Regex(@"(Physical|Override) size:\s*(\d+)x(\d+)", RegexOptions.Compiled);
         private static readonly Regex WakefulnessPattern = new Regex(@"mWakefulness=(\w+)", RegexOptions.Compiled);
+        private static readonly Regex ProximityEventPattern = new Regex(@"^\s*\d+\s+\(ts=[^)]*\)\s*(-?[\d.]+),", RegexOptions.Compiled);
+
+        // Sensor ultrasónico del Focus Vision (ucs148c1): 0.00 = cerca (puesto), 1.00 = lejos. Convención de Android:
+        // la distancia es 0 cuando algo está cerca. Medido el 2026-09-29: 1.00 con la pantalla de espera de VIVE.
+        private const float ProximityNearBelow = 0.5f;
+        private const int ProximityHistoryLines = 31;
 
         public string ExecutablePath { get; }
 
@@ -58,7 +65,7 @@ namespace XRCollab.Measurement.Mirroring
         public IReadOnlyList<AdbDevice> ListDevices()
         {
             ProcessResult r = Run("devices");
-            if (!r.Succeeded) throw new MirrorSetupException(MirrorState.WaitingForDevice, $"adb devices: {r.Summary}");
+            if (!r.Succeeded) throw new MirrorSetupException(MirrorState.WaitingForDevice, MirrorIssue.AdbFailed, $"adb devices: {r.Summary}");
             return ParseDevices(r.Output);
         }
 
@@ -75,6 +82,19 @@ namespace XRCollab.Measurement.Mirroring
             ProcessResult r = Run($"-s {serial} shell \"dumpsys power | grep mWakefulness=\"");
             wakefulness = null;
             return r.Succeeded && ParseWakefulness(r.Output, out wakefulness);
+        }
+
+        /// <summary>
+        /// Si el visor está sobre la cara, según el último evento de su sensor de proximidad. Sin eventos
+        /// (el sensor no cambió desde que arrancó el visor) devuelve false: no se sabe.
+        /// </summary>
+        public bool TryGetOnFace(string serial, out bool onFace)
+        {
+            ProcessResult r = Run($"-s {serial} shell \"dumpsys sensorservice | grep -A {ProximityHistoryLines} 'Proximity Sensor Wakeup: last'\"");
+            onFace = false;
+            if (!r.Succeeded || !ParseLastProximity(r.Output, out float value)) return false;
+            onFace = value < ProximityNearBelow;
+            return true;
         }
 
         public void Push(string serial, string localPath, string remotePath) =>
@@ -128,6 +148,38 @@ namespace XRCollab.Measurement.Mirroring
                 if (parts.Length >= 2) devices.Add(new AdbDevice(parts[0], parts[1]));
             }
             return devices;
+        }
+
+        /// <summary>
+        /// Último valor del historial de <c>dumpsys sensorservice</c> para el sensor de proximidad
+        /// ("N (ts=..., wall=...) 1.00, 0.00, 0.00,"). El historial va del más viejo al más nuevo.
+        /// </summary>
+        public static bool ParseLastProximity(string output, out float value)
+        {
+            value = 0f;
+            bool inHistory = false, found = false;
+            foreach (string raw in (output ?? "").Split('\n'))
+            {
+                string line = raw.TrimEnd('\r');
+                if (line.Contains("Proximity Sensor") && line.Contains(": last"))
+                {
+                    inHistory = true;
+                    continue;
+                }
+                if (!inHistory) continue;
+                Match m = ProximityEventPattern.Match(line);
+                if (!m.Success)
+                {
+                    if (found) break;   // terminó el historial
+                    continue;
+                }
+                if (float.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out float v))
+                {
+                    value = v;
+                    found = true;
+                }
+            }
+            return found;
         }
 
         /// <summary>Línea <c>mWakefulness=Awake</c> de <c>dumpsys power</c> (se ignora <c>mWakefulnessChanging</c>).</summary>

@@ -96,9 +96,14 @@ public class MeasurementMode : MonoBehaviour
         // La ventana del PC queda negra (la sala se compone en el visor): se muestra lo que ve el visor.
         // Flags -nomirror / -mirror-*: Assets/Measurement/HeadsetMirror/README.md
         HeadsetMirrorSettings mirror = HeadsetMirrorSettings.FromCommandLine(Environment.GetCommandLineArgs());
-        if (mirror.enabled) HeadsetMirror.Create(transform, mirror);
+        if (mirror.enabled) HeadsetMirror.Create(transform, mirror, MirrorAppState);
 #endif
     }
+
+    // Lo que la app sabe del lado XR, para que el espejo explique una pantalla negra (visor sin mostrar la app,
+    // passthrough caído).
+    private static AppXrState MirrorAppState() =>
+        new AppXrState(AppXrState.FromSessionState(PassthroughUnderlayFeature.SessionState), PassthroughUnderlayFeature.Problem);
 
     private void ConfigureCamera()
     {

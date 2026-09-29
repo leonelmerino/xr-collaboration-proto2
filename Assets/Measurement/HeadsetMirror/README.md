@@ -38,6 +38,8 @@ scrcpy-server 4.1                         ScrcpyFrameSource (hilo propio)
 | `Capture/ScrcpyFrameSource.cs` | Sesión adb + scrcpy + ffmpeg en su hilo, watchdog de imagen detenida, reconexión con espera creciente. |
 | `Capture/FrameTripleBuffer.cs` | Intercambio de cuadros entre hilos sin copias ni allocations por cuadro. |
 | `Capture/ScrcpyProtocol.cs` | Todo lo que depende de la versión de scrcpy-server, los argumentos de ffmpeg y el tamaño del cuadro. |
+| `Capture/FrameAnalysis.cs` | Detecta cuadros casi negros (grilla de 512 muestras por cuadro). |
+| `Diagnostics/MirrorDiagnosis.cs` | Explica una pantalla negra: estado + imagen + estado XR de la app → aviso. |
 | `Platform/AdbClient.cs` | Comandos de adb y parseo de su salida. |
 | `Platform/ExternalTools.cs` | Ubica adb (siempre el de VIVE Hub) y ffmpeg. |
 | `Platform/ChildProcess.cs` | Procesos sin ventana con salida redirigida. |
@@ -72,9 +74,42 @@ un ojo. Abajo a la derecha se ve el estado: serial del visor y fps, o qué falta
 | `-mirror-bitrate N\|6M\|6000k` | Bitrate H.264 (por defecto 6M). |
 | `-mirror-adb RUTA`, `-mirror-ffmpeg RUTA` | Rutas explícitas. |
 
+## Por qué se ve negro (aviso en pantalla)
+
+Cuando no hay imagen útil, el centro de la ventana dice en blanco **qué pasa** y **qué hacer**, y la imagen que
+quede detrás se oscurece. Lo decide `Diagnostics/MirrorDiagnosis.cs` (función pura, con tests) a partir de
+cuatro fuentes:
+
+1. **El estado del espejo y su causa** (`MirrorIssue`): faltan herramientas, no hay visor, no autorizado, en
+   reposo, se cortó la imagen.
+2. **La imagen misma**: si dejaron de llegar cuadros (≥ 2 s) o si llegan casi negros (≥ 2,5 s, ver
+   `FrameAnalysis`; al ponerse el visor, VIVE hace un fundido desde negro de ~2 s que no debe avisar).
+3. **El sensor de proximidad del visor** (`HeadsetWear`): solo se consulta por adb cuando la imagen se ve
+   mal, cada 2 s como mucho. Es la señal más confiable de «no está puesto»: con el visor en la frente, VIVE
+   Streaming muestra su pantalla de espera pero la sesión XR de la app puede seguir en FOCUSED a 90 fps.
+4. **El lado XR de la app** (opcional, lo entrega `MeasurementMode`): el estado de la sesión OpenXR
+   (`SYNCHRONIZED` = la app corre pero el visor no la muestra) y las fallas reales del passthrough.
+
+| Aviso | Causa | Qué hacer |
+|---|---|---|
+| Falta el adb de VIVE Hub / Falta ffmpeg / El build está incompleto | Herramienta ausente en el PC | Instalar VIVE Hub / `winget install Gyan.FFmpeg` / recompilar |
+| El visor no está conectado por USB | adb no lo ve (cable, o solo Wi-Fi) | Conectar el USB y elegir «VIVE Streaming». No usar puertos Thunderbolt/DP |
+| El visor no autorizó la depuración USB | Diálogo de depuración sin aceptar | Aceptarlo dentro del visor |
+| El visor está en reposo | Nadie lo tiene puesto; pantalla apagada | Ponérselo; vuelve solo |
+| **El visor no está puesto** | El sensor de proximidad dice que no está sobre la cara (en la frente o en la mesa): VIVE Streaming muestra su pantalla de espera | Ponérselo bien sobre los ojos |
+| **El visor pausó la imagen** | Visor en la frente o sacado, o menú del visor en primer plano: VIVE Streaming pausa y la app baja a ~20 fps | Ponérselo bien sobre los ojos |
+| El visor dejó de enviar imagen | Sin cuadros ≥ 2 s con la app visible | Espera; si se durmió o se desconectó, se recupera solo |
+| El passthrough no está funcionando | Falla real de `PassthroughUnderlayFeature` | USB (no DP), «MR with passthrough» activado |
+| El visor muestra negro | Cuadros negros sin otra causa conocida (si el sensor dice «puesto», el problema es del streaming) | USB (no DP), «MR with passthrough», visor bien puesto |
+| Se cortó la imagen / Conectando… | Reconexión en curso | Nada: se recupera solo |
+| Espejo oculto | Se apretó F5 | F5 |
+
+Con la imagen dejando de llegar, el watchdog consulta a los 2 s si el visor se durmió y corta la sesión de
+inmediato (sin esperar el timeout de 10 s), así el aviso pasa rápido a «en reposo».
+
 ## Estados y problemas
 
-| Estado en pantalla | Qué hacer |
+| Estado en la línea de abajo a la derecha | Qué hacer |
 |---|---|
 | `no está el adb de VIVE Hub` | Instalar VIVE Hub. |
 | `no está ffmpeg` | `winget install Gyan.FFmpeg` y reiniciar la app. |

@@ -21,6 +21,7 @@ namespace XRCollab.Measurement.Mirroring
     /// se detiene más de <see cref="HeadsetMirrorSettings.stallTimeoutSeconds"/>, se desarma y se reintenta
     /// con espera creciente. La imagen es la pantalla física del visor: sala de las cámaras a color más la capa
     /// de la app, tal como la ve el participante. No pasa por VIVE Streaming ni toca los loggers.
+    /// Cada estado lleva su causa (<see cref="MirrorIssue"/>), que <see cref="MirrorDiagnosis"/> traduce a un aviso.
     /// </summary>
     public sealed class ScrcpyFrameSource : IHeadsetFrameSource
     {
@@ -37,6 +38,7 @@ namespace XRCollab.Measurement.Mirroring
         private readonly AutoResetEvent _wake = new AutoResetEvent(false);
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private readonly object _sessionGate = new object();
+        private readonly HashSet<string> _cleanedSerials = new HashSet<string>();
 
         private Thread _thread;
         private Timer _watchdog;
@@ -44,9 +46,16 @@ namespace XRCollab.Measurement.Mirroring
         private volatile MirrorStatus _status = MirrorStatus.Stopped;
         private volatile FrameTripleBuffer _frames;
         private long _framesReceived;
-        private long _lastProgressTicks;
         private bool _warnedMultipleDevices;
-        private readonly HashSet<string> _cleanedSerials = new HashSet<string>();
+
+        // Marcas de tiempo en ticks de _clock (0 = no hay). Se leen desde otros hilos con Interlocked.
+        private long _lastProgressTicks;   // último avance de la sesión (conectar o recibir cuadro): watchdog
+        private long _lastFrameTicks;      // último cuadro de la sesión actual
+        private long _darkSinceTicks;      // inicio de la racha actual de cuadros negros
+        private long _sleepProbedAtFrameTicks;
+        private long _wearProbedTicks;
+        private volatile HeadsetWear _wear = HeadsetWear.Unknown;
+        private int _watchdogBusy;
 
         // Recursos de la sesión en curso; se liberan en EndSession (también desde Stop, en otro hilo).
         private AdbClient _sessionAdb;
@@ -69,14 +78,18 @@ namespace XRCollab.Measurement.Mirroring
         public MirrorStatus Status => _status;
         public FrameTripleBuffer Frames => _frames;
         public long FramesReceived => Interlocked.Read(ref _framesReceived);
+        public double SecondsSinceLastFrame => SecondsSince(Interlocked.Read(ref _lastFrameTicks), double.PositiveInfinity);
+        public double SecondsDark => SecondsSince(Interlocked.Read(ref _darkSinceTicks), 0);
+        public HeadsetWear Wear => _wear;
 
         public void Start()
         {
             if (_thread != null) return;
             _stopping = false;
+            _status = new MirrorStatus(MirrorState.Connecting, MirrorIssue.None, "iniciando");   // no mostrar "detenido" al arrancar
             _thread = new Thread(RunLoop) { IsBackground = true, Name = "HeadsetMirror capture" };
             _thread.Start();
-            _watchdog = new Timer(_ => CheckForStall(), null, 1000, 1000);
+            _watchdog = new Timer(_ => Watchdog(), null, 1000, 1000);
         }
 
         public void Stop()
@@ -113,12 +126,12 @@ namespace XRCollab.Measurement.Mirroring
                 }
                 catch (MirrorSetupException e)
                 {
-                    SetStatus(e.State, e.Message);
+                    SetStatus(e.State, e.Issue, e.Message);
                 }
                 catch (Exception e) when (!_stopping)
                 {
-                    _log($"falló la sesión: {e.Message}");
-                    SetStatus(MirrorState.Reconnecting, e.Message);
+                    _log($"falló la sesión ({e.GetType().Name})");
+                    SetStatus(MirrorState.Reconnecting, MirrorIssue.SessionFailed, e.Message);
                 }
                 catch (Exception)
                 {
@@ -144,12 +157,13 @@ namespace XRCollab.Measurement.Mirroring
         private bool RunSession()
         {
             string adbPath = ExternalTools.FindAdb(_settings.adbPath)
-                ?? throw new MirrorSetupException(MirrorState.MissingTools,
+                ?? throw new MirrorSetupException(MirrorState.MissingTools, MirrorIssue.AdbMissing,
                     string.IsNullOrEmpty(_settings.adbPath) ? "no está el adb de VIVE Hub (instalar VIVE Hub)" : $"no existe {_settings.adbPath}");
             string ffmpegPath = ExternalTools.FindFfmpeg(_settings.ffmpegPath)
-                ?? throw new MirrorSetupException(MirrorState.MissingTools, "no está ffmpeg (winget install Gyan.FFmpeg)");
+                ?? throw new MirrorSetupException(MirrorState.MissingTools, MirrorIssue.FfmpegMissing, "no está ffmpeg (winget install Gyan.FFmpeg)");
             if (!File.Exists(_serverAssetPath))
-                throw new MirrorSetupException(MirrorState.MissingTools, $"falta StreamingAssets/{ScrcpyProtocol.ServerAssetPath}");
+                throw new MirrorSetupException(MirrorState.MissingTools, MirrorIssue.ServerAssetMissing,
+                    $"falta StreamingAssets/{ScrcpyProtocol.ServerAssetPath}");
 
             var adb = new AdbClient(adbPath);
             string serial = PickDevice(adb.ListDevices());
@@ -157,9 +171,10 @@ namespace XRCollab.Measurement.Mirroring
             // En reposo la pantalla del visor no produce cuadros: se espera aquí, sin arrancar servidor ni ffmpeg.
             // Si no se puede leer el estado se intenta igual (el watchdog cubre el caso).
             if (adb.TryGetWakefulness(serial, out string wakefulness) && wakefulness != "Awake")
-                throw new MirrorSetupException(MirrorState.DeviceAsleep, $"visor en reposo ({wakefulness}): ponérselo para ver la imagen");
+                throw new MirrorSetupException(MirrorState.DeviceAsleep, MirrorIssue.DeviceAsleep,
+                    $"visor en reposo ({wakefulness}): ponérselo para ver la imagen");
 
-            SetStatus(MirrorState.Connecting, "conectando", serial);
+            SetStatus(MirrorState.Connecting, MirrorIssue.None, "conectando", serial);
             MarkProgress();
 
             (int width, int height) = adb.TryGetDisplaySize(serial, out int displayW, out int displayH)
@@ -208,17 +223,27 @@ namespace XRCollab.Measurement.Mirroring
             {
                 if (!ReadExactly(stdout, frames.Back, frames.FrameBytes))
                 {
-                    if (!_stopping) SetStatus(MirrorState.Reconnecting, any ? "se cortó la imagen" : "el visor no envió imagen", serial);
+                    if (!_stopping)
+                    {
+                        if (any) SetStatus(MirrorState.Reconnecting, MirrorIssue.StreamCut, "se cortó la imagen", serial);
+                        else SetStatus(MirrorState.Reconnecting, MirrorIssue.NoImage, "el visor no envió imagen", serial);
+                    }
                     return any;
                 }
+                long now = _clock.ElapsedTicks;
+                bool dark = FrameAnalysis.IsDark(frames.Back, frames.Width, frames.Height);
+                if (!dark) Interlocked.Exchange(ref _darkSinceTicks, 0);
+                else if (Interlocked.Read(ref _darkSinceTicks) == 0) Interlocked.Exchange(ref _darkSinceTicks, now);
+
                 frames.Publish();
                 Interlocked.Increment(ref _framesReceived);
+                Interlocked.Exchange(ref _lastFrameTicks, now);
                 MarkProgress();
                 if (!any)
                 {
                     any = true;
                     _frames = frames;
-                    SetStatus(MirrorState.Streaming, $"{frames.Width}x{frames.Height}", serial);
+                    SetStatus(MirrorState.Streaming, MirrorIssue.None, $"{frames.Width}x{frames.Height}", serial);
                 }
             }
             return any;
@@ -230,7 +255,7 @@ namespace XRCollab.Measurement.Mirroring
             if (!string.IsNullOrEmpty(_settings.deviceSerial))
             {
                 if (ready.Any(d => d.Serial == _settings.deviceSerial)) return _settings.deviceSerial;
-                throw new MirrorSetupException(MirrorState.WaitingForDevice, $"no está el visor {_settings.deviceSerial}");
+                throw new MirrorSetupException(MirrorState.WaitingForDevice, MirrorIssue.DeviceNotFound, $"no está el visor {_settings.deviceSerial}");
             }
             if (ready.Count > 0)
             {
@@ -242,8 +267,8 @@ namespace XRCollab.Measurement.Mirroring
                 return ready[0].Serial;
             }
             if (devices.Any(d => d.IsUnauthorized))
-                throw new MirrorSetupException(MirrorState.WaitingForDevice, "aceptar la depuración USB en el visor");
-            throw new MirrorSetupException(MirrorState.WaitingForDevice, "conectar el visor por USB");
+                throw new MirrorSetupException(MirrorState.WaitingForDevice, MirrorIssue.DeviceUnauthorized, "aceptar la depuración USB en el visor");
+            throw new MirrorSetupException(MirrorState.WaitingForDevice, MirrorIssue.NoDevice, "conectar el visor por USB");
         }
 
         // ---------------- sesión: procesos y limpieza ----------------
@@ -305,6 +330,9 @@ namespace XRCollab.Measurement.Mirroring
                 _sessionPort = 0;
             }
             _frames = null;   // sin imagen vieja en pantalla mientras se reconecta
+            Interlocked.Exchange(ref _lastFrameTicks, 0);
+            Interlocked.Exchange(ref _darkSinceTicks, 0);
+            _wear = HeadsetWear.Unknown;
             decoder?.Dispose();
             server?.Dispose();
             if (adb != null && port != 0)
@@ -314,29 +342,112 @@ namespace XRCollab.Measurement.Mirroring
             }
         }
 
-        // ---------------- watchdog ----------------
+        // ---------------- watchdog (hilo del Timer, una vez por segundo) ----------------
 
         private void MarkProgress() => Interlocked.Exchange(ref _lastProgressTicks, _clock.ElapsedTicks);
 
-        private void CheckForStall()
+        private void Watchdog()
         {
-            MirrorState state = _status.State;
-            if (_stopping || (state != MirrorState.Connecting && state != MirrorState.Streaming)) return;
-            double idleSeconds = (_clock.ElapsedTicks - Interlocked.Read(ref _lastProgressTicks)) / (double)Stopwatch.Frequency;
-            if (idleSeconds < _settings.stallTimeoutSeconds) return;
-            _log($"sin imagen hace {idleSeconds:0} s: se reinicia la sesión");
-            MarkProgress();   // un solo aviso por corte
-            KillSessionProcesses();
+            // El Timer puede disparar de nuevo mientras una consulta a adb sigue corriendo.
+            if (Interlocked.Exchange(ref _watchdogBusy, 1) == 1) return;
+            try
+            {
+                MirrorState state = _status.State;
+                if (_stopping || (state != MirrorState.Connecting && state != MirrorState.Streaming))
+                {
+                    _wear = HeadsetWear.Unknown;
+                    return;
+                }
+
+                UpdateWear(state);
+
+                // Imagen detenida hace poco: si el visor se durmió (se lo sacaron), se corta ya en vez de esperar el
+                // timeout; la próxima sesión queda en DeviceAsleep hasta que se lo pongan. Una consulta por corte.
+                long lastFrame = Interlocked.Read(ref _lastFrameTicks);
+                if (state == MirrorState.Streaming && lastFrame != 0 && lastFrame != Interlocked.Read(ref _sleepProbedAtFrameTicks) &&
+                    SecondsSince(lastFrame, 0) >= MirrorDiagnosis.StalledAfterSeconds)
+                {
+                    Interlocked.Exchange(ref _sleepProbedAtFrameTicks, lastFrame);
+                    if (HeadsetFellAsleep(out string wakefulness))
+                    {
+                        _log($"el visor entró en reposo ({wakefulness}): se corta la sesión");
+                        KillSessionProcesses();
+                        return;
+                    }
+                }
+
+                double idle = SecondsSince(Interlocked.Read(ref _lastProgressTicks), 0);
+                if (idle < _settings.stallTimeoutSeconds) return;
+                _log($"sin imagen hace {idle:0} s: se reinicia la sesión");
+                MarkProgress();   // un solo aviso por corte
+                KillSessionProcesses();
+            }
+            catch (Exception e)
+            {
+                _log($"watchdog: {e.Message}");
+            }
+            finally
+            {
+                Volatile.Write(ref _watchdogBusy, 0);
+            }
+        }
+
+        /// <summary>
+        /// Con la imagen negra o detenida se pregunta al sensor de proximidad si el visor está puesto (cada 2 s como
+        /// mucho). Con el visor en la frente, VIVE Streaming muestra su pantalla de espera y la sesión XR de la app
+        /// puede seguir en FOCUSED a 90 fps, así que el estado XR solo no alcanza para saberlo (visto el 2026-09-29).
+        /// </summary>
+        private void UpdateWear(MirrorState state)
+        {
+            long lastFrame = Interlocked.Read(ref _lastFrameTicks);
+            bool looksWrong = state == MirrorState.Streaming &&
+                              (SecondsDark >= 1.0 || (lastFrame != 0 && SecondsSince(lastFrame, 0) >= 1.0));
+            if (!looksWrong)
+            {
+                _wear = HeadsetWear.Unknown;
+                return;
+            }
+            if (SecondsSince(Interlocked.Read(ref _wearProbedTicks), double.PositiveInfinity) < 2.0) return;
+            Interlocked.Exchange(ref _wearProbedTicks, _clock.ElapsedTicks);
+
+            AdbClient adb;
+            string serial;
+            lock (_sessionGate)
+            {
+                adb = _sessionAdb;
+                serial = _sessionSerial;
+            }
+            HeadsetWear wear = adb != null && adb.TryGetOnFace(serial, out bool onFace)
+                ? (onFace ? HeadsetWear.OnFace : HeadsetWear.OffFace)
+                : HeadsetWear.Unknown;
+            if (wear != _wear && wear != HeadsetWear.Unknown) _log($"visor {(wear == HeadsetWear.OnFace ? "puesto" : "no puesto")} (sensor de proximidad)");
+            _wear = wear;
+        }
+
+        private bool HeadsetFellAsleep(out string wakefulness)
+        {
+            AdbClient adb;
+            string serial;
+            lock (_sessionGate)
+            {
+                adb = _sessionAdb;
+                serial = _sessionSerial;
+            }
+            wakefulness = null;
+            return adb != null && adb.TryGetWakefulness(serial, out wakefulness) && wakefulness != "Awake";
         }
 
         // ---------------- utilidades ----------------
 
-        private void SetStatus(MirrorState state, string detail, string serial = null)
+        private double SecondsSince(long ticks, double whenUnset) =>
+            ticks == 0 ? whenUnset : (_clock.ElapsedTicks - ticks) / (double)Stopwatch.Frequency;
+
+        private void SetStatus(MirrorState state, MirrorIssue issue, string detail, string serial = null)
         {
-            var next = new MirrorStatus(state, detail, serial);
+            var next = new MirrorStatus(state, issue, detail, serial);
             MirrorStatus previous = _status;
             _status = next;
-            if (previous.State != state || previous.Detail != next.Detail) _log(next.ToString());
+            if (previous.State != state || previous.Issue != issue || previous.Detail != next.Detail) _log(next.ToString());
         }
 
         /// <summary>Reenvía las líneas de un proceso al log, con tope por sesión (ffmpeg puede repetir errores al cortarse).</summary>

@@ -47,6 +47,13 @@ public class PassthroughUnderlayFeature : OpenXRFeature
     /// <summary>Estado legible para la pantalla del PC.</summary>
     public static string Status { get; private set; } = "sin sesión XR";
     public static bool IsShowing { get; private set; }
+    /// <summary>Falla real del passthrough (extensión ausente, creación o envío fallidos), o null. Arrancar no cuenta como falla.</summary>
+    public static string Problem { get; private set; }
+    /// <summary>
+    /// Último XrSessionState de la sesión (1 IDLE, 2 READY, 3 SYNCHRONIZED, 4 VISIBLE, 5 FOCUSED, 6 STOPPING…); 0 sin sesión.
+    /// SYNCHRONIZED = la app corre pero el visor no la muestra (visor en la frente, menú del visor): lo usa el espejo del visor.
+    /// </summary>
+    public static int SessionState { get; private set; }
 
     // --- OpenXR (layouts del spec, 64 bits) ---
     private const int XR_TYPE_COMPOSITION_LAYER_PROJECTION = 35;
@@ -84,6 +91,8 @@ public class PassthroughUnderlayFeature : OpenXRFeature
     private static IntPtr s_layer = IntPtr.Zero;          // XrCompositionLayerPassthroughHTC, unmanaged
     private static IntPtr s_layers = IntPtr.Zero;         // layer pointer array we submit instead of Unity's
     private const int MaxLayers = 16;
+    private const int RetryEveryFrames = 90;
+    private const int XrSessionStateFocused = 5;
     private static int s_createAttempts;
     private static int s_framesSinceAttempt;
     private static bool s_loggedFirstFrame;
@@ -100,7 +109,7 @@ public class PassthroughUnderlayFeature : OpenXRFeature
         s_instance = xrInstance;
         if (!OpenXRRuntime.IsExtensionEnabled("XR_HTC_passthrough"))
         {
-            Status = "XR_HTC_passthrough no disponible (¿VIVE Streaming conectado?)";
+            Problem = Status = "XR_HTC_passthrough no disponible (¿VIVE Streaming conectado?)";
             Debug.LogWarning("[PassthroughUnderlay] " + Status);
         }
         return true;
@@ -108,10 +117,18 @@ public class PassthroughUnderlayFeature : OpenXRFeature
 
     protected override void OnSessionCreate(ulong xrSession) { s_session = xrSession; Status = "sesión XR creada"; }
 
+    protected override void OnSessionStateChange(int oldState, int newState)
+    {
+        SessionState = newState;
+        // FOCUSED = alguien se puso el visor: si el passthrough aún no existe, se intenta en el próximo cuadro.
+        if (newState == XrSessionStateFocused && s_passthrough == 0) s_framesSinceAttempt = RetryEveryFrames;
+    }
+
     protected override void OnSessionDestroy(ulong xrSession)
     {
         DestroyPassthrough();
         s_session = 0;
+        SessionState = 0;
         Status = "sesión XR cerrada";
     }
 
@@ -150,13 +167,16 @@ public class PassthroughUnderlayFeature : OpenXRFeature
         return true;
     }
 
+    // Sin tope de intentos: si la app arranca con el visor en reposo (autostart, Start-LabSession), VIVE Streaming
+    // todavía no expone el passthrough y xrCreatePassthroughHTC devuelve XR_ERROR_FUNCTION_UNSUPPORTED hasta que
+    // alguien se pone el visor. Con el tope anterior (30 intentos) el passthrough podía no aparecer nunca.
     private static void TryCreatePassthrough()
     {
-        if (s_passthrough != 0 || s_session == 0 || s_createAttempts >= 30) return;
-        if (++s_framesSinceAttempt < 90 && s_createAttempts > 0) return;   // reintenta ~1 vez por segundo
+        if (s_passthrough != 0 || s_session == 0) return;
+        if (++s_framesSinceAttempt < RetryEveryFrames && s_createAttempts > 0) return;   // ~1 s a 90 fps, ~4 s a 20 fps
         s_framesSinceAttempt = 0;
         s_createAttempts++;
-        if (!ResolveFunctions()) { Status = $"xrCreatePassthroughHTC no disponible (intento {s_createAttempts})"; return; }
+        if (!ResolveFunctions()) { Problem = Status = $"xrCreatePassthroughHTC no disponible (intento {s_createAttempts})"; return; }
         var info = new PassthroughCreateInfo { type = XR_TYPE_PASSTHROUGH_CREATE_INFO_HTC, next = IntPtr.Zero, form = XR_PASSTHROUGH_FORM_PLANAR_HTC };
         XrResult res = s_create(s_session, ref info, out ulong handle);
         if (res == XrResult.XR_SUCCESS && handle != 0)
@@ -165,12 +185,13 @@ public class PassthroughUnderlayFeature : OpenXRFeature
             if (s_layer == IntPtr.Zero) s_layer = Marshal.AllocHGlobal(Marshal.SizeOf<CompositionLayerPassthrough>());
             if (s_layers == IntPtr.Zero) s_layers = Marshal.AllocHGlobal(IntPtr.Size * MaxLayers);
             Status = "ON";
+            Problem = null;
             Debug.Log($"[PassthroughUnderlay] xrCreatePassthroughHTC OK (handle 0x{handle:X}).");
         }
         else
         {
-            Status = $"xrCreatePassthroughHTC falló: {res} (intento {s_createAttempts})";
-            Debug.LogWarning("[PassthroughUnderlay] " + Status);
+            Problem = Status = $"xrCreatePassthroughHTC falló: {res} (intento {s_createAttempts})";
+            if (s_createAttempts <= 3 || s_createAttempts % 30 == 0) Debug.LogWarning("[PassthroughUnderlay] " + Status);
         }
     }
 
@@ -240,7 +261,7 @@ public class PassthroughUnderlayFeature : OpenXRFeature
             s_loggedFirstFrame = true;
             Debug.Log($"[PassthroughUnderlay] primer frame con passthrough: {count + 1} capas, xrEndFrame={res}");
         }
-        else if (!IsShowing) Status = $"xrEndFrame con passthrough devolvió {res}";
+        else if (!IsShowing) Problem = Status = $"xrEndFrame con passthrough devolvió {res}";
         return res;
     }
 }
