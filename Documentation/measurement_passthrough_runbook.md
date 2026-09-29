@@ -52,6 +52,10 @@ EyeTrackingLogs\{participantId}\{sessionId}\          (hoy P001\S001 en todos lo
     {taskId}_{trialId}_{NNN}_body.csv                 cabeza, manos (y trackers), ~90 Hz
     {taskId}_{trialId}_{nodeId}_{NNN}_events.csv      eventos del experimento y sync de reloj (nodeId p. ej. VR_HOST)
 NetworkAudit\network_audit_{yyyyMMdd_HHmmss}.csv      host/cliente, conexiones, fallos de transporte
+Recordings\{yyyyMMdd_HHmmss}_{PC}\                    video de respaldo de la ventana del PC (ver abajo)
+    segments\seg_00000.ts ...                         pedazos de 60 s (se conservan siempre)
+    {yyyyMMdd_HHmmss}_{PC}.mp4                        video completo (al cerrar normal, o al próximo arranque)
+    session.json                                      inicio UTC/local, encoder, closedCleanly
 Player.log / Player-prev.log                          log de Unity (sesión actual / anterior)
 acquisition_mock_log.txt                              solo si corre el mock de adquisición
 ```
@@ -59,7 +63,8 @@ acquisition_mock_log.txt                              solo si corre el mock de a
 - `NNN` sube en cada ejecución (001, 002, …); nunca se sobrescribe.
 - La ruta exacta de cada PC aparece en la pantalla, en el recuadro `MODO MEDICIÓN`.
 - **Cerrar con Alt+F4** (o `Start-LabSession.ps1 <pc> -Stop`): los CSV se cierran en `OnApplicationQuit`. Matar el proceso puede dejar la última parte sin escribir.
-- Verificación de solo lectura (¿se creó?, ¿tiene datos?, ¿se ve razonable?): `dictuc\tools\lab-remote\Check-LabTelemetry.ps1`.
+- Verificación de solo lectura (¿se creó?, ¿tiene datos?, ¿se ve razonable?): `dictuc\tools\lab-remote\Check-LabTelemetry.ps1` (`-LastSeconds 60` para mirar solo el último minuto).
+- **Video de respaldo:** cada apertura de la app graba la ventana del PC tal como se ve (espejo del visor, HUDs, avisos, y arriba la hora UTC y local con milisegundos más el número de cuadro, para alinear con `timestamp_utc_iso`). H.264 por GPU (NVENC; en STIMULUS2, QuickSync), ~3 Mbit/s. `-norecord` la desactiva. Detalle: `Assets/Measurement/SessionRecording/README.md`.
 
 **Valores de referencia (STIMULUS1, 2026-09-24, USB, passthrough visible):** gaze y body a **89,9 Hz**, tiempos siempre crecientes, cuaterniones y direcciones de mirada unitarios, manos válidas **91–94 %**, `is_calibrated = 0` (esperado). La mirada solo es válida con el visor bien puesto: en ventanas de 10 s con el visor puesto, 64–82 % válida; con el visor en la frente, 0 %.
 
