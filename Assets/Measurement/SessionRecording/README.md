@@ -9,7 +9,7 @@ registran siempre mientras la app está abierta, se grabe video o no. El video e
 
 ## Control desde afuera (iniciar / detener)
 
-La app abre **en espera** (barra gris `REC en espera`) y no tiene lógica de laboratorio, red ni SSH. Escucha
+La app abre **en espera** (barra gris `VIDEO sin grabar`: no se graba video; la telemetría sí) y no tiene lógica de laboratorio, red ni SSH. Escucha
 órdenes de una línea **solo en `127.0.0.1:47811`** (`RecordingControlServer`) y responde una línea JSON:
 
 ```
@@ -21,7 +21,7 @@ mark  texto libre
 
 - `at` es una hora **UTC** absoluta: varios PCs con el reloj sincronizado (NTP) empiezan en el mismo instante
   aunque la orden les llegue con distinta demora. Sin `at`, corre apenas llega. Mientras espera la hora, la barra
-  dice `REC empieza en 2.3 s` en amarillo.
+  dice `VIDEO empieza en 2.3 s` en amarillo; grabando, `REC 00:00:01` en rojo.
 - Cada `start` crea su carpeta. `stop` cierra el último segmento **sin frenar la app** (lo hace un hilo aparte) y
   arma el `.mp4`. Se puede volver a hacer `start` después.
 - Herramientas del laboratorio (fuera de la app): `tools\lab-remote\Send-RecordingCommand.ps1` (una orden a la

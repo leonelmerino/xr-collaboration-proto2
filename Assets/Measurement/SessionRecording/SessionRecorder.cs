@@ -378,17 +378,18 @@ namespace XRCollab.Measurement.Recording
 
         private string StateText(DateTime utc)
         {
-            if (_unavailable != null) return $"<color=#ffb040>REC no disponible: {_unavailable}</color>";
-            if (_probe.Ready.IsSet && !_probe.Ok) return $"<color=#ffb040>REC no disponible: {_probe.Error}</color>";
+            if (_unavailable != null) return $"<color=#ffb040>VIDEO no disponible: {_unavailable}</color>";
+            if (_probe.Ready.IsSet && !_probe.Ok) return $"<color=#ffb040>VIDEO no disponible: {_probe.Error}</color>";
             RecordingRun run = _run;
             if (run == null)
             {
+                // Sin «REC» a la vista: en espera no se graba video (la telemetría sí se registra igual).
                 bool closing = _previous != null && !_previous.Finished;
-                return closing ? "<color=#c0c0c0>REC en espera · cerrando la grabación anterior</color>" : "<color=#c0c0c0>REC en espera</color>";
+                return closing ? "<color=#c0c0c0>VIDEO detenido · terminando el archivo anterior</color>" : "<color=#c0c0c0>VIDEO sin grabar</color>";
             }
             string label = string.IsNullOrEmpty(run.Label) ? "" : " · " + run.Label;
-            if (run.Failed) return $"<color=#ffb040>REC detenido: {run.Status}</color>{label}";
-            if (utc < run.StartAtUtc) return $"<color=#ffd040>REC empieza en {(run.StartAtUtc - utc).TotalSeconds:F1} s</color>{label}";
+            if (run.Failed) return $"<color=#ffb040>VIDEO detenido por error: {run.Status}</color>{label}";
+            if (utc < run.StartAtUtc) return $"<color=#ffd040>VIDEO empieza en {(run.StartAtUtc - utc).TotalSeconds:F1} s</color>{label}";
             DateTime? first = run.FirstFrameUtc;
             double elapsed = first.HasValue ? (utc - first.Value).TotalSeconds : 0;
             return $"<color=#ff5050>REC</color> {FormatElapsed(elapsed)} · {_bytesOnDisk / (1024 * 1024)} MB · {_probe.Codec}{label}";
