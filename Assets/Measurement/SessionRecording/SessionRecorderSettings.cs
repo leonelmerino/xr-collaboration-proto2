@@ -15,13 +15,22 @@ namespace XRCollab.Measurement.Recording
 
     /// <summary>
     /// Configuración de la grabación de la ventana del PC. Los valores por defecto sirven en el laboratorio; cada uno
-    /// se puede cambiar al lanzar el build: <c>-norecord</c>, <c>-rec-fps N</c>, <c>-rec-width N</c>,
-    /// <c>-rec-segment S</c>, <c>-rec-encoder nvenc|qsv|x264</c>, <c>-rec-dir RUTA</c>, <c>-rec-ffmpeg RUTA</c>.
+    /// se puede cambiar al lanzar el build: <c>-norecord</c>, <c>-rec-auto</c>, <c>-rec-control-port N</c>,
+    /// <c>-rec-nocontrol</c>, <c>-rec-fps N</c>, <c>-rec-width N</c>, <c>-rec-segment S</c>,
+    /// <c>-rec-encoder nvenc|qsv|x264</c>, <c>-rec-dir RUTA</c>, <c>-rec-ffmpeg RUTA</c>.
     /// </summary>
     [Serializable]
     public sealed class SessionRecorderSettings
     {
+        public const int DefaultControlPort = 47811;
+
         public bool enabled = true;
+
+        [Tooltip("Grabar apenas abre la app (-rec-auto). Si no, espera un «start» por el puerto de control.")]
+        public bool autoStart = false;
+
+        [Tooltip("Puerto TCP de control en 127.0.0.1 (-rec-control-port). 0 = sin control externo (-rec-nocontrol).")]
+        public int controlPort = DefaultControlPort;
 
         [Tooltip("Cuadros por segundo del video (-rec-fps).")]
         public int fps = 30;
@@ -47,6 +56,7 @@ namespace XRCollab.Measurement.Recording
             fps = Mathf.Clamp(fps, 5, 60);
             width = Mathf.Clamp(width, 640, 3840) & ~1;
             segmentSeconds = Mathf.Clamp(segmentSeconds, 10, 600);
+            if (controlPort < 0 || controlPort > 65535) controlPort = DefaultControlPort;
             outputRoot = outputRoot?.Trim() ?? "";
             ffmpegPath = ffmpegPath?.Trim() ?? "";
         }
@@ -61,6 +71,9 @@ namespace XRCollab.Measurement.Recording
                 switch (args[i].ToLowerInvariant())
                 {
                     case "-norecord": s.enabled = false; break;
+                    case "-rec-auto": s.autoStart = true; break;
+                    case "-rec-nocontrol": s.controlPort = 0; break;
+                    case "-rec-control-port": if (TryInt(value, ref s.controlPort)) i++; break;
                     case "-rec-fps": if (TryInt(value, ref s.fps)) i++; break;
                     case "-rec-width": if (TryInt(value, ref s.width)) i++; break;
                     case "-rec-segment": if (TryInt(value, ref s.segmentSeconds)) i++; break;

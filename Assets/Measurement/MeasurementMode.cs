@@ -15,7 +15,8 @@ using XRCollab.Measurement.Recording;
 ///      capa inferior en cada frame (ahí se explica por qué no se usan las features de passthrough
 ///      de VIVE: una congela la app junto al Eye Tracker en Mono y la otra nunca envía la capa).
 ///   4. En la ventana del PC muestra lo que ve el visor (HeadsetMirror, Assets/Measurement/HeadsetMirror).
-///   5. Graba esa ventana en video como respaldo (SessionRecorder, Assets/Measurement/SessionRecording).
+///   5. Deja lista la grabación en video de esa ventana (SessionRecorder, Assets/Measurement/SessionRecording):
+///      espera un «start» desde afuera (127.0.0.1:47811, tools\lab-remote\Lab-Recording.ps1); -rec-auto graba al abrir.
 /// Los loggers de mirada y cuerpo, los eventos y la sincronía de reloj siguen corriendo.
 ///
 /// Encendido por defecto en este branch. Para volver a VR:

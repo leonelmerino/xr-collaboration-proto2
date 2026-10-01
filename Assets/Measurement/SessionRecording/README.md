@@ -2,58 +2,89 @@
 
 Respaldo en video de cada sesión: graba la ventana del PC **tal como se ve**. Incluye el espejo del visor, los HUD,
 los avisos en blanco y una barra arriba con **la hora UTC y local con milisegundos** y el número de cuadro de
-Unity, para sincronizar con la telemetría (`timestamp_utc_iso` de los CSV). Graba también con el visor sacado o
-desconectado: la ventana se graba igual.
+Unity. Graba también con el visor sacado o desconectado: la ventana se graba igual.
+
+**La telemetría no depende de esto.** Mirada, cabeza, manos, eventos, auditoría de red y sincronía de reloj se
+registran siempre mientras la app está abierta, se grabe video o no. El video es solo un respaldo.
+
+## Control desde afuera (iniciar / detener)
+
+La app abre **en espera** (barra gris `REC en espera`) y no tiene lógica de laboratorio, red ni SSH. Escucha
+órdenes de una línea **solo en `127.0.0.1:47811`** (`RecordingControlServer`) y responde una línea JSON:
+
+```
+status
+start [label=S01] [at=2026-10-01T18:00:05.000Z]
+stop  [at=2026-10-01T18:40:00.000Z]
+mark  texto libre
+```
+
+- `at` es una hora **UTC** absoluta: varios PCs con el reloj sincronizado (NTP) empiezan en el mismo instante
+  aunque la orden les llegue con distinta demora. Sin `at`, corre apenas llega. Mientras espera la hora, la barra
+  dice `REC empieza en 2.3 s` en amarillo.
+- Cada `start` crea su carpeta. `stop` cierra el último segmento **sin frenar la app** (lo hace un hilo aparte) y
+  arma el `.mp4`. Se puede volver a hacer `start` después.
+- Herramientas del laboratorio (fuera de la app): `tools\lab-remote\Send-RecordingCommand.ps1` (una orden a la
+  app de este PC), `Lab-Recording.ps1` (los 3 PCs a la vez, por SSH, con hora común) y `Lab-RecordingConsole.ps1`
+  (consola de una tecla en WezTerm; acceso directo «XR Grabación (sesión)» en el escritorio).
+- `-rec-auto` graba desde que abre la app (comportamiento anterior). `-rec-nocontrol` apaga el puerto.
 
 ## Flujo
 
 ```
-fin de cada cuadro (30 fps)                       hilo del encoder                    disco
+fin de cada cuadro (30 fps)                       hilo de la grabación                disco
 ScreenCapture → RenderTexture → escalado (GPU)     cuadros RGBA → ffmpeg (stdin)       segments/seg_00000.ts (60 s)
-  → AsyncGPUReadback (no bloquea)  ─cola (8)─►        H.264 NVENC / QuickSync / x264     segments/seg_00001.ts ...
+  → AsyncGPUReadback (no bloquea)  ─cola (8)─►        H.264 NVENC / QuickSync / x264     frames.csv (UTC por cuadro)
 ```
 
-- **Encoder:** prueba en orden `h264_nvenc` (GPU NVIDIA), `h264_qsv` (GPU Intel) y `libx264` (CPU), y usa el
-  primero que funcione en ese PC. El 2026-09-29, STIMULUS1 y STIMULUS3 usaban NVENC; STIMULUS2 tiene un driver
-  NVIDIA más viejo que el que pide este ffmpeg (≥ 610) y cae a QuickSync.
-- **Segmentos MPEG-TS de 60 s:** si el visor se desconecta, la app se cierra de golpe o se cuelga, se pierde como
-  mucho el final del segmento en curso. Los segmentos se conservan siempre.
-- **Video final:** al cerrar la app normal (X, Alt+F4, `Start-LabSession -Stop`) se unen los segmentos en un
-  `.mp4` sin recodificar (segundos), en un proceso aparte que sigue aunque la app ya se cerró. Si la app murió de
-  golpe, el `.mp4` se arma **al próximo arranque**.
-- Cada cuadro se marca con la hora real de llegada: si la app baja de fps (visor en la frente, ~20 fps), el video
-  conserva el tiempo real.
+- **Encoder:** se elige una vez al abrir la app (en segundo plano), probando `h264_nvenc` (GPU NVIDIA),
+  `h264_qsv` (GPU Intel) y `libx264` (CPU). STIMULUS2 cae a QuickSync (driver NVIDIA viejo).
+- **Segmentos MPEG-TS de 60 s:** si la app se cierra de golpe o se cuelga, se pierde como mucho el final del
+  segmento en curso. El `.mp4` de una grabación cortada se arma al próximo arranque.
 - Si el disco o el encoder no dan abasto, se descartan cuadros (cuenta en `session.json`): nunca se frena el loop
   de VR.
+
+## Sincronización con la telemetría y entre PCs
+
+- `frames.csv`: **una fila por cuadro del video, en orden** (`video_frame` = número de cuadro del .mp4, desde 0)
+  con la hora UTC de captura con microsegundos (`GetSystemTimePreciseAsFileTime`, la hora que corrige NTP),
+  `unity_frame` y `unity_realtime_s`. Para poner la mirada sobre el video: para cada cuadro, buscar en
+  `*_gaze.csv` la muestra con `timestamp_utc_iso` más cercana a `capture_utc_iso`.
+- `session.json`: `requestedUtc` (llegó la orden), `startAtUtc` (hora programada, igual en los 3 PCs),
+  `firstFrameUtc` (primer cuadro real), `lastFrameUtc`, `stopRequestedUtc`, cuadros escritos y descartados.
+- `marks.csv`: marcas (`mark ...`) con hora UTC exacta.
+- Ojo: el espejo del visor llega con ~0,1 s de retraso respecto de lo que se ve en el visor (scrcpy + decodificar).
 
 ## Dónde queda
 
 `%USERPROFILE%\AppData\LocalLow\DefaultCompany\xr-collaboration-proto2\Recordings\` (junto a la telemetría):
 
 ```
-20261001_102345_STIMULUS1/
+20261001_150005_STIMULUS1_S01/
   segments/seg_00000.ts ...        respaldo, un archivo cada 60 s
-  session.json                     PC, inicio UTC y local, tamaño, fps, encoder, closedCleanly, cuadros
-  20261001_102345_STIMULUS1.mp4    video completo
+  session.json                     PC, label, horas, tamaño, fps, encoder, closedCleanly, cuadros
+  frames.csv                       hora UTC de cada cuadro del video
+  marks.csv                        marcas (si hubo)
+  20261001_150005_STIMULUS1_S01.mp4
 ```
 
-~1920x1200 a 30 fps, calidad constante: una ventana quieta pesa poco y una en movimiento, algunos Mbit/s.
+## Argumentos
 
-## Uso
+`-norecord`, `-rec-auto`, `-rec-control-port N` (47811), `-rec-nocontrol`, `-rec-fps N` (30), `-rec-width N`
+(1920), `-rec-segment S` (60), `-rec-encoder auto|nvenc|qsv|x264`, `-rec-dir RUTA`, `-rec-ffmpeg RUTA`.
 
-Se enciende solo en modo medición. Argumentos: `-norecord`, `-rec-fps N` (30), `-rec-width N` (1920),
-`-rec-segment S` (60), `-rec-encoder auto|nvenc|qsv|x264`, `-rec-dir RUTA`, `-rec-ffmpeg RUTA`.
-En pantalla, arriba al centro: `REC 00:12:34 · 360 MB · h264_nvenc | PC · hora UTC · hora local · cuadro`. Si
-algo falla dice `REC detenido: <motivo>` en naranja, y la telemetría sigue igual.
-
-Requisito: ffmpeg (el mismo del espejo del visor).
+Requisito: ffmpeg (el mismo del espejo del visor). Solo en el PC (Windows): el build para el visor no graba video.
 
 ## Código
 
 | Archivo | Responsabilidad |
 |---|---|
-| `SessionRecorder.cs` | Captura, hilo del encoder, reinicio de ffmpeg, reloj en pantalla, cierre y video final |
+| `SessionRecorder.cs` | Estado (en espera / armada / grabando), órdenes, captura en la GPU, barra con el reloj, cierre |
+| `RecordingRun.cs` | Una grabación: carpeta, cola, hilo, ffmpeg (con reinicio), frames.csv, session.json, .mp4 final |
+| `RecordingControlServer.cs` | TCP en 127.0.0.1; las órdenes se ejecutan en el hilo principal |
+| `RecordingControlProtocol.cs` | Órdenes y respuesta JSON — puras, con tests |
+| `PreciseClock.cs` | Hora UTC con µs |
 | `SessionRecorderSettings.cs` | Configuración y argumentos |
 | `RecordingFfmpeg.cs` | Argumentos de ffmpeg (grabar, probar encoders, unir) — puros, con tests |
-| `RecordingLayout.cs` | Carpetas, nombres, sesiones pendientes de armar |
+| `RecordingLayout.cs` | Carpetas, nombres, filas de frames.csv / marks.csv, grabaciones pendientes de armar |
 | `Tests/Editor/` | Tests de EditMode |

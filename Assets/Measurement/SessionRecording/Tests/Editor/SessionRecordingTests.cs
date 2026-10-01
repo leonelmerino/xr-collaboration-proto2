@@ -119,6 +119,96 @@ namespace XRCollab.Measurement.Recording.Tests
             CollectionAssert.IsEmpty(RecordingLayout.PendingSessions(Path.Combine(Path.GetTempPath(), "no-existe-" + Guid.NewGuid()), null).ToArray());
         }
 
+        [Test]
+        public void Settings_ControlFlags()
+        {
+            SessionRecorderSettings d = SessionRecorderSettings.FromCommandLine(new string[0]);
+            Assert.IsFalse(d.autoStart);   // por defecto espera un «start» externo
+            Assert.AreEqual(SessionRecorderSettings.DefaultControlPort, d.controlPort);
+            Assert.IsTrue(SessionRecorderSettings.FromCommandLine(new[] { "-rec-auto" }).autoStart);
+            Assert.AreEqual(0, SessionRecorderSettings.FromCommandLine(new[] { "-rec-nocontrol" }).controlPort);
+            Assert.AreEqual(50000, SessionRecorderSettings.FromCommandLine(new[] { "-rec-control-port", "50000" }).controlPort);
+            Assert.AreEqual(SessionRecorderSettings.DefaultControlPort, SessionRecorderSettings.FromCommandLine(new[] { "-rec-control-port", "99999" }).controlPort);
+        }
+
+        [Test]
+        public void Command_StartWithLabelAndTime()
+        {
+            RecordingCommand c = RecordingCommand.Parse("  START label=S01 at=2026-10-01T18:00:05.250Z\r", out string error);
+            Assert.IsNull(error);
+            Assert.AreEqual(RecordingCommandKind.Start, c.Kind);
+            Assert.AreEqual("S01", c.Label);
+            Assert.AreEqual(new DateTime(2026, 10, 1, 18, 0, 5, 250, DateTimeKind.Utc), c.AtUtc);
+            Assert.AreEqual(DateTimeKind.Utc, c.AtUtc.Value.Kind);
+
+            RecordingCommand bare = RecordingCommand.Parse("start", out error);
+            Assert.AreEqual("", bare.Label);
+            Assert.IsNull(bare.AtUtc);
+        }
+
+        [Test]
+        public void Command_OffsetTimesBecomeUtc()
+        {
+            RecordingCommand c = RecordingCommand.Parse("stop at=2026-10-01T15:00:00.000-03:00", out _);
+            Assert.AreEqual(new DateTime(2026, 10, 1, 18, 0, 0, DateTimeKind.Utc), c.AtUtc);
+        }
+
+        [TestCase("record")]
+        [TestCase("start label=S 01")]
+        [TestCase("start label=../x")]
+        [TestCase("start at=mañana")]
+        [TestCase("stop label=S01")]
+        [TestCase("start foo=1")]
+        [TestCase("")]
+        public void Command_InvalidIsRejected(string line)
+        {
+            Assert.IsNull(RecordingCommand.Parse(line, out string error));
+            Assert.IsNotEmpty(error);
+        }
+
+        [Test]
+        public void Command_StatusAndMark()
+        {
+            Assert.AreEqual(RecordingCommandKind.Status, RecordingCommand.Parse("status", out _).Kind);
+            Assert.AreEqual(RecordingCommandKind.Status, RecordingCommand.Parse("ping", out _).Kind);
+            RecordingCommand m = RecordingCommand.Parse("mark aplauso, inicio \"S01\"", out _);
+            Assert.AreEqual(RecordingCommandKind.Mark, m.Kind);
+            Assert.AreEqual("aplauso  inicio  S01", m.Text);   // sin comas ni comillas: va directo al CSV
+        }
+
+        [Test]
+        public void Layout_LabeledNamesFramesAndMarks()
+        {
+            Assert.AreEqual("20261001_150005_STIMULUS1_S01", RecordingLayout.SessionName(new DateTime(2026, 10, 1, 15, 0, 5), "STIMULUS1", "S01"));
+            Assert.AreEqual("20261001_150005_STIMULUS1", RecordingLayout.SessionName(new DateTime(2026, 10, 1, 15, 0, 5), "STIMULUS1", ""));
+            var utc = new DateTime(2026, 10, 1, 18, 0, 5, 123, DateTimeKind.Utc);
+            Assert.AreEqual("12,2026-10-01T18:00:05.123000Z,1790877605123.000,4567,12.500000", RecordingLayout.FramesRow(12, utc, 4567, 12.5));
+            Assert.AreEqual(5, RecordingLayout.FramesHeader.Split(',').Length);
+            Assert.AreEqual(6, RecordingLayout.MarksHeader.Split(',').Length);
+            Assert.AreEqual(6, RecordingLayout.MarksRow(utc, 1, "S1", "S01", "aplauso").Split(',').Length);
+
+            string root = Path.Combine(Path.GetTempPath(), "rec-tests-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(root, "a"));
+                Assert.AreEqual(Path.Combine(root, "a_2"), RecordingLayout.UniqueSessionDir(root, "a"));
+                Assert.AreEqual(Path.Combine(root, "b"), RecordingLayout.UniqueSessionDir(root, "b"));
+            }
+            finally
+            {
+                if (Directory.Exists(root)) Directory.Delete(root, true);
+            }
+        }
+
+        [Test]
+        public void Status_IsOneJsonLine()
+        {
+            string json = RecordingControlServer.ErrorJson("x");
+            StringAssert.DoesNotContain("\n", json);
+            StringAssert.Contains("\"ok\":false", json);
+            StringAssert.Contains("\"error\":\"x\"", json);
+        }
+
         [TestCase(-3, 0, "-03:00")]
         [TestCase(5, 30, "+05:30")]
         [TestCase(0, 0, "+00:00")]
