@@ -30,12 +30,14 @@ using UnityEditor.XR.OpenXR.Features;
 /// No hace nada mientras <see cref="Active"/> esté apagado (modo VR). Lo enciende MeasurementMode.
 /// </summary>
 #if UNITY_EDITOR
-[OpenXRFeature(UiName = "XR Collab: Passthrough underlay (PC)",
+// Android: el mismo camino en el build que corre dentro del visor (HeadsetBuild). Las callbacks son
+// [MonoPInvokeCallback], así que funcionan también con IL2CPP.
+[OpenXRFeature(UiName = "XR Collab: Passthrough underlay",
     Desc = "Passthrough HTC planar como capa inferior, enviado directamente en xrEndFrame. Compatible con VIVE XR Eye Tracker en Mono.",
     Company = "DICTUC",
     Version = "1.0.0",
     OpenxrExtensionStrings = "XR_HTC_passthrough",
-    BuildTargetGroups = new[] { BuildTargetGroup.Standalone },
+    BuildTargetGroups = new[] { BuildTargetGroup.Standalone, BuildTargetGroup.Android },
     FeatureId = FeatureId)]
 #endif
 public class PassthroughUnderlayFeature : OpenXRFeature
