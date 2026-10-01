@@ -7,7 +7,7 @@ using UnityEngine.UI;
 /// Punto chico arriba a la derecha de la vista del visor, para saber de un vistazo si el PC recibe la imagen:
 ///   - azul semitransparente: STIMULUS1 está recibiendo la imagen en vivo de este visor (Wi-Fi del router o USB);
 ///   - rojo: además se está grabando el video de la sesión;
-///   - sin punto: nadie está mirando ni grabando este visor.
+///   - amarillo semitransparente: STIMULUS1 NO está recibiendo la imagen de este visor (sin Wi-Fi/USB o ventana cerrada).
 /// Solo en el build del visor (Android). La app no sabe nada de la red ni del video: la ventana «Visores en vivo» de
 /// STIMULUS1 (tools\headset-wall) escribe por adb, en Application.persistentDataPath, live_state.txt cada ~3 s
 /// mientras recibe imagen y rec_state.txt mientras graba. Acá solo se miran esos archivos.
@@ -22,6 +22,7 @@ public class RecordingIndicator : MonoBehaviour
     private const float PollSeconds = 0.5f;
 
     private static readonly Color Live = new Color(0.25f, 0.55f, 1f, 0.4f);
+    private static readonly Color NoLink = new Color(1f, 0.85f, 0.1f, 0.4f);
     private static readonly Color Rec = new Color(1f, 0.12f, 0.12f, 1f);
 
     private string _recPath;
@@ -57,19 +58,16 @@ public class RecordingIndicator : MonoBehaviour
         catch (Exception) { }
         int state = rec ? 2 : live ? 1 : 0;
 
-        if (state != 0 && _dot == null) _dot = CreateDot(out _image);
+        if (_dot == null) _dot = CreateDot(out _image);
         if (_dot == null) return;
-        _dot.SetActive(state != 0);
-        if (state != 0)
-        {
-            _image.color = state == 2 ? Rec : Live;
-            Camera cam = Camera.main;
-            if (cam != null) cam.cullingMask |= 1 << Layer;   // MeasurementMode deja la máscara en 0
-        }
+        _dot.SetActive(true);
+        _image.color = state == 2 ? Rec : state == 1 ? Live : NoLink;
+        Camera cam = Camera.main;
+        if (cam != null) cam.cullingMask |= 1 << Layer;   // MeasurementMode deja la máscara en 0
         if (state != _lastState)
         {
             _lastState = state;
-            Debug.Log($"[RecordingIndicator] {(state == 2 ? "rojo (grabando)" : state == 1 ? "azul (imagen en vivo en el PC)" : "sin punto")}");
+            Debug.Log($"[RecordingIndicator] {(state == 2 ? "rojo (grabando)" : state == 1 ? "azul (imagen en vivo en el PC)" : "amarillo (el PC no recibe la imagen)")}");
         }
     }
 
