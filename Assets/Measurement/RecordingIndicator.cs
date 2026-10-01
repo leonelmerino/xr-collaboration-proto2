@@ -1,22 +1,35 @@
+using System;
 using System.IO;
 using UnityEngine;
 using UnityEngine.UI;
 
 /// <summary>
-/// Punto rojo chico arriba a la derecha de la vista del visor mientras se graba el video de la sesión.
-/// Solo en el build del visor (Android). La app no sabe nada de la grabación: la ventana «Visores en vivo» de
-/// STIMULUS1 (tools\headset-wall) crea por adb el archivo rec_state.txt en Application.persistentDataPath al
-/// empezar a grabar y lo borra al terminar; acá solo se mira si existe. La telemetría no depende de esto.
+/// Punto chico arriba a la derecha de la vista del visor, para saber de un vistazo si el PC recibe la imagen:
+///   - azul semitransparente: STIMULUS1 está recibiendo la imagen en vivo de este visor (Wi-Fi del router o USB);
+///   - rojo: además se está grabando el video de la sesión;
+///   - sin punto: nadie está mirando ni grabando este visor.
+/// Solo en el build del visor (Android). La app no sabe nada de la red ni del video: la ventana «Visores en vivo» de
+/// STIMULUS1 (tools\headset-wall) escribe por adb, en Application.persistentDataPath, live_state.txt cada ~3 s
+/// mientras recibe imagen y rec_state.txt mientras graba. Acá solo se miran esos archivos.
+/// La telemetría no depende de esto.
 /// </summary>
 public class RecordingIndicator : MonoBehaviour
 {
-    public const string StateFile = "rec_state.txt";
-    private const int Layer = 31;            // capa sin nombre, solo para el punto (la cámara de medición no dibuja nada más)
+    public const string RecFile = "rec_state.txt";
+    public const string LiveFile = "live_state.txt";
+    private const float LiveTimeoutSeconds = 10f;   // sin latido en 10 s = el PC ya no recibe la imagen
+    private const int Layer = 31;                   // capa sin nombre, solo para el punto (la cámara de medición no dibuja nada más)
     private const float PollSeconds = 0.5f;
 
-    private string _path;
+    private static readonly Color Live = new Color(0.25f, 0.55f, 1f, 0.4f);
+    private static readonly Color Rec = new Color(1f, 0.12f, 0.12f, 1f);
+
+    private string _recPath;
+    private string _livePath;
     private GameObject _dot;
+    private Image _image;
     private float _next;
+    private int _lastState = -1;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Init()
@@ -29,25 +42,40 @@ public class RecordingIndicator : MonoBehaviour
 
     private void Start()
     {
-        _path = Path.Combine(Application.persistentDataPath, StateFile);
+        _recPath = Path.Combine(Application.persistentDataPath, RecFile);
+        _livePath = Path.Combine(Application.persistentDataPath, LiveFile);
     }
 
     private void Update()
     {
         if (Time.unscaledTime < _next) return;
         _next = Time.unscaledTime + PollSeconds;
-        bool on = File.Exists(_path);
-        if (on && _dot == null) _dot = CreateDot();
-        if (_dot != null)
+
+        bool rec = File.Exists(_recPath);
+        bool live = false;
+        try { live = File.Exists(_livePath) && (DateTime.UtcNow - File.GetLastWriteTimeUtc(_livePath)).TotalSeconds < LiveTimeoutSeconds; }
+        catch (Exception) { }
+        int state = rec ? 2 : live ? 1 : 0;
+
+        if (state != 0 && _dot == null) _dot = CreateDot(out _image);
+        if (_dot == null) return;
+        _dot.SetActive(state != 0);
+        if (state != 0)
         {
-            _dot.SetActive(on);
+            _image.color = state == 2 ? Rec : Live;
             Camera cam = Camera.main;
-            if (on && cam != null) cam.cullingMask |= 1 << Layer;   // MeasurementMode deja la máscara en 0
+            if (cam != null) cam.cullingMask |= 1 << Layer;   // MeasurementMode deja la máscara en 0
+        }
+        if (state != _lastState)
+        {
+            _lastState = state;
+            Debug.Log($"[RecordingIndicator] {(state == 2 ? "rojo (grabando)" : state == 1 ? "azul (imagen en vivo en el PC)" : "sin punto")}");
         }
     }
 
-    private static GameObject CreateDot()
+    private static GameObject CreateDot(out Image image)
     {
+        image = null;
         Camera cam = Camera.main;
         if (cam == null) return null;
         // Canvas en el espacio del mundo, pegado a la cámara: arriba a la derecha, a 0,6 m (~1° de tamaño).
@@ -65,13 +93,11 @@ public class RecordingIndicator : MonoBehaviour
         var dotGo = new GameObject("Dot", typeof(Image));
         dotGo.layer = Layer;
         dotGo.transform.SetParent(canvasGo.transform, false);
-        var img = dotGo.GetComponent<Image>();
-        img.color = new Color(1f, 0.12f, 0.12f, 1f);
-        img.raycastTarget = false;
+        image = dotGo.GetComponent<Image>();
+        image.raycastTarget = false;
         var drt = (RectTransform)dotGo.transform;
         drt.anchorMin = drt.anchorMax = new Vector2(0.5f, 0.5f);
         drt.sizeDelta = new Vector2(100f, 100f);
-        Debug.Log("[RecordingIndicator] grabando: punto rojo visible");
         return canvasGo;
     }
 }
