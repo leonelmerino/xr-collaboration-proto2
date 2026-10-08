@@ -65,8 +65,10 @@ public class NetworkLauncher : MonoBehaviour
 #else
         string[] args = System.Environment.GetCommandLineArgs();
         int i = System.Array.IndexOf(args, "-role");
-        if (i < 0 || i + 1 >= args.Length) yield break;
-        string role = args[i + 1].ToLowerInvariant();
+        // Sin -role (p. ej. Play en el Editor): variable de entorno XRCOLLAB_ROLE=host|client de cada PC del laboratorio.
+        string role = i >= 0 && i + 1 < args.Length ? args[i + 1] : System.Environment.GetEnvironmentVariable("XRCOLLAB_ROLE");
+        if (string.IsNullOrEmpty(role)) yield break;
+        role = role.Trim().ToLowerInvariant();
 
         yield return new WaitForSeconds(1f);   // NetworkManager y LanDiscoveryService ya inicializados
         Debug.Log($"[NetworkLauncher] -role {role} desde la línea de comandos.");

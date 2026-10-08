@@ -488,13 +488,15 @@ public class AcquisitionEventManager : MonoBehaviour
             return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
         }
 
-        string ip = Arg("-acq-ip");
+        // Sin argumentos (Play en el Editor): variables de entorno XRCOLLAB_ACQ_IP / XRCOLLAB_ROLE de cada PC.
+        string ip = Arg("-acq-ip") ?? System.Environment.GetEnvironmentVariable("XRCOLLAB_ACQ_IP");
         if (string.IsNullOrEmpty(ip)) return;
+        ip = ip.Trim();
 
         config.acquisitionIp = ip;
         config.useEmbeddedAcquisitionMock = false;
         if (int.TryParse(Arg("-acq-port"), out int port)) config.acquisitionPort = port;
-        string role = (Arg("-role") ?? "host").ToLowerInvariant();
+        string role = (Arg("-role") ?? System.Environment.GetEnvironmentVariable("XRCOLLAB_ROLE") ?? "host").Trim().ToLowerInvariant();
         config.role = role == "client" ? AcquisitionNodeRole.Client : role == "helper" ? AcquisitionNodeRole.Helper : AcquisitionNodeRole.Host;
         config.nodeId = Arg("-acq-node") ?? $"VR_{System.Environment.MachineName.ToUpperInvariant()}";
         Debug.Log($"[AcquisitionEventManager] BioLab real: {config.acquisitionIp}:{config.acquisitionPort}, role={config.role}, node={config.nodeId}");
