@@ -14,6 +14,8 @@ using XRCollab.Measurement.Recording;
 ///   3. Enciende PassthroughUnderlayFeature, que crea el passthrough HTC planar y lo envía como
 ///      capa inferior en cada frame (ahí se explica por qué no se usan las features de passthrough
 ///      de VIVE: una congela la app junto al Eye Tracker en Mono y la otra nunca envía la capa).
+///      Con Meta Quest 3 por Meta Horizon Link (runtime de Meta, XR_FB_passthrough) usa en su lugar
+///      MetaPassthroughUnderlayFeature; el camino VIVE no cambia (ahí esa extensión no existe).
 ///   4. En la ventana del PC muestra lo que ve el visor (HeadsetMirror, Assets/Measurement/HeadsetMirror).
 ///   5. Deja lista la grabación en video de esa ventana (SessionRecorder, Assets/Measurement/SessionRecording):
 ///      espera un «start» desde afuera (127.0.0.1:47811, tools\lab-remote\Lab-Recording.ps1); -rec-auto graba al abrir.
@@ -92,8 +94,12 @@ public class MeasurementMode : MonoBehaviour
             cal.enabled = false;
 
         ConfigureCamera();
-        PassthroughUnderlayFeature.Active = true;
-        Debug.Log("[MeasurementMode] Passthrough underlay solicitado (PassthroughUnderlayFeature).");
+        // El XR ya se inicializó (Initialize XR on Startup), así que se sabe qué runtime hay.
+        MetaPassthroughUnderlayFeature.Active = true;
+        PassthroughUnderlayFeature.Active = !MetaPassthroughUnderlayFeature.Supported;
+        Debug.Log(MetaPassthroughUnderlayFeature.Supported
+            ? "[MeasurementMode] Passthrough underlay solicitado (MetaPassthroughUnderlayFeature, Meta Quest por Link)."
+            : "[MeasurementMode] Passthrough underlay solicitado (PassthroughUnderlayFeature).");
 
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
         // La ventana del PC queda negra (la sala se compone en el visor): se muestra lo que ve el visor.
@@ -110,8 +116,13 @@ public class MeasurementMode : MonoBehaviour
 
     // Lo que la app sabe del lado XR, para que el espejo explique una pantalla negra (visor sin mostrar la app,
     // passthrough caído).
-    private static AppXrState MirrorAppState() =>
-        new AppXrState(AppXrState.FromSessionState(PassthroughUnderlayFeature.SessionState), PassthroughUnderlayFeature.Problem);
+    private static AppXrState MirrorAppState() => MetaPassthroughUnderlayFeature.Supported
+        ? new AppXrState(AppXrState.FromSessionState(MetaPassthroughUnderlayFeature.SessionState), MetaPassthroughUnderlayFeature.Problem)
+        : new AppXrState(AppXrState.FromSessionState(PassthroughUnderlayFeature.SessionState), PassthroughUnderlayFeature.Problem);
+
+    private static string PassthroughStatus => MetaPassthroughUnderlayFeature.Supported
+        ? $"{MetaPassthroughUnderlayFeature.Status} (Meta Quest)"
+        : PassthroughUnderlayFeature.Status;
 
     private void ConfigureCamera()
     {
@@ -133,6 +144,7 @@ public class MeasurementMode : MonoBehaviour
     private void OnDestroy()
     {
         PassthroughUnderlayFeature.Active = false;
+        MetaPassthroughUnderlayFeature.Active = false;
     }
 
     // Solo se ve en la ventana del PC, no en el visor.
@@ -140,6 +152,6 @@ public class MeasurementMode : MonoBehaviour
     {
         const float w = 520f, h = 44f;
         GUI.Box(new Rect(10f, Screen.height - h - 10f, w, h),
-            $"MODO MEDICIÓN · passthrough: {PassthroughUnderlayFeature.Status}\nLogs: {Application.persistentDataPath}/EyeTrackingLogs");
+            $"MODO MEDICIÓN · passthrough: {PassthroughStatus}\nLogs: {Application.persistentDataPath}/EyeTrackingLogs");
     }
 }

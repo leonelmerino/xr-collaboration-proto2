@@ -10,6 +10,7 @@ using UnityEngine.XR.OpenXR;
 /// <summary>
 /// Build del modo medición (Win64) con las features OpenXR correctas para passthrough + mirada en PC:
 ///   - XR Collab: Passthrough underlay (PC):    ON  (crea y envía el passthrough; ver PassthroughUnderlayFeature)
+///   - XR Collab: Meta passthrough underlay:    ON  (Meta Quest 3 por Link, XR_FB_passthrough; inerte con VIVE/SteamVR)
 ///   - VIVE XR Passthrough:                     OFF (su hook de xrWaitFrame congela la app junto al Eye Tracker en Mono)
 ///   - VIVE XR Composition Layer (Passthrough): OFF (en Standalone crea el passthrough pero nunca lo envía: negro)
 ///   - VIVE XR Eye Tracker:                     sin cambios (lo usa el logger de mirada)
@@ -34,6 +35,7 @@ public static class MeasurementBuild
                 "VivePassthrough" => false,
                 "ViveCompositionLayerPassthrough" => false,
                 nameof(PassthroughUnderlayFeature) => true,
+                nameof(MetaPassthroughUnderlayFeature) => true,
                 _ => (bool?)null,
             };
             if (want.HasValue && feature.enabled != want.Value)
@@ -45,6 +47,31 @@ public static class MeasurementBuild
         }
         EditorUtility.SetDirty(settings);
         AssetDatabase.SaveAssets();
+    }
+
+    // MetaPassthroughUnderlayFeature es nueva: el Editor la agrega apagada al descubrirla. Se enciende sola una vez
+    // (es inerte con SteamVR/VIVE) para que el Play mode con Meta Quest por Link tenga passthrough sin pasos a mano.
+    [InitializeOnLoadMethod]
+    private static void EnsureMetaPassthroughFeature()
+    {
+        EditorApplication.delayCall += () =>
+        {
+            if (Application.isBatchMode || EditorApplication.isPlayingOrWillChangePlaymode) return;
+            OpenXRSettings settings = OpenXRSettings.GetSettingsForBuildTargetGroup(BuildTargetGroup.Standalone);
+            if (settings == null) return;
+            var meta = settings.GetFeature<MetaPassthroughUnderlayFeature>();
+            if (meta == null)
+            {
+                FeatureHelpers.RefreshFeatures(BuildTargetGroup.Standalone);
+                meta = settings.GetFeature<MetaPassthroughUnderlayFeature>();
+            }
+            if (meta == null || meta.enabled) return;
+            meta.enabled = true;
+            EditorUtility.SetDirty(meta);
+            EditorUtility.SetDirty(settings);
+            AssetDatabase.SaveAssets();
+            Debug.Log("[MeasurementBuild] MetaPassthroughUnderlayFeature -> ON (Standalone)");
+        };
     }
 
     [MenuItem("XR Collab/Build medición (Win64)")]
