@@ -603,6 +603,7 @@ MonoBehaviour:
   - {fileID: 252212891666740942}
   - {fileID: 8507849565684740717}
   - {fileID: 7703235377713406373}
+  - {fileID: 329962094172410237}
   - {fileID: 5663694260791413918}
   - {fileID: 7225609767677178927}
   - {fileID: 5937136806997623654}
@@ -918,6 +919,26 @@ MonoBehaviour:
   m_XrInstance: 0
   m_XrSession: 0
   m_systemid: 0
+--- !u!114 &329962094172410237
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 78a312c9b74c4011ba27a138186924eb, type: 3}
+  m_Name: MetaPassthroughUnderlayFeature Standalone
+  m_EditorClassIdentifier: 
+  m_enabled: 1
+  nameUi: 'XR Collab: Meta passthrough underlay'
+  version: 1.0.0
+  featureIdInternal: cl.dictuc.xrcollab.meta-passthrough-underlay
+  openxrExtensionStrings: XR_FB_passthrough
+  company: DICTUC
+  priority: 0
+  required: 0
 --- !u!114 &795795903732387991
 MonoBehaviour:
   m_ObjectHideFlags: 0
