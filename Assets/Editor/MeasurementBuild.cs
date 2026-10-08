@@ -74,6 +74,34 @@ public static class MeasurementBuild
         };
     }
 
+    // Brillo del passthrough del Meta Quest (Link). Se guarda en EditorPrefs y, en Play, se aplica en el siguiente frame.
+    [MenuItem("XR Collab/Passthrough Meta/Brillo +10")] private static void PtBrighter() => SetPtBrightness(MetaPassthroughUnderlayFeature.Brightness + 10f);
+    [MenuItem("XR Collab/Passthrough Meta/Brillo -10")] private static void PtDarker() => SetPtBrightness(MetaPassthroughUnderlayFeature.Brightness - 10f);
+    [MenuItem("XR Collab/Passthrough Meta/Contraste +0.1")] private static void PtMoreContrast() => SetPtContrast(MetaPassthroughUnderlayFeature.Contrast + 0.1f);
+    [MenuItem("XR Collab/Passthrough Meta/Contraste -0.1")] private static void PtLessContrast() => SetPtContrast(MetaPassthroughUnderlayFeature.Contrast - 0.1f);
+    [MenuItem("XR Collab/Passthrough Meta/Restablecer (brillo +25, contraste 1)")]
+    private static void PtReset()
+    {
+        SetPtBrightness(MeasurementMode.DefaultPtBrightness);
+        SetPtContrast(1f);
+        EditorPrefs.SetFloat(MeasurementMode.PtSaturationPref, 1f);
+        MetaPassthroughUnderlayFeature.Saturation = 1f;
+    }
+
+    private static void SetPtBrightness(float v)
+    {
+        MetaPassthroughUnderlayFeature.Brightness = v;
+        EditorPrefs.SetFloat(MeasurementMode.PtBrightnessPref, MetaPassthroughUnderlayFeature.Brightness);
+        Debug.Log($"[Passthrough Meta] brillo {MetaPassthroughUnderlayFeature.Brightness:0}");
+    }
+
+    private static void SetPtContrast(float v)
+    {
+        MetaPassthroughUnderlayFeature.Contrast = v;
+        EditorPrefs.SetFloat(MeasurementMode.PtContrastPref, MetaPassthroughUnderlayFeature.Contrast);
+        Debug.Log($"[Passthrough Meta] contraste {MetaPassthroughUnderlayFeature.Contrast:0.00}");
+    }
+
     [MenuItem("XR Collab/Build medición (Win64)")]
     public static void BuildWin64()
     {

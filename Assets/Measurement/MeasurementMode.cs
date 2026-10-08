@@ -95,6 +95,7 @@ public class MeasurementMode : MonoBehaviour
 
         ConfigureCamera();
         // El XR ya se inicializó (Initialize XR on Startup), así que se sabe qué runtime hay.
+        ApplyMetaPassthroughStyle();
         MetaPassthroughUnderlayFeature.Active = true;
         PassthroughUnderlayFeature.Active = !MetaPassthroughUnderlayFeature.Supported;
         Debug.Log(MetaPassthroughUnderlayFeature.Supported
@@ -114,6 +115,39 @@ public class MeasurementMode : MonoBehaviour
 #endif
     }
 
+    // Brillo del passthrough del Meta Quest (solo XR_FB_passthrough; no toca VIVE). El Quest 3 por Link se ve oscuro:
+    // por defecto se sube el brillo. Build: -pt-brightness N (-100..100) -pt-contrast X -pt-saturation X.
+    // Editor: menú XR Collab → Passthrough Meta (se guarda en EditorPrefs y se aplica en vivo).
+    public const float DefaultPtBrightness = 25f;
+    public const string PtBrightnessPref = "XRCollab.MetaPassthrough.Brightness";
+    public const string PtContrastPref = "XRCollab.MetaPassthrough.Contrast";
+    public const string PtSaturationPref = "XRCollab.MetaPassthrough.Saturation";
+
+    private static void ApplyMetaPassthroughStyle()
+    {
+        float b = DefaultPtBrightness, c = 1f, s = 1f;
+#if UNITY_EDITOR
+        b = UnityEditor.EditorPrefs.GetFloat(PtBrightnessPref, b);
+        c = UnityEditor.EditorPrefs.GetFloat(PtContrastPref, c);
+        s = UnityEditor.EditorPrefs.GetFloat(PtSaturationPref, s);
+#endif
+        string[] args = Environment.GetCommandLineArgs();
+        b = ArgFloat(args, "-pt-brightness", b);
+        c = ArgFloat(args, "-pt-contrast", c);
+        s = ArgFloat(args, "-pt-saturation", s);
+        MetaPassthroughUnderlayFeature.Brightness = b;
+        MetaPassthroughUnderlayFeature.Contrast = c;
+        MetaPassthroughUnderlayFeature.Saturation = s;
+    }
+
+    private static float ArgFloat(string[] args, string name, float fallback)
+    {
+        int i = Array.IndexOf(args, name);
+        return i >= 0 && i + 1 < args.Length &&
+               float.TryParse(args[i + 1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v)
+            ? v : fallback;
+    }
+
     // Lo que la app sabe del lado XR, para que el espejo explique una pantalla negra (visor sin mostrar la app,
     // passthrough caído).
     private static AppXrState MirrorAppState() => MetaPassthroughUnderlayFeature.Supported
@@ -121,7 +155,7 @@ public class MeasurementMode : MonoBehaviour
         : new AppXrState(AppXrState.FromSessionState(PassthroughUnderlayFeature.SessionState), PassthroughUnderlayFeature.Problem);
 
     private static string PassthroughStatus => MetaPassthroughUnderlayFeature.Supported
-        ? $"{MetaPassthroughUnderlayFeature.Status} (Meta Quest)"
+        ? $"{MetaPassthroughUnderlayFeature.Status} (Meta Quest, brillo {MetaPassthroughUnderlayFeature.Brightness:+0;-0;0})"
         : PassthroughUnderlayFeature.Status;
 
     private void ConfigureCamera()

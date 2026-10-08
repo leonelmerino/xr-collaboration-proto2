@@ -50,11 +50,24 @@ public class MetaPassthroughUnderlayFeature : OpenXRFeature
     /// <summary>Último XrSessionState (1 IDLE … 5 FOCUSED); 0 sin sesión.</summary>
     public static int SessionState { get; private set; }
 
+    /// <summary>
+    /// Ajuste de imagen del passthrough (XrPassthroughBrightnessContrastSaturationFB): brillo -100..100 (0 = sin cambio),
+    /// contraste y saturación 1 = sin cambio. Lo fija MeasurementMode desde -pt-brightness / -pt-contrast / -pt-saturation
+    /// o EditorPrefs; cambiarlo en vivo lo aplica en el siguiente frame.
+    /// </summary>
+    public static float Brightness { get => s_brightness; set { s_brightness = Mathf.Clamp(value, -100f, 100f); s_styleDirty = true; } }
+    public static float Contrast { get => s_contrast; set { s_contrast = Mathf.Max(0f, value); s_styleDirty = true; } }
+    public static float Saturation { get => s_saturation; set { s_saturation = Mathf.Max(0f, value); s_styleDirty = true; } }
+    private static float s_brightness, s_contrast = 1f, s_saturation = 1f;
+    private static volatile bool s_styleDirty = true;
+
     // --- OpenXR (layouts del spec, 64 bits) ---
     private const int XR_TYPE_COMPOSITION_LAYER_PROJECTION = 35;
     private const int XR_TYPE_PASSTHROUGH_CREATE_INFO_FB = 1000118001;
     private const int XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB = 1000118002;
     private const int XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB = 1000118003;
+    private const int XR_TYPE_PASSTHROUGH_STYLE_FB = 1000118020;
+    private const int XR_TYPE_PASSTHROUGH_BRIGHTNESS_CONTRAST_SATURATION_FB = 1000118023;
     private const ulong XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB = 0x1;
     private const int XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB = 0;
     private const ulong XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT = 0x2;
@@ -70,6 +83,13 @@ public class MetaPassthroughUnderlayFeature : OpenXRFeature
     [StructLayout(LayoutKind.Sequential)]
     private struct CompositionLayerPassthrough { public int type; public IntPtr next; public ulong flags; public ulong space; public ulong layerHandle; }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PassthroughStyle { public int type; public IntPtr next; public float textureOpacityFactor; public float edgeR, edgeG, edgeB, edgeA; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PassthroughBrightnessContrastSaturation { public int type; public IntPtr next; public float brightness, contrast, saturation; }
+
+    private delegate XrResult SetStyleFn(ulong layer, ref PassthroughStyle style);
     private delegate XrResult CreatePassthroughFn(ulong session, ref PassthroughCreateInfo createInfo, out ulong passthrough);
     private delegate XrResult CreatePassthroughLayerFn(ulong session, ref PassthroughLayerCreateInfo createInfo, out ulong layer);
     private delegate XrResult DestroyHandleFn(ulong handle);
@@ -83,6 +103,8 @@ public class MetaPassthroughUnderlayFeature : OpenXRFeature
     private static CreatePassthroughFn s_create;
     private static CreatePassthroughLayerFn s_createLayer;
     private static DestroyHandleFn s_destroy, s_destroyLayer;
+    private static SetStyleFn s_setStyle;
+    private static IntPtr s_bcs = IntPtr.Zero;            // XrPassthroughBrightnessContrastSaturationFB, unmanaged
     private static IntPtr s_layer = IntPtr.Zero;          // XrCompositionLayerPassthroughFB, unmanaged
     private static IntPtr s_layers = IntPtr.Zero;         // layer pointer array we submit instead of Unity's
     private const int MaxLayers = 16;
@@ -128,7 +150,8 @@ public class MetaPassthroughUnderlayFeature : OpenXRFeature
     {
         s_instance = 0;
         Supported = false;
-        s_create = null; s_createLayer = null; s_destroy = null; s_destroyLayer = null;
+        s_create = null; s_createLayer = null; s_destroy = null; s_destroyLayer = null; s_setStyle = null;
+        if (s_bcs != IntPtr.Zero) { Marshal.FreeHGlobal(s_bcs); s_bcs = IntPtr.Zero; }
         if (s_layer != IntPtr.Zero) { Marshal.FreeHGlobal(s_layer); s_layer = IntPtr.Zero; }
         if (s_layers != IntPtr.Zero) { Marshal.FreeHGlobal(s_layers); s_layers = IntPtr.Zero; }
     }
@@ -162,6 +185,7 @@ public class MetaPassthroughUnderlayFeature : OpenXRFeature
         s_createLayer = Resolve<CreatePassthroughLayerFn>("xrCreatePassthroughLayerFB");
         s_destroy = Resolve<DestroyHandleFn>("xrDestroyPassthroughFB");
         s_destroyLayer = Resolve<DestroyHandleFn>("xrDestroyPassthroughLayerFB");
+        s_setStyle = Resolve<SetStyleFn>("xrPassthroughLayerSetStyleFB");   // opcional: sin ella no hay ajuste de brillo
         return s_create != null && s_createLayer != null && s_destroy != null && s_destroyLayer != null;
     }
 
@@ -200,11 +224,29 @@ public class MetaPassthroughUnderlayFeature : OpenXRFeature
             return;
         }
         s_passthroughLayer = layer;
+        s_styleDirty = true;
         if (s_layer == IntPtr.Zero) s_layer = Marshal.AllocHGlobal(Marshal.SizeOf<CompositionLayerPassthrough>());
         if (s_layers == IntPtr.Zero) s_layers = Marshal.AllocHGlobal(IntPtr.Size * MaxLayers);
         Status = "ON";
         Problem = null;
         Debug.Log($"[MetaPassthroughUnderlay] passthrough FB OK (passthrough 0x{s_passthrough:X}, layer 0x{layer:X}).");
+    }
+
+    // Brillo/contraste/saturación del passthrough. Si el runtime no lo soporta solo queda registrado en Status.
+    private static void ApplyStyle()
+    {
+        s_styleDirty = false;
+        if (s_setStyle == null || s_passthroughLayer == 0) return;
+        if (s_bcs == IntPtr.Zero) s_bcs = Marshal.AllocHGlobal(Marshal.SizeOf<PassthroughBrightnessContrastSaturation>());
+        Marshal.StructureToPtr(new PassthroughBrightnessContrastSaturation
+        {
+            type = XR_TYPE_PASSTHROUGH_BRIGHTNESS_CONTRAST_SATURATION_FB, next = IntPtr.Zero,
+            brightness = s_brightness, contrast = s_contrast, saturation = s_saturation,
+        }, s_bcs, false);
+        var style = new PassthroughStyle { type = XR_TYPE_PASSTHROUGH_STYLE_FB, next = s_bcs, textureOpacityFactor = 1f };
+        XrResult res = s_setStyle(s_passthroughLayer, ref style);
+        Debug.Log($"[MetaPassthroughUnderlay] estilo brillo {s_brightness:0} contraste {s_contrast:0.00} saturación {s_saturation:0.00}: {res}");
+        if (res != XrResult.XR_SUCCESS) Problem = $"xrPassthroughLayerSetStyleFB devolvió {res}";
     }
 
     private static void DestroyPassthrough()
@@ -230,6 +272,7 @@ public class MetaPassthroughUnderlayFeature : OpenXRFeature
         }
 
         TryCreatePassthrough();
+        if (s_styleDirty && s_passthroughLayer != 0) ApplyStyle();
         int count = (int)frameEndInfo.layerCount;
         if (s_passthroughLayer == 0 || frameEndInfo.layers == IntPtr.Zero || count <= 0 || count >= MaxLayers)
             return s_endFramePrevDel(session, ref frameEndInfo);
