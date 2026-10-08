@@ -53,6 +53,8 @@ public class AcquisitionEventManager : MonoBehaviour
             return;
         }
 
+        ApplyCommandLineOverrides();
+
         if (eventLogger != null)
             eventLogger.nodeId = config.nodeId;
 
@@ -221,6 +223,11 @@ public class AcquisitionEventManager : MonoBehaviour
 
         Debug.Log($"[AcquisitionEventManager] Ping response: {pingResponse}");
         LogLocal("SESSION_CONTROL", "PING_RESULT", pingResponse);
+
+        // BioLab real (no mock): si todavía no escucha (sin archivo elegido, abierto después de la app), seguir
+        // intentando en segundo plano; al responder se reenvían los eventos y el host manda START.
+        if (!acquisitionReachable && !config.useEmbeddedAcquisitionMock)
+            StartCoroutine(RetryReachabilityRoutine());
 
         if (!acquisitionReachable)
         {
@@ -467,6 +474,57 @@ public class AcquisitionEventManager : MonoBehaviour
         Debug.Log($"[AcquisitionEventManager] Forward result: {encoded} -> {task.Result}");
 
         LogLocal("FORWARD_RESULT", encoded, task.Result);
+    }
+
+    // Línea de comandos (build de medición): -acq-ip <ip> apaga el mock y apunta al BioLab real (ACQUISITION,
+    // 192.168.88.197 en el router del laboratorio); -acq-port <n>; -acq-node <id> (por defecto VR_<PC>);
+    // el rol sale de -role host|client (el mismo de NetworkLauncher): solo el host manda START/STOP.
+    private void ApplyCommandLineOverrides()
+    {
+        string[] args = System.Environment.GetCommandLineArgs();
+        string Arg(string name)
+        {
+            int i = System.Array.IndexOf(args, name);
+            return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        }
+
+        string ip = Arg("-acq-ip");
+        if (string.IsNullOrEmpty(ip)) return;
+
+        config.acquisitionIp = ip;
+        config.useEmbeddedAcquisitionMock = false;
+        if (int.TryParse(Arg("-acq-port"), out int port)) config.acquisitionPort = port;
+        string role = (Arg("-role") ?? "host").ToLowerInvariant();
+        config.role = role == "client" ? AcquisitionNodeRole.Client : role == "helper" ? AcquisitionNodeRole.Helper : AcquisitionNodeRole.Host;
+        config.nodeId = Arg("-acq-node") ?? $"VR_{System.Environment.MachineName.ToUpperInvariant()}";
+        Debug.Log($"[AcquisitionEventManager] BioLab real: {config.acquisitionIp}:{config.acquisitionPort}, role={config.role}, node={config.nodeId}");
+    }
+
+    private IEnumerator RetryReachabilityRoutine()
+    {
+        var wait = new WaitForSecondsRealtime(5f);
+        while (!acquisitionReachable)
+        {
+            yield return wait;
+            var pingTask = udpClient.PingAsync();
+            yield return new WaitUntil(() => pingTask.IsCompleted);
+            if (pingTask.Result != "PONG") continue;
+
+            acquisitionReachable = true;
+            Debug.Log("[AcquisitionEventManager] BioLab responde (PONG) después del inicio.");
+            LogLocal("SESSION_CONTROL", "PING_RESULT_LATE", "PONG");
+
+            if (config.IsHost && !acquisitionRunning)
+            {
+                var startTask = udpClient.StartAcquisitionAsync();
+                yield return new WaitUntil(() => startTask.IsCompleted);
+                acquisitionRunning = startTask.Result == "OK";
+                LogLocal("SESSION_CONTROL", "START_RESULT_LATE", startTask.Result);
+            }
+            else if (!config.IsHost) acquisitionRunning = true;
+
+            yield return StartCoroutine(ForwardEventRoutine("SESSION_START", BuildMetadataPayload("SESSION_START_LATE")));
+        }
     }
 
     private void LogLocal(string eventType, string eventValue, string notes = "")
