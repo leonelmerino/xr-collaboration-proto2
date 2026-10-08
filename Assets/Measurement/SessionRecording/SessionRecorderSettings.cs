@@ -17,7 +17,8 @@ namespace XRCollab.Measurement.Recording
     /// Configuración de la grabación de la ventana del PC. Los valores por defecto sirven en el laboratorio; cada uno
     /// se puede cambiar al lanzar el build: <c>-norecord</c>, <c>-rec-auto</c>, <c>-rec-control-port N</c>,
     /// <c>-rec-nocontrol</c>, <c>-rec-fps N</c>, <c>-rec-width N</c>, <c>-rec-segment S</c>,
-    /// <c>-rec-encoder nvenc|qsv|x264</c>, <c>-rec-dir RUTA</c>, <c>-rec-ffmpeg RUTA</c>.
+    /// <c>-rec-encoder nvenc|qsv|x264</c>, <c>-rec-dir RUTA</c>, <c>-rec-ffmpeg RUTA</c>,
+    /// <c>-rec-audio on|off</c>, <c>-rec-mic TEXTO|off</c>.
     /// </summary>
     [Serializable]
     public sealed class SessionRecorderSettings
@@ -49,6 +50,15 @@ namespace XRCollab.Measurement.Recording
         [Tooltip("Ruta de ffmpeg (-rec-ffmpeg). Vacío: PATH y WinGet.")]
         public string ffmpegPath = "";
 
+        [Tooltip("Grabar audio (app + micrófono) junto al video (-rec-audio on|off).")]
+        public bool audio = true;
+
+        [Tooltip("Grabar el micrófono del visor (-rec-mic off lo apaga).")]
+        public bool mic = true;
+
+        [Tooltip("Parte del nombre del micrófono (-rec-mic TEXTO; varias separadas por coma). Vacío: VIVE, Focus, Oculus, Meta, Headset; si no, el predeterminado.")]
+        public string micDevice = "";
+
         public SessionRecorderSettings Clone() => (SessionRecorderSettings)MemberwiseClone();
 
         public void Validate()
@@ -59,6 +69,7 @@ namespace XRCollab.Measurement.Recording
             if (controlPort < 0 || controlPort > 65535) controlPort = DefaultControlPort;
             outputRoot = outputRoot?.Trim() ?? "";
             ffmpegPath = ffmpegPath?.Trim() ?? "";
+            micDevice = micDevice?.Trim() ?? "";
         }
 
         public static SessionRecorderSettings FromCommandLine(string[] args, SessionRecorderSettings defaults = null)
@@ -80,6 +91,11 @@ namespace XRCollab.Measurement.Recording
                     case "-rec-dir": if (TryText(value, ref s.outputRoot)) i++; break;
                     case "-rec-ffmpeg": if (TryText(value, ref s.ffmpegPath)) i++; break;
                     case "-rec-encoder": if (TryEncoder(value, ref s.encoder)) i++; break;
+                    case "-rec-audio": if (TryOnOff(value, ref s.audio)) i++; break;
+                    case "-rec-mic":
+                        if (string.Equals(value, "off", StringComparison.OrdinalIgnoreCase)) { s.mic = false; i++; }
+                        else if (TryText(value, ref s.micDevice)) { s.mic = true; i++; }
+                        break;
                 }
             }
             s.Validate();
@@ -98,6 +114,16 @@ namespace XRCollab.Measurement.Recording
             if (string.IsNullOrWhiteSpace(value) || value.StartsWith("-", StringComparison.Ordinal)) return false;
             target = value;
             return true;
+        }
+
+        private static bool TryOnOff(string value, ref bool target)
+        {
+            switch (value?.ToLowerInvariant())
+            {
+                case "on": case "1": case "true": target = true; return true;
+                case "off": case "0": case "false": target = false; return true;
+                default: return false;
+            }
         }
 
         private static bool TryEncoder(string value, ref RecordingEncoder target)

@@ -121,6 +121,14 @@ namespace XRCollab.Measurement.Recording
                     }
                     catch (Exception e) { Debug.LogWarning($"{LogPrefix}no se pudo armar {dir}: {e.Message}"); }
                 }
+                foreach (string dir in RecordingAudioMux.Pending(_root))
+                {
+                    try
+                    {
+                        if (RecordingAudioMux.LaunchMuxOnly(dir, _ffmpeg)) Debug.Log($"{LogPrefix}metiendo el audio en el video de una grabación anterior: {Path.GetFileName(dir)}");
+                    }
+                    catch (Exception e) { Debug.LogWarning($"{LogPrefix}no se pudo meter el audio en {dir}: {e.Message}"); }
+                }
 
                 foreach (RecordingEncoder candidate in RecordingFfmpeg.Candidates(settings.encoder))
                 {
@@ -151,6 +159,7 @@ namespace XRCollab.Measurement.Recording
         private void Update()
         {
             _control?.Pump(HandleCommand);
+            _run?.Audio?.Pump();
 
             float now = Time.unscaledTime;
             if (now >= _nextDiskCheck)
@@ -221,6 +230,9 @@ namespace XRCollab.Measurement.Recording
         private void StopRun(DateTime now)
         {
             if (_run == null) return;
+            // Primero el audio (hilo principal: Microphone, AudioListener); el hilo de la grabación espera sus WAV.
+            try { _run.Audio?.Stop(); }
+            catch (Exception e) { Debug.LogWarning($"{LogPrefix}no se pudo detener el audio: {e.Message}"); }
             _run.RequestStop(now);
             _previous = _run;
             _run = null;
@@ -241,6 +253,7 @@ namespace XRCollab.Measurement.Recording
                 appUtc = RecordingCommand.FormatUtc(now),
                 lastVideo = _previous == null ? "" : _previous.FinalVideo,
             };
+            FillAudioStatus(s);
             if (_unavailable != null || (_probe.Ready.IsSet && !_probe.Ok))
                 s.state = "disabled";
             else if (_run == null)
@@ -261,6 +274,32 @@ namespace XRCollab.Measurement.Recording
                 if (_run.Failed && s.error.Length == 0) s.error = _run.Status;
             }
             return JsonUtility.ToJson(s);
+        }
+
+        private void FillAudioStatus(RecordingStatus s)
+        {
+            try
+            {
+                SessionAudioCapture audio = _run?.Audio;
+                if (audio != null)
+                {
+                    s.audioApp = audio.AppStatus;
+                    s.audioMic = audio.MicStatus;
+                }
+                else
+                {
+                    SessionAudioCapture.Preview(settings, out string app, out string mic);
+                    s.audioApp = app;
+                    s.audioMic = mic;
+                }
+                if (_previous != null)
+                    s.audioMux = _previous.Finished ? RecordingAudioMux.State(_previous.Dir)
+                        : RecordingAudioMux.HasAudioFiles(_previous.Dir) ? "pendiente" : "";
+            }
+            catch (Exception e)
+            {
+                s.audioApp = s.audioApp.Length > 0 ? s.audioApp : "error: " + e.Message;
+            }
         }
 
         private void WriteMark(DateTime utc, string text)
@@ -303,6 +342,7 @@ namespace XRCollab.Measurement.Recording
                 {
                     capturing = run;
                     _nextCapture = now;   // primer cuadro apenas llega la hora
+                    StartAudio(run);      // a la misma hora que el video (se alinean después por la hora UTC)
                 }
                 if (now < _nextCapture) continue;
                 _nextCapture = _nextCapture + interval < now ? now + interval : _nextCapture + interval;   // sin ráfagas
@@ -320,6 +360,13 @@ namespace XRCollab.Measurement.Recording
                 double unityTime = Time.realtimeSinceStartupAsDouble;
                 AsyncGPUReadback.Request(_scaledRt, 0, TextureFormat.RGBA32, r => OnReadback(r, run, utc, unityFrame, unityTime));
             }
+        }
+
+        private void StartAudio(RecordingRun run)
+        {
+            if (run.Audio != null || run.Failed || run.Stopping) return;
+            try { run.AttachAudio(SessionAudioCapture.Start(settings, run.Dir)); }
+            catch (Exception e) { Debug.LogWarning($"{LogPrefix}sin audio: {e.Message}"); }
         }
 
         private void OnReadback(AsyncGPUReadbackRequest request, RecordingRun run, DateTime captureUtc, int unityFrame, double unityTime)
@@ -392,7 +439,22 @@ namespace XRCollab.Measurement.Recording
             if (utc < run.StartAtUtc) return $"<color=#ffd040>VIDEO empieza en {(run.StartAtUtc - utc).TotalSeconds:F1} s</color>{label}";
             DateTime? first = run.FirstFrameUtc;
             double elapsed = first.HasValue ? (utc - first.Value).TotalSeconds : 0;
-            return $"<color=#ff5050>REC</color> {FormatElapsed(elapsed)} · {_bytesOnDisk / (1024 * 1024)} MB · {_probe.Codec}{label}";
+            return $"<color=#ff5050>REC</color> {FormatElapsed(elapsed)} · {_bytesOnDisk / (1024 * 1024)} MB · {_probe.Codec}{AudioBadge(run.Audio)}{label}";
+        }
+
+        // «audio app+mic» si las dos pistas andan; lo que falte, en naranjo.
+        private static string AudioBadge(SessionAudioCapture audio)
+        {
+            if (audio == null) return "";
+            string app = Badge("app", audio.AppStatus);
+            string mic = Badge("mic", audio.MicStatus);
+            return app.Length == 0 && mic.Length == 0 ? " · sin audio" : $" · audio {app}{(app.Length > 0 && mic.Length > 0 ? "+" : "")}{mic}";
+        }
+
+        private static string Badge(string name, string status)
+        {
+            if (string.IsNullOrEmpty(status) || status == "off") return "";
+            return status.StartsWith("error", StringComparison.Ordinal) ? $"<color=#ffb040>sin {name}</color>" : name;
         }
 
         // ---------------- cierre ----------------
@@ -425,8 +487,13 @@ namespace XRCollab.Measurement.Recording
             if (File.Exists(partial) && (DateTime.Now - File.GetLastWriteTime(partial)).TotalMinutes < 2) return false;
             string list = Path.Combine(sessionDir, RecordingLayout.ConcatListFile);
             File.WriteAllText(list, RecordingFfmpeg.ConcatList(segments), new UTF8Encoding(false));
+            // Si hay audio, después de dejar el .mp4 solo video se intenta meterle las pistas «app» y «mic»; si eso
+            // falla, el .mp4 solo video y los WAV quedan (audio_mux.failed + audio_mux.log).
+            string audioMux = null;
+            try { audioMux = RecordingAudioMux.CommandPart(sessionDir, ffmpeg); }
+            catch (Exception e) { Debug.LogWarning($"{LogPrefix}no se pudo preparar el audio de {Path.GetFileName(sessionDir)}: {e.Message}"); }
             string cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
-            ChildProcess.StartDetached(cmd, RecordingFfmpeg.FinalizeCommandLine(ffmpeg, list, partial, RecordingLayout.FinalVideoPath(sessionDir)));
+            ChildProcess.StartDetached(cmd, RecordingFfmpeg.FinalizeCommandLine(ffmpeg, list, partial, RecordingLayout.FinalVideoPath(sessionDir), audioMux));
             return true;
         }
 
