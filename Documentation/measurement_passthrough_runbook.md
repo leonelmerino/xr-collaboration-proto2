@@ -41,6 +41,8 @@
 
 **Espejo del visor:** la ventana del PC muestra lo que ve el participante (sala a color + la app), capturado del visor por USB. **F5** lo oculta o muestra, **F6** alterna ambos ojos y un ojo; `-nomirror` lo desactiva. Necesita VIVE Hub y ffmpeg. Detalle: `Assets/Measurement/HeadsetMirror/README.md`.
 
+**Mirada en la ventana del PC:** un anillo verde donde mira el participante (con estela corta) y arriba a la izquierda el % de mirada válida y si las manos están seguidas. Queda en el video. **G** lo oculta o muestra; en el visor está **apagado** (Shift+G lo enciende solo para pruebas: punto magenta). Detalle: `Assets/Measurement/GazeOverlay/README.md`.
+
 ## Dónde quedan los archivos
 
 Todo queda bajo `Application.persistentDataPath` del build:
@@ -56,6 +58,7 @@ Recordings\{yyyyMMdd_HHmmss}_{PC}\                    video de respaldo de la ve
     segments\seg_00000.ts ...                         pedazos de 60 s (se conservan siempre)
     {yyyyMMdd_HHmmss}_{PC}.mp4                        video completo (al cerrar normal, o al próximo arranque)
     session.json                                      inicio UTC/local, encoder, closedCleanly
+    audio_app.wav / audio_mic.wav                     audio de la app y micrófono del visor (también dentro del .mp4)
 Player.log / Player-prev.log                          log de Unity (sesión actual / anterior)
 acquisition_mock_log.txt                              solo si corre el mock de adquisición
 ```
@@ -65,6 +68,7 @@ acquisition_mock_log.txt                              solo si corre el mock de a
 - **Cerrar con Alt+F4** (o `Start-LabSession.ps1 <pc> -Stop`): los CSV se cierran en `OnApplicationQuit`. Matar el proceso puede dejar la última parte sin escribir.
 - Verificación de solo lectura (¿se creó?, ¿tiene datos?, ¿se ve razonable?): `dictuc\tools\lab-remote\Check-LabTelemetry.ps1` (`-LastSeconds 60` para mirar solo el último minuto).
 - **Video de respaldo:** cada apertura de la app graba la ventana del PC tal como se ve (espejo del visor, HUDs, avisos, y arriba la hora UTC y local con milisegundos más el número de cuadro, para alinear con `timestamp_utc_iso`). H.264 por GPU (NVENC; en STIMULUS2, QuickSync), ~3 Mbit/s. `-norecord` la desactiva. Detalle: `Assets/Measurement/SessionRecording/README.md`.
+- **Audio en el video:** mientras graba, también graba lo que oye el participante (audio de la app) y el micrófono del visor, en WAV aparte; al detener los mete en el `.mp4` como pistas «app» y «mic» alineadas por hora UTC. `-rec-audio off` lo apaga, `-rec-mic off` solo el micrófono.
 
 **Valores de referencia (STIMULUS1, 2026-09-24, USB, passthrough visible):** gaze y body a **89,9 Hz**, tiempos siempre crecientes, cuaterniones y direcciones de mirada unitarios, manos válidas **91–94 %**, `is_calibrated = 0` (esperado). La mirada solo es válida con el visor bien puesto: en ventanas de 10 s con el visor puesto, 64–82 % válida; con el visor en la frente, 0 %.
 

@@ -34,6 +34,8 @@ namespace XRCollab.Measurement.Recording
         private const int MaxEncoderRestarts = 5;
         private const int EncoderWaitMs = 60_000;
         private const int FramesFlushEvery = 30;
+        private const int AudioInfoEveryFrames = 600;     // session.json con las horas del audio cada ~20 s (por si se corta)
+        private const int AudioFinishWaitMs = 5000;
 
         private readonly struct Frame
         {
@@ -60,6 +62,8 @@ namespace XRCollab.Measurement.Recording
         private readonly object _infoLock = new object();
         private readonly RecordingSessionInfo _info;
         private volatile ChildProcess _encoder;
+        private volatile SessionAudioCapture _audio;
+        private long _audioInfoAtFrame = -1;
         private volatile bool _stopping;
         private volatile bool _failed;
         private volatile bool _finished;
@@ -91,6 +95,12 @@ namespace XRCollab.Measurement.Recording
             }
         }
         public string FinalVideo => RecordingLayout.FinalVideoPath(Dir);
+
+        /// <summary>Audio de esta grabación (null hasta que empieza a capturar, o si no hay audio).</summary>
+        public SessionAudioCapture Audio => _audio;
+
+        /// <summary>Hilo principal, al empezar a capturar. El audio lo detiene SessionRecorder antes de <see cref="RequestStop"/>.</summary>
+        public void AttachAudio(SessionAudioCapture audio) => _audio = audio;
 
         public RecordingRun(SessionRecorderSettings settings, string ffmpeg, EncoderProbe probe, string root, string label,
             int width, int height, DateTime requestedUtc, DateTime startAtUtc)
@@ -279,8 +289,25 @@ namespace XRCollab.Measurement.Recording
                 if (index % FramesFlushEvery == 0) frames.Flush();
                 lock (_infoLock) _info.lastFrameUtc = RecordingCommand.FormatUtc(frame.Utc);
                 _pool.Add(frame.Data);
+                UpdateAudioInfo(index);
             }
             return false;
+        }
+
+        // Las horas del audio van a session.json también durante la grabación: si la app se corta, el armado del
+        // próximo arranque igual puede alinear los WAV con el video.
+        private void UpdateAudioInfo(long index)
+        {
+            SessionAudioCapture audio = _audio;
+            if (audio == null || !audio.HasStarted) return;
+            if (_audioInfoAtFrame >= 0 && index - _audioInfoAtFrame < AudioInfoEveryFrames) return;
+            _audioInfoAtFrame = index;
+            try
+            {
+                lock (_infoLock) audio.FillInfo(_info);
+                WriteInfo();
+            }
+            catch (Exception e) { Debug.LogWarning($"{LogPrefix}no se pudo anotar el audio en session.json: {e.Message}"); }
         }
 
         private void Drain()
@@ -297,6 +324,19 @@ namespace XRCollab.Measurement.Recording
                 catch (Exception) { }
                 if (!encoder.WaitForExit(8000)) encoder.Kill();
                 encoder.Dispose();
+            }
+
+            // El audio ya se detuvo en el hilo principal (SessionRecorder.StopRun): esperar que los WAV queden
+            // cerrados antes de armar el .mp4, que los lee.
+            SessionAudioCapture audio = _audio;
+            if (audio != null)
+            {
+                try
+                {
+                    if (!audio.WaitFinished(AudioFinishWaitMs)) Debug.LogWarning($"{LogPrefix}el audio no terminó de escribirse a tiempo");
+                    lock (_infoLock) audio.FillInfo(_info);
+                }
+                catch (Exception e) { Debug.LogWarning($"{LogPrefix}no se pudo cerrar el audio: {e.Message}"); }
             }
 
             lock (_infoLock)

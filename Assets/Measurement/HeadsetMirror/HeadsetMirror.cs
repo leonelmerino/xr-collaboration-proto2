@@ -41,6 +41,17 @@ namespace XRCollab.Measurement.Mirroring
         public MirrorNotice Notice => _notice;
 
         /// <summary>
+        /// Rectángulo de la imagen del visor en la ventana (píxeles de pantalla, origen abajo a la izquierda) y su
+        /// vista (ambos ojos lado a lado, o solo el izquierdo). false si no se está mostrando imagen.
+        /// </summary>
+        public bool TryGetImageScreenRect(out Rect rect, out MirrorLayout layout)
+        {
+            layout = _view != null ? _view.Layout : settings.layout;
+            rect = default;
+            return _source != null && _view != null && _view.TryGetImageScreenRect(out rect);
+        }
+
+        /// <summary>
         /// Crea el espejo como hijo de <paramref name="parent"/> y lo arranca con esta configuración.
         /// </summary>
         /// <param name="appState">

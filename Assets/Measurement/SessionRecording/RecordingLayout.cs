@@ -14,7 +14,11 @@ namespace XRCollab.Measurement.Recording
     ///     session.json                             PC, label, horas (pedida, programada, primer cuadro), encoder, cierre
     ///     frames.csv                               una fila por cuadro del video: hora UTC exacta de captura
     ///     marks.csv                                marcas («mark ...») durante la grabación
-    ///     20261001_150005_STIMULUS1_S01.mp4        video completo: al detener, o al próximo arranque si se cortó
+    ///     audio_app.wav / audio_mic.wav            audio de la app (lo que oye el participante) y del micrófono del visor
+    ///     audio_app_sync.csv / audio_mic_sync.csv  muestra de audio ↔ hora UTC (una fila por segundo)
+    ///     audio_mux.log / audio_mux.done|failed    resultado de meter el audio en el .mp4
+    ///     20261001_150005_STIMULUS1_S01.mp4        video completo (+ pistas de audio «app» y «mic»): al detener, o al
+    ///                                              próximo arranque si se cortó
     /// </code>
     /// </summary>
     public static class RecordingLayout
@@ -26,6 +30,27 @@ namespace XRCollab.Measurement.Recording
         public const string MarksFile = "marks.csv";
         public const string FramesHeader = "video_frame,capture_utc_iso,capture_unix_ms,unity_frame,unity_realtime_s";
         public const string MarksHeader = "mark_utc_iso,mark_unix_ms,unity_frame,computer,recording_label,text";
+        public const string AppAudioFile = "audio_app.wav";
+        public const string MicAudioFile = "audio_mic.wav";
+        public const string AppAudioSyncFile = "audio_app_sync.csv";
+        public const string MicAudioSyncFile = "audio_mic_sync.csv";
+        public const string AudioSyncHeader = "audio_frame,utc_iso,unix_ms";
+        public const string AudioMuxLogFile = "audio_mux.log";
+        public const string AudioMuxDoneFile = "audio_mux.done";
+        public const string AudioMuxFailedFile = "audio_mux.failed";
+
+        /// <summary>Hora UTC con µs (session.json de audio, *_sync.csv).</summary>
+        public static string FormatUtcMicros(DateTime utc) =>
+            utc.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.ffffff'Z'", CultureInfo.InvariantCulture);
+
+        public static string AudioSyncRow(long frame, DateTime utc) =>
+            string.Join(",",
+                frame.ToString(CultureInfo.InvariantCulture),
+                FormatUtcMicros(utc),
+                PreciseClock.ToUnixMs(utc).ToString("F3", CultureInfo.InvariantCulture));
+
+        /// <summary>Video con audio a medio armar (se renombra al .mp4 final solo si ffmpeg terminó bien).</summary>
+        public static string AudioMuxPartialPath(string sessionDir) => FinalVideoPath(sessionDir) + ".av.partial";
 
         public static string SessionName(DateTime localStart, string computerName) =>
             $"{localStart:yyyyMMdd_HHmmss}_{computerName}";
@@ -127,5 +152,34 @@ namespace XRCollab.Measurement.Recording
         public long framesCaptured;
         public long framesDropped;
         public string note;
+        /// <summary>Audio de la app (lo que oye el participante). file vacío = no se grabó (ver error).</summary>
+        public AudioTrackInfo audioApp;
+        /// <summary>Micrófono del visor. file vacío = no se grabó (ver error).</summary>
+        public AudioTrackInfo audioMic;
+    }
+
+    /// <summary>
+    /// Una pista de audio en session.json. <see cref="startUtc"/> es la hora UTC estimada de la primera muestra del
+    /// WAV (ajuste lineal muestra↔hora sobre toda la grabación); el desfase con el video es
+    /// <c>startUtc − firstFrameUtc</c>. <see cref="effectiveRate"/> es la frecuencia real medida contra el reloj del
+    /// sistema (deriva del reloj de audio).
+    /// </summary>
+    [Serializable]
+    public sealed class AudioTrackInfo
+    {
+        public string track;
+        public string device;
+        public string file;
+        public string syncFile;
+        public int sampleRate;
+        public int channels;
+        public string startUtc;
+        public string firstChunkUtc;
+        public double effectiveRate;
+        public long frames;
+        public double seconds;
+        public long framesSilenced;
+        public int syncPoints;
+        public string error;
     }
 }

@@ -209,6 +209,177 @@ namespace XRCollab.Measurement.Recording.Tests
             StringAssert.Contains("\"error\":\"x\"", json);
         }
 
+        // ---------------- audio ----------------
+
+        [Test]
+        public void Settings_AudioFlags()
+        {
+            SessionRecorderSettings d = SessionRecorderSettings.FromCommandLine(new string[0]);
+            Assert.IsTrue(d.audio);
+            Assert.IsTrue(d.mic);
+            Assert.AreEqual("", d.micDevice);
+            Assert.IsFalse(SessionRecorderSettings.FromCommandLine(new[] { "-rec-audio", "off" }).audio);
+            Assert.IsTrue(SessionRecorderSettings.FromCommandLine(new[] { "-rec-audio", "on" }).audio);
+            Assert.IsFalse(SessionRecorderSettings.FromCommandLine(new[] { "-rec-mic", "off" }).mic);
+            SessionRecorderSettings named = SessionRecorderSettings.FromCommandLine(new[] { "-rec-mic", "Focus Vision", "-rec-fps", "20" });
+            Assert.IsTrue(named.mic);
+            Assert.AreEqual("Focus Vision", named.micDevice);
+            Assert.AreEqual(20, named.fps);
+            Assert.AreEqual("", SessionRecorderSettings.FromCommandLine(new[] { "-rec-mic", "-rec-auto" }).micDevice);   // falta el valor
+        }
+
+        [Test]
+        public void ChooseMic_PrefersHeadsetThenDefault()
+        {
+            string[] devices = { "Micrófono (Realtek(R) Audio)", "Microphone (VIVE Streaming Audio)", "Headset Microphone (Oculus Virtual Audio Device)" };
+            Assert.AreEqual("Microphone (VIVE Streaming Audio)", RecordingAudioDevices.ChooseMic(devices, "", out _));
+            Assert.AreEqual("Headset Microphone (Oculus Virtual Audio Device)", RecordingAudioDevices.ChooseMic(devices, "oculus", out _));
+            Assert.AreEqual("Micrófono (Realtek(R) Audio)", RecordingAudioDevices.ChooseMic(devices, "nada, realtek", out _));
+            Assert.AreEqual("", RecordingAudioDevices.ChooseMic(new[] { "Micrófono (Realtek(R) Audio)" }, "", out string why));   // predeterminado
+            StringAssert.Contains("predeterminado", why);
+            Assert.IsNull(RecordingAudioDevices.ChooseMic(new string[0], "", out _));
+        }
+
+        [Test]
+        public void WavHeader_Is44BytesPcm16()
+        {
+            byte[] h = AudioWavWriter.Header(48000, 2, 1000);
+            Assert.AreEqual(44, h.Length);
+            Assert.AreEqual("RIFF", System.Text.Encoding.ASCII.GetString(h, 0, 4));
+            Assert.AreEqual(1036u, BitConverter.ToUInt32(h, 4));
+            Assert.AreEqual("WAVEfmt ", System.Text.Encoding.ASCII.GetString(h, 8, 8));
+            Assert.AreEqual(1, BitConverter.ToUInt16(h, 20));          // PCM
+            Assert.AreEqual(2, BitConverter.ToUInt16(h, 22));          // canales
+            Assert.AreEqual(48000u, BitConverter.ToUInt32(h, 24));
+            Assert.AreEqual(192000u, BitConverter.ToUInt32(h, 28));    // bytes/s
+            Assert.AreEqual(4, BitConverter.ToUInt16(h, 32));
+            Assert.AreEqual(16, BitConverter.ToUInt16(h, 34));
+            Assert.AreEqual("data", System.Text.Encoding.ASCII.GetString(h, 36, 4));
+            Assert.AreEqual(1000u, BitConverter.ToUInt32(h, 40));
+
+            var pcm = new byte[6];
+            AudioWavWriter.ToPcm16(new[] { 0f, 2f, -1f }, 3, pcm);
+            Assert.AreEqual(0, BitConverter.ToInt16(pcm, 0));
+            Assert.AreEqual(32767, BitConverter.ToInt16(pcm, 2));     // recortado
+            Assert.AreEqual(-32767, BitConverter.ToInt16(pcm, 4));
+        }
+
+        [Test]
+        public void WavWriter_WritesReadableFile()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "wav-test-" + Guid.NewGuid().ToString("N") + ".wav");
+            try
+            {
+                var w = new AudioWavWriter(path, 8000, 1);
+                var block = new float[800];
+                for (int i = 0; i < 25; i++) w.Write(block, block.Length);   // 2,5 s
+                w.Close();
+                Assert.IsTrue(w.WaitClosed(5000));
+                Assert.AreEqual(20000, w.FramesWritten);
+                byte[] bytes = File.ReadAllBytes(path);
+                Assert.AreEqual(44 + 40000, bytes.Length);
+                Assert.AreEqual(40000u, BitConverter.ToUInt32(bytes, 40));
+                Assert.AreEqual(40036u, BitConverter.ToUInt32(bytes, 4));
+            }
+            finally
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+        }
+
+        [Test]
+        public void ClockFit_EstimatesStartAndDrift()
+        {
+            var t0 = new DateTime(2026, 10, 8, 15, 0, 0, DateTimeKind.Utc);
+            var fit = new AudioClockFit(48000);
+            // El reloj de audio corre 100 ppm rápido: 48004,8 muestras por segundo real. Primera observación en la
+            // muestra 4800 (la muestra 0 pasó 0,1 s antes, medido con el reloj real).
+            const double realRate = 48004.8;
+            var rng = new Random(1);
+            for (long frame = 4800; frame < 48000L * 120; frame += 1024)
+            {
+                double seconds = frame / realRate + (rng.NextDouble() - 0.5) * 0.02;   // ±10 ms de ruido por callback
+                fit.Add(frame, t0.AddTicks((long)(seconds * TimeSpan.TicksPerSecond)));
+            }
+            Assert.IsTrue(fit.TryFit(out _, out _));
+            Assert.AreEqual(realRate, fit.EffectiveRate, 0.5);
+            Assert.AreEqual(0.0, (fit.StartUtc - t0).TotalMilliseconds, 2.0);
+
+            var few = new AudioClockFit(48000);
+            few.Add(4800, t0.AddSeconds(0.1));
+            Assert.IsFalse(few.TryFit(out _, out _));
+            Assert.AreEqual(48000, few.EffectiveRate);
+            Assert.AreEqual(0.0, (few.StartUtc - t0).TotalMilliseconds, 0.01);
+        }
+
+        [Test]
+        public void AudioFilterChain_DelaysTrimsAndCorrectsDrift()
+        {
+            Assert.AreEqual("anull", RecordingFfmpeg.AudioFilterChain(0.0001, 1.0));
+            Assert.AreEqual("adelay=delays=250:all=1", RecordingFfmpeg.AudioFilterChain(0.25, 1.0));
+            Assert.AreEqual("atrim=start=0.125000,asetpts=PTS-STARTPTS", RecordingFfmpeg.AudioFilterChain(-0.125, 1.0));
+            Assert.AreEqual("atempo=1.00010000,adelay=delays=40:all=1", RecordingFfmpeg.AudioFilterChain(0.04, 1.0001));
+
+            Assert.AreEqual(1.0, RecordingFfmpeg.DriftTempo(48000, 48004.8, 10));      // corta: no se corrige
+            Assert.AreEqual(1.0001, RecordingFfmpeg.DriftTempo(48000, 48004.8, 600), 1e-9);
+            Assert.AreEqual(1.0, RecordingFfmpeg.DriftTempo(48000, 48000.2, 600));     // < 10 ppm
+            Assert.AreEqual(1.0, RecordingFfmpeg.DriftTempo(48000, 49000, 600));       // absurdo
+        }
+
+        [Test]
+        public void AudioMux_TwoNamedTracksVideoCopied()
+        {
+            var tracks = new[]
+            {
+                new AudioMuxTrack { Name = "app", FilePath = @"C:\r\s\audio_app.wav", OffsetSeconds = 0.05, Tempo = 1.0 },
+                new AudioMuxTrack { Name = "mic", FilePath = @"C:\r\s\audio_mic.wav", OffsetSeconds = -0.2, Tempo = 1.0 },
+            };
+            string a = RecordingFfmpeg.AudioMuxArguments(@"C:\r\s\s.mp4", tracks, @"C:\r\s\s.mp4.av.partial");
+            StringAssert.Contains("-i \"C:\\r\\s\\s.mp4\" -i \"C:\\r\\s\\audio_app.wav\" -i \"C:\\r\\s\\audio_mic.wav\"", a);
+            StringAssert.Contains("-filter_complex \"[1:a]adelay=delays=50:all=1[a0];[2:a]atrim=start=0.200000,asetpts=PTS-STARTPTS[a1]\"", a);
+            StringAssert.Contains("-map 0:v:0 -map \"[a0]\" -map \"[a1]\" -c:v copy -c:a aac", a);
+            StringAssert.Contains("-metadata:s:a:0 title=app", a);
+            StringAssert.Contains("-metadata:s:a:1 title=mic", a);
+            StringAssert.EndsWith("-f mp4 -y \"C:\\r\\s\\s.mp4.av.partial\"", a);
+
+            string part = RecordingFfmpeg.AudioMuxCommandPart(@"C:\ff\ffmpeg.exe", "ARGS", @"C:\r\s\s.mp4.av.partial", @"C:\r\s\s.mp4",
+                @"C:\r\s\audio_mux.log", @"C:\r\s\audio_mux.done", @"C:\r\s\audio_mux.failed");
+            Assert.AreEqual("(\"C:\\ff\\ffmpeg.exe\" ARGS 2>\"C:\\r\\s\\audio_mux.log\" && move /y \"C:\\r\\s\\s.mp4.av.partial\" \"C:\\r\\s\\s.mp4\" >nul" +
+                            " && echo ok>\"C:\\r\\s\\audio_mux.done\" || echo failed>\"C:\\r\\s\\audio_mux.failed\")", part);
+
+            // El audio va después del video final, solo si éste quedó bien (&&).
+            string c = RecordingFfmpeg.FinalizeCommandLine(@"C:\ff\ffmpeg.exe", @"C:\r\s\concat.txt", @"C:\r\s\s.mp4.partial", @"C:\r\s\s.mp4", part);
+            StringAssert.Contains("move /y \"C:\\r\\s\\s.mp4.partial\" \"C:\\r\\s\\s.mp4\" >nul && (\"C:\\ff\\ffmpeg.exe\" ARGS", c);
+            StringAssert.EndsWith(")\"", c);
+        }
+
+        [Test]
+        public void AudioMux_TracksFromSessionInfo()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "rec-tests-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(dir);
+                File.WriteAllBytes(Path.Combine(dir, RecordingLayout.AppAudioFile), new byte[44 + 100]);
+                var info = new RecordingSessionInfo
+                {
+                    firstFrameUtc = "2026-10-08T15:00:00.000Z",
+                    audioApp = new AudioTrackInfo { file = RecordingLayout.AppAudioFile, startUtc = "2026-10-08T15:00:00.120000Z", sampleRate = 48000, effectiveRate = 48000, seconds = 1 },
+                    audioMic = new AudioTrackInfo { file = RecordingLayout.MicAudioFile, startUtc = "2026-10-08T14:59:59.900000Z" },   // sin WAV
+                };
+                var tracks = RecordingAudioMux.Tracks(dir, info);
+                Assert.AreEqual(1, tracks.Count);
+                Assert.AreEqual("app", tracks[0].Name);
+                Assert.AreEqual(0.12, tracks[0].OffsetSeconds, 1e-6);
+                Assert.AreEqual(1.0, tracks[0].Tempo);
+                Assert.IsTrue(RecordingAudioMux.HasAudioFiles(dir));
+            }
+            finally
+            {
+                if (Directory.Exists(dir)) Directory.Delete(dir, true);
+            }
+        }
+
         [TestCase(-3, 0, "-03:00")]
         [TestCase(5, 30, "+05:30")]
         [TestCase(0, 0, "+00:00")]

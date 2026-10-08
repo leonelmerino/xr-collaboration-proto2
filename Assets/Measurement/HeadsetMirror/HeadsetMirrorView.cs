@@ -48,6 +48,21 @@ namespace XRCollab.Measurement.Mirroring
             set { _visible = value; RefreshImage(); }
         }
 
+        /// <summary>
+        /// Dónde está la imagen del visor en la ventana, en píxeles de pantalla (origen abajo a la izquierda, como
+        /// <c>Screen</c>). false si no se está mostrando (oculta con F5 o sin cuadros). Sirve para dibujar encima
+        /// (p. ej. la mirada) en el mismo lugar de la imagen.
+        /// </summary>
+        public bool TryGetImageScreenRect(out Rect rect)
+        {
+            rect = default;
+            if (_image == null || !_image.enabled) return false;
+            var corners = new Vector3[4];
+            ((RectTransform)_image.transform).GetWorldCorners(corners);   // Canvas Overlay: mundo = píxeles de pantalla
+            rect = Rect.MinMaxRect(corners[0].x, corners[0].y, corners[2].x, corners[2].y);
+            return rect.width > 1f && rect.height > 1f;
+        }
+
         /// <summary>Sube un cuadro RGBA (filas de abajo hacia arriba) a la textura y lo muestra.</summary>
         public void Present(byte[] rgba, int width, int height)
         {

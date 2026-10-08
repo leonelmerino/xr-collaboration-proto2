@@ -145,5 +145,11 @@ namespace XRCollab.Measurement.Recording
         public long framesDropped;
         public string lastVideo = "";
         public string appUtc = "";
+        /// <summary>Audio de la app: fuente (AudioListener · Hz), "off" o "error: ...".</summary>
+        public string audioApp = "";
+        /// <summary>Micrófono: nombre del dispositivo (· Hz), "off" o "error: ...".</summary>
+        public string audioMic = "";
+        /// <summary>Audio dentro de lastVideo: "" (sin audio) | pendiente | ok | error: ... (WAVs y video sin audio quedan).</summary>
+        public string audioMux = "";
     }
 }
