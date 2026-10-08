@@ -49,7 +49,14 @@ public class BioLabUdpClient
 
         try
         {
-            UdpReceiveResult result = await udp.ReceiveAsync();
+            // ReceiveAsync ignora ReceiveTimeout: sin esto, si BioLab no responde el PING nunca termina.
+            Task<UdpReceiveResult> receive = udp.ReceiveAsync();
+            if (await Task.WhenAny(receive, Task.Delay(timeoutMs)) != receive)
+            {
+                _ = receive.ContinueWith(t => { var _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+                return "TIMEOUT_OR_SOCKET_ERROR: no reply";
+            }
+            UdpReceiveResult result = await receive;
             return Encoding.ASCII.GetString(result.Buffer).Trim();
         }
         catch (SocketException ex)
