@@ -43,6 +43,7 @@ namespace XRCollab.Measurement.Recording
             Port = port;
             _listener = new TcpListener(IPAddress.Loopback, port);
             _listener.Start();
+            NotInheritable(_listener.Server);
             _acceptThread = new Thread(AcceptLoop) { IsBackground = true, Name = "RecordingControl accept" };
             _acceptThread.Start();
         }
@@ -112,6 +113,23 @@ namespace XRCollab.Measurement.Recording
                 catch (Exception) { /* cliente se fue o timeout de lectura: nada que hacer */ }
             }
         }
+
+        // Que un proceso hijo (ffmpeg, la reapertura de la app) no herede el socket: si lo hereda, el puerto queda
+        // tomado aunque esta app se cierre y la próxima no puede escuchar (visto el 2026-10-13).
+        private static void NotInheritable(Socket socket)
+        {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+            try { SetHandleInformation(socket.Handle, HandleFlagInherit, 0); }
+            catch (Exception e) { Debug.LogWarning($"{LogPrefix}no se pudo marcar el socket como no heredable: {e.Message}"); }
+#endif
+        }
+
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        private const uint HandleFlagInherit = 0x00000001;
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+#endif
 
         public static string ErrorJson(string message) =>
             JsonUtility.ToJson(new RecordingStatus { ok = false, error = message, state = "", computer = Environment.MachineName });

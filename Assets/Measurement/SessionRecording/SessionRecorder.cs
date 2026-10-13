@@ -63,6 +63,13 @@ namespace XRCollab.Measurement.Recording
         /// <summary>Carpeta de la grabación en curso (null si está en espera).</summary>
         public string SessionDirectory => _run?.Dir;
 
+        /// <summary>El grabador de esta app (null antes de Start o sin modo medición).</summary>
+        public static SessionRecorder Instance { get; private set; }
+
+        /// <summary>Marca con la hora de ahora en marks.csv (de la grabación en curso, o de la carpeta raíz en espera),
+        /// igual que la orden «mark». Hilo principal.</summary>
+        public void Mark(string text) => WriteMark(PreciseClock.UtcNow, RecordingCommand.Sanitize(text, RecordingCommand.MaxMarkLength));
+
         public static SessionRecorder Create(Transform parent, SessionRecorderSettings settings)
         {
             var go = new GameObject("[SessionRecorder]");
@@ -76,6 +83,7 @@ namespace XRCollab.Measurement.Recording
 
         private void Start()
         {
+            Instance = this;
             settings.Validate();
             _root = string.IsNullOrEmpty(settings.outputRoot) ? Path.Combine(Application.persistentDataPath, "Recordings") : settings.outputRoot;
             Directory.CreateDirectory(_root);
@@ -213,6 +221,34 @@ namespace XRCollab.Measurement.Recording
                 case RecordingCommandKind.Mark:
                     WriteMark(now, cmd.Text);
                     return Reply(true, "");
+                case RecordingCommandKind.Cue:
+                {
+                    if (AppControlHooks.Cue == null) return Reply(false, "esta app no tiene señales 3D (FeedbackCues)");
+                    string cueError = AppControlHooks.Cue(cmd.Text);
+                    if (cueError == null) WriteMark(now, "señal " + RecordingCommand.Sanitize(cmd.Text.Replace('|', ' '), RecordingCommand.MaxMarkLength));
+                    return Reply(cueError == null, cueError ?? "");
+                }
+                case RecordingCommandKind.Snapshot:
+                {
+                    string jpg = null;
+                    try { jpg = AppControlHooks.Snapshot?.Invoke(cmd.Width); }
+                    catch (Exception e) { return Reply(false, "snapshot: " + e.Message); }
+                    string reply = Reply(jpg != null, jpg == null ? "sin imagen del visor (espejo apagado o visor en reposo)" : "");
+                    return jpg == null ? reply : reply.Substring(0, reply.Length - 1) + ",\"jpg\":\"" + jpg + "\"}";
+                }
+                case RecordingCommandKind.Occlusion:
+                {
+                    if (AppControlHooks.Occlusion == null) return Reply(false, "esta app no tiene oclusión por las manos");
+                    string occError = AppControlHooks.Occlusion(cmd.Text);
+                    return Reply(occError == null, occError ?? "");
+                }
+                case RecordingCommandKind.Turn:
+                {
+                    // El botón de turno escribe él mismo su marca (también cuando se toca con la mano).
+                    if (AppControlHooks.Turn == null) return Reply(false, "esta app no tiene botón de turno");
+                    string turnError = AppControlHooks.Turn(cmd.Text);
+                    return Reply(turnError == null, turnError ?? "");
+                }
                 default:
                     return Reply(true, "");
             }
@@ -273,7 +309,12 @@ namespace XRCollab.Measurement.Recording
                 s.framesDropped = _run.Dropped;
                 if (_run.Failed && s.error.Length == 0) s.error = _run.Status;
             }
-            return JsonUtility.ToJson(s);
+            string json = JsonUtility.ToJson(s);
+            // Salud en vivo de la app (XR, mirada, manos, fps, espejo, red, señales): la arma Assembly-CSharp.
+            string health = null;
+            try { health = AppControlHooks.Health?.Invoke(); }
+            catch (Exception e) { Debug.LogWarning($"{LogPrefix}estado de la app: {e.Message}"); }
+            return string.IsNullOrEmpty(health) ? json : json.Substring(0, json.Length - 1) + ",\"app\":" + health + "}";
         }
 
         private void FillAudioStatus(RecordingStatus s)
@@ -467,6 +508,7 @@ namespace XRCollab.Measurement.Recording
         {
             if (_quitting) return;
             _quitting = true;
+            if (Instance == this) Instance = null;
             StopAllCoroutines();
             _control?.Dispose();
             _control = null;

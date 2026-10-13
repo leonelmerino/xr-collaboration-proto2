@@ -153,6 +153,46 @@ namespace XRCollab.Measurement.Recording.Tests
             Assert.AreEqual(new DateTime(2026, 10, 1, 18, 0, 0, DateTimeKind.Utc), c.AtUtc);
         }
 
+        [Test]
+        public void Command_CueKeepsTextAndSnapshotWidth()
+        {
+            RecordingCommand c = RecordingCommand.Parse("cue bad|cross|MAL COLOCADO|Quedó torcido, otra vez\r", out string error);
+            Assert.IsNull(error);
+            Assert.AreEqual(RecordingCommandKind.Cue, c.Kind);
+            Assert.AreEqual("bad|cross|MAL COLOCADO|Quedó torcido, otra vez", c.Text);
+            Assert.AreEqual("clear", RecordingCommand.Parse("CUE clear", out _).Text);
+
+            RecordingCommand s = RecordingCommand.Parse("snapshot", out error);
+            Assert.AreEqual(RecordingCommandKind.Snapshot, s.Kind);
+            Assert.AreEqual(RecordingCommand.DefaultSnapshotWidth, s.Width);
+            Assert.AreEqual(320, RecordingCommand.Parse("snapshot w=320", out _).Width);
+        }
+
+        [Test]
+        public void Command_OcclusionAndTurn()
+        {
+            RecordingCommand o = RecordingCommand.Parse("occlusion SHOW", out string error);
+            Assert.IsNull(error);
+            Assert.AreEqual(RecordingCommandKind.Occlusion, o.Kind);
+            Assert.AreEqual("show", o.Text);
+            Assert.AreEqual("offset=-35", RecordingCommand.Parse("occlusion offset=-35", out _).Text);
+            Assert.AreEqual("feather=0.4", RecordingCommand.Parse("occlusion feather=0.4", out _).Text);
+
+            RecordingCommand t = RecordingCommand.Parse("turn start\r", out error);
+            Assert.IsNull(error);
+            Assert.AreEqual(RecordingCommandKind.Turn, t.Kind);
+            Assert.AreEqual("start", t.Text);
+            Assert.AreEqual("place", RecordingCommand.Parse("turn place", out _).Text);
+        }
+
+        [TestCase("cue")]
+        [TestCase("occlusion")]
+        [TestCase("occlusion maybe")]
+        [TestCase("occlusion offset=abc")]
+        [TestCase("turn")]
+        [TestCase("turn next")]
+        [TestCase("snapshot w=10")]
+        [TestCase("snapshot big")]
         [TestCase("record")]
         [TestCase("start label=S 01")]
         [TestCase("start label=../x")]

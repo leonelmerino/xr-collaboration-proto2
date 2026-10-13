@@ -51,6 +51,8 @@ public static class MeasurementBuild
     public static void BuildWin64()
     {
         ConfigureOpenXR();
+        FeedbackCueAssetsBuilder.Ensure();   // materiales de las señales 3D (Resources): incluye sus shaders en el build
+        OcclusionAssetsBuilder.Ensure();     // material de los oclusores (manos tapan lo virtual)
         string outPath = ArgValue("-out") ?? Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "..", "..",
             "development", "unity", "builds", "xr-collaboration-proto2-measurement", ExeName));
         string[] scenes = EditorBuildSettings.scenes.Where(s => s.enabled).Select(s => s.path).ToArray();

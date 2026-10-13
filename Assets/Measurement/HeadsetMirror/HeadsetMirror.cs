@@ -37,6 +37,13 @@ namespace XRCollab.Measurement.Mirroring
         public MirrorStatus Status => _source?.Status ?? MirrorStatus.Stopped;
         public float DisplayFps => _displayFps;
 
+        /// <summary>
+        /// Último cuadro del visor (lo que ve el participante: sala de las cámaras + capa de la app), RGBA32 legible en
+        /// CPU, filas de abajo hacia arriba; ambos ojos lado a lado (ojo izquierdo = mitad izquierda). null sin imagen.
+        /// Lo usan la iluminación de las señales 3D (FeedbackCues) y el «snapshot» del panel de sesión.
+        /// </summary>
+        public Texture2D Frame => _view != null ? _view.Texture : null;
+
         /// <summary>Aviso que se muestra ahora (null = hay imagen y todo está bien).</summary>
         public MirrorNotice Notice => _notice;
 

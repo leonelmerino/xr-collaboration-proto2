@@ -42,6 +42,9 @@ namespace XRCollab.Measurement.Mirroring
             set { _layout = value; ApplyLayout(); }
         }
 
+        /// <summary>Último cuadro del visor (RGBA32 legible en CPU, filas de abajo hacia arriba), o null sin imagen.</summary>
+        public Texture2D Texture => _hasFrame ? _texture : null;
+
         public bool Visible
         {
             get => _visible;
