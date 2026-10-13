@@ -12,8 +12,7 @@ en el video** de SessionRecorder sin hacer nada más.
 | | Efecto |
 |---|---|
 | **G** | Muestra / oculta todo lo de la mirada en el PC (anillo, estela y línea de estado). |
-| **Shift+G** | Enciende / apaga el punto en el **visor** (magenta). Solo para pruebas; queda en `Player.log` con hora UTC. |
-| `-gaze-overlay on\|off` | Estado inicial en el PC (on). |
+| **Shift+G** | Enciende / apaga el punto en el **visor** (magenta). Solo para pruebas; queda en `Player.log` con hora UTC. || `-gaze-overlay on\|off` | Estado inicial en el PC (on). |
 | `-gaze-hmd on\|off` | Estado inicial en el visor (off). |
 | `-gaze-distance M` | Distancia del punto si el rayo no choca con nada (1.5 m). |
 | `-gaze-overlay-delay-ms N` | Retrasa el anillo para que coincida con el espejo, que llega ~100–200 ms tarde (0). |
@@ -32,8 +31,9 @@ también aparece en el visor. Por eso no sirve una capa «solo escritorio» cull
    tracking al mundo con el padre de la cámara (igual que las manos en `BodyTrackingSessionLogger`).
 2. Raycast contra los colliders de la escena (desde 10 cm delante de los ojos, hasta 10 m). Si no choca, el punto
    queda a 1,5 m. En modo medición casi nunca choca: el entorno virtual está apagado y el passthrough no tiene
-   geometría. Para el anillo 2D la distancia apenas importa (se proyecta por el mismo rayo; solo cambia el
-   paralaje entre ojos).
+   geometría. Sin choque, **cada ojo usa su propio rayo**, desde el ojo de render de ese ojo, proyectado a 10 m (2026-10-13): con el rayo combinado a
+   1,5 m el anillo quedaba corrido ~2° hacia afuera en cada ojo al mirar algo a 0,5 m (paralaje). El punto del
+   visor va al cruce de los dos rayos (vergencia, 0,2–10 m) para verse uno solo; si no hay cruce, a 1,5 m.
 3. El punto se proyecta con la matriz de vista y proyección **de cada ojo** de la cámara XR
    (`GetStereoViewMatrix` / `GetStereoProjectionMatrix`) y se dibuja en la mitad izquierda / derecha de la imagen
    del espejo (`HeadsetMirror.TryGetImageScreenRect`). Con la vista de un ojo, solo el izquierdo.

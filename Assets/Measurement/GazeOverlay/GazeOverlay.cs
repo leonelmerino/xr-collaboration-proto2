@@ -179,8 +179,18 @@ public sealed class GazeOverlay : MonoBehaviour
         {
             point = GazePoint(cam, out _hitName);
             sample.Valid = true;
-            sample.LeftOk = Project(cam, Camera.StereoscopicEye.Left, point, out sample.Left);
-            sample.RightOk = Project(cam, Camera.StereoscopicEye.Right, point, out sample.Right);
+            // Sin choque, el punto a distancia fija cae corrido en cada ojo para lo que está más cerca o más lejos
+            // (paralaje: ~4° entre ojos con un objeto a 0,5 m). Cada ojo usa entonces su propio rayo, proyectado lejos:
+            // cae sobre lo que ese ojo mira, a cualquier distancia.
+            Vector3 leftPoint = point, rightPoint = point;
+            if (_hitName == null && _eye.LeftGazeValid && _eye.RightGazeValid)
+            {
+                leftPoint = EyeFarPoint(cam, Camera.StereoscopicEye.Left, _eye.LeftDirection);
+                rightPoint = EyeFarPoint(cam, Camera.StereoscopicEye.Right, _eye.RightDirection);
+                if (TryVergencePoint(cam, out Vector3 vergence)) point = vergence;
+            }
+            sample.LeftOk = Project(cam, Camera.StereoscopicEye.Left, leftPoint, out sample.Left);
+            sample.RightOk = Project(cam, Camera.StereoscopicEye.Right, rightPoint, out sample.Right);
         }
         else
         {
@@ -240,6 +250,50 @@ public sealed class GazeOverlay : MonoBehaviour
         }
         hitName = null;
         return origin + dir * _distance;
+    }
+
+    /// <summary>
+    /// Punto lejano (10 m) en la dirección de mirada de un ojo, saliendo del ojo de RENDER de ese ojo (no del origen
+    /// que reporta VIVE, ~3 cm más adelante): proyectado en ese ojo es solo la dirección.
+    /// </summary>
+    private static Vector3 EyeFarPoint(Camera cam, Camera.StereoscopicEye eye, Vector3 dir)
+    {
+        Transform space = cam.transform.parent;
+        Vector3 worldDir = space != null ? space.TransformDirection(dir) : dir;
+        return RenderEyePosition(cam, eye) + worldDir.normalized * MaxRayDistance;
+    }
+
+    /// <summary>Posición (mundo) del ojo con que se renderiza ese ojo del visor.</summary>
+    private static Vector3 RenderEyePosition(Camera cam, Camera.StereoscopicEye eye)
+    {
+        if (cam.stereoEnabled)
+        {
+            Matrix4x4 view = cam.GetStereoViewMatrix(eye);
+            if (view.m33 != 0f) return view.inverse.GetColumn(3);
+        }
+        return cam.transform.position;
+    }
+
+    /// <summary>
+    /// Punto donde se cruzan (lo más cerca) los rayos de los dos ojos: ahí se dibuja el punto del visor, para que se
+    /// vea uno solo y no doble sobre objetos cercanos. Falla si los rayos son casi paralelos o el cruce queda fuera de
+    /// 0,2–10 m (ruido de vergencia); entonces se queda la distancia fija.
+    /// </summary>
+    private bool TryVergencePoint(Camera cam, out Vector3 point)
+    {
+        point = default;
+        Vector3 p1 = _eye.LeftOrigin, d1 = _eye.LeftDirection.normalized;
+        Vector3 p2 = _eye.RightOrigin, d2 = _eye.RightDirection.normalized;
+        Vector3 w = p1 - p2;
+        float b = Vector3.Dot(d1, d2), d = Vector3.Dot(d1, w), e = Vector3.Dot(d2, w);
+        float denom = 1f - b * b;
+        if (denom < 1e-6f) return false;
+        float t1 = (b * e - d) / denom, t2 = (e - b * d) / denom;
+        if (t1 < 0.2f || t2 < 0.2f || t1 > MaxRayDistance || t2 > MaxRayDistance) return false;
+        Vector3 mid = ((p1 + d1 * t1) + (p2 + d2 * t2)) * 0.5f;
+        Transform space = cam.transform.parent;
+        point = space != null ? space.TransformPoint(mid) : mid;
+        return true;
     }
 
     /// <summary>Punto del mundo → coordenadas 0..1 de la imagen de un ojo (origen abajo a la izquierda).</summary>

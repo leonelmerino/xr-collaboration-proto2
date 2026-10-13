@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR;
 using UnityEngine.XR.Management;
+using UnityEngine.XR.OpenXR;
 using VIVE.OpenXR;
 using VIVE.OpenXR.EyeTracker;
 
@@ -44,6 +45,29 @@ public class ViveEyeTrackingProvider : MonoBehaviour
 
     private float lastErrorLogTime = -999f;
 
+    /// <summary>Hay eye tracker de VIVE creado (false mientras la app lo reintenta; ver trackerMissing).</summary>
+    public bool TrackerReady => IsXrSessionReady() && !trackerMissing;
+
+    // El plugin de VIVE crea el eye tracker una sola vez, al crear la sesión. Y la capa de eye tracking de VIVE
+    // Streaming decide si hay eye tracking una sola vez, al crear la instancia OpenXR: si en ese momento el visor
+    // está en reposo (nadie lo tiene puesto, o está en la frente), RRServer dice "VBS 0" y queda
+    // supportsEyeTracking: 0 hasta cerrar la app; cada lectura tiraba NullReference.
+    // Arreglo en dos pasos, sin intervención:
+    //   1. Mientras no haya tracker, se reintenta crearlo cada RetrySeconds (barato; casi siempre alcanza: VIVE
+    //      pasa a "VBS 1" unos segundos después de que alguien se pone el visor).
+    //   2. Si con el visor puesto (sesión FOCUSED) sigue sin tracker durante FocusedSeconds, la app se reabre sola
+    //      una vez (cierra limpio, guarda los CSV, y un proceso aparte la vuelve a abrir con los mismos argumentos
+    //      unos segundos después, ya con el visor despierto). Antes se reiniciaba XR dentro de la app
+    //      (DeinitializeLoader/InitializeLoader): el 2026-10-13 eso hizo caer la app al apagar XR. No volver a eso.
+    private const float RetrySeconds = 2f;
+    private const float FocusedSeconds = 20f;
+    private const string RelaunchedFlag = "-relaunched-for-eyes";
+    private const int XrSessionStateFocused = 5;
+    private float nextCreateAttempt;
+    private bool trackerMissing;
+    private float focusedSince = -1f;
+    private static bool s_relaunching;
+
     private static readonly List<XRDisplaySubsystem> s_displaySubsystems = new();
 
     private static bool IsXrSessionReady()
@@ -75,6 +99,13 @@ public class ViveEyeTrackingProvider : MonoBehaviour
         // Esto evita spam de XR_ERROR_SESSION_LOST durante el bootstrap de OpenXR.
         if (!IsXrSessionReady())
             return;
+
+        if (trackerMissing && !TryCreateEyeTracker())
+        {
+            MaybeRelaunch();
+            return;
+        }
+        focusedSince = -1f;
 
         ReadGazeDataSafe();
         ReadPupilDataSafe();
@@ -111,7 +142,11 @@ public class ViveEyeTrackingProvider : MonoBehaviour
 
         try
         {
-            XR_HTC_eye_tracker.Interop.GetEyeGazeData(out XrSingleEyeGazeDataHTC[] gazeData);
+            if (!XR_HTC_eye_tracker.Interop.GetEyeGazeData(out XrSingleEyeGazeDataHTC[] gazeData) || gazeData == null)
+            {
+                trackerMissing = true;
+                return;
+            }
 
             var left = gazeData[(int)XrEyePositionHTC.XR_EYE_POSITION_LEFT_HTC];
             var right = gazeData[(int)XrEyePositionHTC.XR_EYE_POSITION_RIGHT_HTC];
@@ -155,6 +190,67 @@ public class ViveEyeTrackingProvider : MonoBehaviour
         catch (Exception e)
         {
             ThrottledError($"[EyeTracking] Gaze read failed: {e.Message}");
+        }
+    }
+
+    /// <summary>Reintenta crear el eye tracker (cada RetrySeconds). True si ya hay tracker.</summary>
+    private bool TryCreateEyeTracker()
+    {
+        if (Time.unscaledTime < nextCreateAttempt) return false;
+        nextCreateAttempt = Time.unscaledTime + RetrySeconds;
+        var feature = OpenXRSettings.Instance != null ? OpenXRSettings.Instance.GetFeature<ViveEyeTracker>() : null;
+        if (feature == null || !feature.enabled)
+        {
+            ThrottledError("[EyeTracking] VIVE XR Eye Tracker feature not enabled: no gaze.");
+            return false;
+        }
+        if (!feature.CreateEyeTracker())
+        {
+            ThrottledError("[EyeTracking] No eye tracker yet (runtime reports no eye tracking); retrying every 2 s.");
+            return false;
+        }
+        Debug.Log("[EyeTracking] Eye tracker created; gaze is live.");
+        trackerMissing = false;
+        return true;
+    }
+
+    /// <summary>Paso 2: con el visor puesto (FOCUSED) y sin tracker por FocusedSeconds → reabrir la app una vez.</summary>
+    private void MaybeRelaunch()
+    {
+        if (s_relaunching) return;
+        if (PassthroughUnderlayFeature.SessionState != XrSessionStateFocused) { focusedSince = -1f; return; }
+        if (focusedSince < 0f) focusedSince = Time.unscaledTime;
+        if (Time.unscaledTime - focusedSince < FocusedSeconds) return;
+        string[] args = Environment.GetCommandLineArgs();
+        if (Application.isEditor || Array.IndexOf(args, RelaunchedFlag) >= 0)
+        {
+            ThrottledError($"[EyeTracking] Headset on for {FocusedSeconds:0} s and VIVE still gives no eye tracker: close and reopen the app.");
+            return;
+        }
+        s_relaunching = true;
+        try
+        {
+            // Un cmd aparte espera ~4 s (que esta app ya haya cerrado su sesión XR: nunca dos clientes OpenXR a la
+            // vez, ver vive-921) y la abre de nuevo con los mismos argumentos.
+            string exe = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+            var sb = new System.Text.StringBuilder();
+            for (int i = 1; i < args.Length; i++) sb.Append(" \"").Append(args[i].Replace("\"", "")).Append('"');
+            sb.Append(' ').Append(RelaunchedFlag);
+            // UseShellExecute = true: el cmd NO hereda los handles de esta app. Con false heredaba el socket del canal
+            // de control (127.0.0.1:47811) y la app nueva no podía abrirlo: el panel la veía cerrada (2026-10-13).
+            var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c ping -n 5 127.0.0.1 >nul & start \"\" \"{exe}\"{sb}")
+            {
+                UseShellExecute = true,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+            };
+            System.Diagnostics.Process.Start(psi);
+            Debug.LogWarning($"[EyeTracking] Headset on for {FocusedSeconds:0} s and VIVE still gives no eye tracker (XR started while it was asleep): reopening the app once.");
+            Application.Quit();
+        }
+        catch (Exception e)
+        {
+            s_relaunching = false;
+            ThrottledError($"[EyeTracking] Could not reopen the app ({e.Message}): close and reopen it.");
         }
     }
 
