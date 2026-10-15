@@ -183,6 +183,8 @@ namespace XRCollab.Measurement.Recording.Tests
             Assert.AreEqual(RecordingCommandKind.Turn, t.Kind);
             Assert.AreEqual("start", t.Text);
             Assert.AreEqual("place", RecordingCommand.Parse("turn place", out _).Text);
+            Assert.AreEqual("style ghost", RecordingCommand.Parse("turn style  Ghost", out _).Text);
+            Assert.AreEqual("mode gesture", RecordingCommand.Parse("turn mode gesture", out _).Text);
         }
 
         [TestCase("cue")]
@@ -191,6 +193,8 @@ namespace XRCollab.Measurement.Recording.Tests
         [TestCase("occlusion offset=abc")]
         [TestCase("turn")]
         [TestCase("turn next")]
+        [TestCase("turn style glass")]
+        [TestCase("turn mode")]
         [TestCase("snapshot w=10")]
         [TestCase("snapshot big")]
         [TestCase("record")]
