@@ -38,9 +38,9 @@ public static class HeadsetBuild
         nameof(PassthroughUnderlayFeature),
         "ViveEyeTracker",                 // mirada (ViveEyeTrackingProvider)
         "HandTracking",                   // manos (XR Hands)
-        "HandCommonPosesInteraction",
         "VIVEFocus3Profile",
-        "KHRSimpleControllerProfile",
+        // Sin HandCommonPosesInteraction ni KHRSimpleControllerProfile: nada de la medición los usa y así el visor
+        // corre las mismas features que vive-ar-baseline (que va a 90 Hz estables) + el eye tracker (2026-10-15).
     };
 
     [MenuItem("XR Collab/Configurar visor (Android)")]

@@ -136,10 +136,12 @@ public class MeasurementMode : MonoBehaviour
     }
 
     // Solo se ve en la ventana del PC, no en el visor.
+#if !UNITY_ANDROID || UNITY_EDITOR   // IMGUI en el visor nativo cuesta ~la mitad del CPU/GPU (medido 2026-10-15)
     private void OnGUI()
     {
         const float w = 520f, h = 44f;
         GUI.Box(new Rect(10f, Screen.height - h - 10f, w, h),
             $"MODO MEDICIÓN · passthrough: {PassthroughUnderlayFeature.Status}\nLogs: {Application.persistentDataPath}/EyeTrackingLogs");
     }
+#endif
 }

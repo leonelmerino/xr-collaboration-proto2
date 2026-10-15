@@ -193,6 +193,15 @@ public class ViveEyeTrackingProvider : MonoBehaviour
         }
     }
 
+    // Apagado (p. ej. LaunchDisable «--es off ViveEyeTrackingProvider»): suelta el eye tracker del runtime para que
+    // el servicio de ojos del visor deje de trabajar. Al volver a habilitar, Update lo crea de nuevo.
+    private void OnDisable()
+    {
+        var feature = OpenXRSettings.Instance != null ? OpenXRSettings.Instance.GetFeature<ViveEyeTracker>() : null;
+        if (feature != null && feature.enabled && feature.DestroyEyeTracker()) Debug.Log("[EyeTracking] Eye tracker destroyed (provider disabled).");
+        trackerMissing = true;
+    }
+
     /// <summary>Reintenta crear el eye tracker (cada RetrySeconds). True si ya hay tracker.</summary>
     private bool TryCreateEyeTracker()
     {

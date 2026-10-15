@@ -305,6 +305,7 @@ public class AvatarHandTunerHUD : MonoBehaviour
         return sb.ToString();
     }
 
+#if !UNITY_ANDROID || UNITY_EDITOR   // IMGUI en el visor nativo cuesta ~la mitad del CPU/GPU (medido 2026-10-15)
     private void OnGUI()
     {
         if (!showOnGUI || !_visible) return;
@@ -316,4 +317,5 @@ public class AvatarHandTunerHUD : MonoBehaviour
         GUILayout.Label(BuildHudText());
         GUILayout.EndArea();
     }
+#endif
 }

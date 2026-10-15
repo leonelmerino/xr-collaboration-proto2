@@ -41,6 +41,7 @@ public class BuildAuditHUD : MonoBehaviour
         }
     }
 
+#if !UNITY_ANDROID || UNITY_EDITOR   // IMGUI en el visor nativo cuesta ~la mitad del CPU/GPU (medido 2026-10-15)
     private void OnGUI()
     {
         if (!visible) return;
@@ -124,4 +125,5 @@ public class BuildAuditHUD : MonoBehaviour
         GUI.color = Color.white;
         GUI.Label(rect, text, style);
     }
+#endif
 }

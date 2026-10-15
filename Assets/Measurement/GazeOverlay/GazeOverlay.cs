@@ -386,6 +386,7 @@ public sealed class GazeOverlay : MonoBehaviour
 
     // ---------------- en la ventana del PC ----------------
 
+#if !UNITY_ANDROID || UNITY_EDITOR   // IMGUI en el visor nativo cuesta ~la mitad del CPU/GPU (medido 2026-10-15)
     private void OnGUI()
     {
         if (Event.current.type != EventType.Repaint || !_pcVisible) return;
@@ -438,6 +439,7 @@ public sealed class GazeOverlay : MonoBehaviour
         }
         GUI.color = previous;
     }
+#endif
 
     private void DrawReticle(Rect eyeRect, Vector2 uv, float size)
     {

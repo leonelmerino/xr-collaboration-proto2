@@ -291,6 +291,7 @@ public class NetworkLauncher : MonoBehaviour
     // HUD
     // ─────────────────────────────────────────────────────────────
 
+#if !UNITY_ANDROID || UNITY_EDITOR   // IMGUI en el visor nativo cuesta ~la mitad del CPU/GPU (medido 2026-10-15)
     private void OnGUI()
     {
         if (!showStatusHud || _status == Status.Idle) return;
@@ -326,6 +327,7 @@ public class NetworkLauncher : MonoBehaviour
         GUI.Box(new Rect(x, y, w, h), $"{prefix}  {_statusDetail}", _boxStyle);
         GUI.backgroundColor = prevBg;
     }
+#endif
 
     private void EnsureStyle()
     {
