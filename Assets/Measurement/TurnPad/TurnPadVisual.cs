@@ -30,6 +30,11 @@ namespace XRCollab.Measurement.Turns
         public PadStyle Style = PadStyle.Solid;
 
         public const float PadRadius = 0.045f;
+        // Zona del texto en coordenadas del disco (para saber si la mano lo tapa).
+        public const float LabelHalfWidth = 0.06f, LabelBottom = PadRadius + 0.012f, LabelTop = PadRadius + 0.05f;
+        private const float CoveredAlpha = 0.12f;   // cuánto queda del botón con la mano encima
+        private const float CoverInPerSec = 30f;    // se va en ~35 ms (que no se vea encima de la mano)
+        private const float CoverOutPerSec = 6f;    // vuelve en ~170 ms
         private const float AppearSeconds = 0.6f;
         private const float MoveSeconds = 0.85f;
         private const float RippleSeconds = 0.55f;
@@ -47,6 +52,8 @@ namespace XRCollab.Measurement.Turns
         private readonly MaterialPropertyBlock _faceBlock = new MaterialPropertyBlock(), _baseBlock = new MaterialPropertyBlock();
         private readonly Material _metal, _ghostBase, _ghostFace;
         private float _near;   // 0 = mano lejos, 1 = mano sobre el disco (suavizado)
+        private float _cover;  // 0..1: la mano tapa el botón visto desde el ojo (suavizado, rápido al tapar)
+        private float Visibility => Mathf.Lerp(1f, CoveredAlpha, _cover);
         private readonly PadArc _track, _progress, _rippleA, _rippleB, _pinchTrack, _pinchArc;
         private readonly TextMeshPro _label, _sub;
         private readonly AudioSource _audio;
@@ -197,8 +204,10 @@ namespace XRCollab.Measurement.Turns
         /// <param name="hold">progreso de «mantener» 0..1</param>
         /// <param name="press">cuánto se hunde la cara (m)</param>
         /// <param name="near">cercanía de la mano al disco 0..1 (1 = encima)</param>
-        public void Tick(float dt, float hold, float press, bool hover, float near = 0f)
+        /// <param name="cover">0..1 la mano tapa el botón visto desde el ojo: se desvanece rápido (todos los diseños)</param>
+        public void Tick(float dt, float hold, float press, bool hover, float near = 0f, float cover = 0f)
         {
+            _cover = Mathf.MoveTowards(_cover, Mathf.Clamp01(cover), dt * (cover > _cover ? CoverInPerSec : CoverOutPerSec));
             _colorT += dt / ColorFadeSeconds;
             _near = Mathf.MoveTowards(_near, Mathf.Clamp01(near), dt * (near > _near ? 8f : 3f));
             Color c = CurrentColor;
@@ -235,7 +244,7 @@ namespace XRCollab.Measurement.Turns
             float trackSweep = _appearT >= 0f ? 360f * EaseOut(Mathf.Clamp01(_appearT / 0.58f)) : 360f;
             float trackAlpha = Moving ? 0.2f : hover ? 0.6f : 0.35f;
             if (Style == PadStyle.Ring || Style == PadStyle.Ghost) trackAlpha = Mathf.Max(trackAlpha, Mathf.Lerp(0.5f, 0.95f, _near));
-            _track.Set(0.0505f, 0.0525f, 0f, trackSweep, WithAlpha(c, trackAlpha));
+            _track.Set(0.0505f, 0.0525f, 0f, trackSweep, WithAlpha(c, trackAlpha * Visibility));
 
             // Progreso de «mantener»: arco horario desde las 12. Mientras viaja: dos segmentos que orbitan el anillo
             // (el giro de un disco liso no se ve).
@@ -247,12 +256,13 @@ namespace XRCollab.Measurement.Turns
                 _progress.Set(0.0495f, 0.0565f, orbit, 70f, WithAlpha(Color.Lerp(c, Color.white, 0.35f), 0.95f));
                 _track.Set(0.0495f, 0.0565f, orbit + 180f, 70f, WithAlpha(Color.Lerp(c, Color.white, 0.35f), 0.95f));
             }
-            else if (showProgress) _progress.Set(0.0495f, 0.0565f, 0f, 360f * Mathf.Clamp01(hold), WithAlpha(Color.Lerp(c, Color.white, 0.35f), 1f));
+            else if (showProgress) _progress.Set(0.0495f, 0.0565f, 0f, 360f * Mathf.Clamp01(hold), WithAlpha(Color.Lerp(c, Color.white, 0.35f), 1f));   // el progreso se ve siempre (va por el borde)
 
             // Texto: oculto mientras se mueve o aparece.
             bool labels = !Moving && (_appearT < 0f || _appearT > 0.5f);
             if (_labels.gameObject.activeSelf != labels) _labels.gameObject.SetActive(labels);
             _sub.color = Color.Lerp(Color.white, c, 0.55f);
+            _label.alpha = _sub.alpha = Visibility;
 
             TickRipple(_rippleA, ref _rippleAT, dt);
             TickRipple(_rippleB, ref _rippleBT, dt);
@@ -297,7 +307,7 @@ namespace XRCollab.Measurement.Turns
 
         private void ApplyColor(Color c)
         {
-            if (Style == PadStyle.Solid)
+            if (Style == PadStyle.Solid && _cover < 0.01f)
             {
                 if (_faceRenderer.sharedMaterial != _metal) { _faceRenderer.sharedMaterial = _metal; _baseRenderer.sharedMaterial = _metal; }
                 _faceBlock.SetColor("_Color", c);
@@ -315,8 +325,11 @@ namespace XRCollab.Measurement.Turns
                 {
                     case PadStyle.Ghost: face = 0.45f; bas = 0.3f; break;
                     case PadStyle.Fade: face = Mathf.Lerp(0.95f, 0.18f, _near); bas = Mathf.Lerp(0.9f, 0.08f, _near); break;
-                    default: face = Mathf.Lerp(0.95f, 0f, _near); bas = Mathf.Lerp(0.9f, 0f, _near); break;   // Ring
+                    case PadStyle.Ring: face = Mathf.Lerp(0.95f, 0f, _near); bas = Mathf.Lerp(0.9f, 0f, _near); break;
+                    default: face = 0.95f; bas = 0.9f; break;   // Solid tapado por la mano: translúcido mientras tanto
                 }
+                face *= Visibility;
+                bas *= Visibility;
                 _faceBlock.SetColor("_Color", WithAlpha(c, face));
                 _baseBlock.SetColor("_Color", WithAlpha(Color.Lerp(Base, c, 0.25f), bas));
             }

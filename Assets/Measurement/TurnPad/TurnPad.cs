@@ -257,9 +257,11 @@ namespace XRCollab.Measurement.Turns
             float depth = float.MaxValue;
             string who = null;
             bool hover = false;
-            float near = 0f;
+            float near = 0f, cover = 0f;
             if (show && cam != null && handsOn && !_visual.Moving)
             {
+                Vector3 eye = _root.InverseTransformPoint(cam.transform.position);
+                cover = Mathf.Max(Cover(_hands.leftHand, space, eye), Cover(_hands.rightHand, space, eye));
                 Probe(_hands.leftHand, space, ref _armedL, ref depth, ref who, ref hover, "hand_left");
                 Probe(_hands.rightHand, space, ref _armedR, ref depth, ref who, ref hover, "hand_right");
                 if (_visual.Style == TurnPadVisual.PadStyle.Fade || _visual.Style == TurnPadVisual.PadStyle.Ring)
@@ -280,7 +282,46 @@ namespace XRCollab.Measurement.Turns
             }
 
             if (InTurn && (int)TurnSeconds != _shownSecond) RefreshText();
-            _visual.Tick(dt, Mathf.Clamp01(Progress), who != null ? Mathf.Clamp(depth, 0f, PressTravel) : 0f, Hover, near);
+            _visual.Tick(dt, Mathf.Clamp01(Progress), who != null ? Mathf.Clamp(depth, 0f, PressTravel) : 0f, Hover, near, cover);
+        }
+
+        // Puntos de la mano que pueden tapar el disco visto desde el ojo (palma, nudillos, dedos).
+        private static readonly XRHandJointID[] CoverJoints =
+        {
+            XRHandJointID.Wrist, XRHandJointID.Palm, XRHandJointID.ThumbProximal, XRHandJointID.ThumbDistal, XRHandJointID.ThumbTip,
+            XRHandJointID.IndexProximal, XRHandJointID.IndexIntermediate, XRHandJointID.IndexTip,
+            XRHandJointID.MiddleProximal, XRHandJointID.MiddleIntermediate, XRHandJointID.MiddleTip,
+            XRHandJointID.RingProximal, XRHandJointID.RingIntermediate, XRHandJointID.RingTip,
+            XRHandJointID.LittleProximal, XRHandJointID.LittleTip,
+        };
+        private const float CoverMargin = 0.012f;   // medio dedo/palma (m, en el plano del disco)
+        private const float CoverSoft = 0.015f;     // borde suave más allá del margen
+
+        /// <summary>
+        /// 0..1: cuánto tapa la mano el botón visto desde el ojo (sin oclusión real, el botón quedaría dibujado encima
+        /// de la mano). Cada articulación delante del disco se proyecta desde el ojo al plano del disco; si cae sobre el
+        /// disco o el texto, 1. Barato: ~16 proyecciones por mano y cuadro.
+        /// </summary>
+        private float Cover(XRHand hand, Transform space, Vector3 eye)
+        {
+            if (!hand.isTracked || eye.z >= -0.01f) return 0f;   // ojo detrás del disco: nada que tapar
+            float best = 0f;
+            foreach (XRHandJointID id in CoverJoints)
+            {
+                if (!Local(hand, id, space, out Vector3 p)) continue;
+                if (p.z >= 0f || p.z <= eye.z) continue;             // detrás del disco o detrás del ojo
+                float s = eye.z / (eye.z - p.z);                       // ojo→p hasta el plano z=0 (s > 1)
+                Vector3 hit = eye + (p - eye) * s;
+                float margin = CoverMargin * s;
+                float outside = Mathf.Max(0f, new Vector2(hit.x, hit.y).magnitude - TurnPadVisual.PadRadius);
+                // El texto (arriba del disco) también.
+                float lx = Mathf.Max(0f, Mathf.Abs(hit.x) - TurnPadVisual.LabelHalfWidth);
+                float ly = Mathf.Max(0f, Mathf.Max(TurnPadVisual.LabelBottom - hit.y, hit.y - TurnPadVisual.LabelTop));
+                float d = Mathf.Min(outside, new Vector2(lx, ly).magnitude) - margin;
+                float k = 1f - Mathf.Clamp01(d / CoverSoft);
+                if (k > best) { best = k; if (best >= 1f) break; }
+            }
+            return best;
         }
 
         private static readonly XRHandJointID[] NearJoints =

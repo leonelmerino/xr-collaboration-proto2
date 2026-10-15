@@ -55,6 +55,10 @@ Without depth on VIVE PC streaming, the hand cut-out trails behind, so the hand 
   - **ghost**: always semi-transparent (face 45 %, base 30 %).
   - **fade**: opaque when the hand is far; translucent (≈ 18 %) as any fingertip or the palm comes within 15 → 3 cm.
   - **ring**: like fade, but the disc vanishes completely near the hand, leaving only the ring and the hold arc.
+- **Hand covers the pad (all styles, 2026-10-15):** hand occlusion was removed, so instead, every frame ~16 hand
+  joints are projected from the eye onto the pad plane. If any joint in front of the pad lands on the disc or its
+  label (+1.2 cm margin), the pad, ring and text fade to 12 % in ~35 ms and come back in ~170 ms; solid switches
+  to its translucent material meanwhile. The hold-progress arc stays fully visible. Cost: a few dozen vector ops.
 - `turn mode pad|gesture|both` (start: `-turn-mode X`): **gesture** = thumbs-up (thumb ≤ ~41° from vertical and
   straight, the other four fingers curled against the palm, thumb tip ≥ 4 cm above the palm), hand still (≤ 3 cm) for
   0.6 s; the same progress ring fills at the thumb. 1.5 s cooldown and the hand must leave the pose before the next.
