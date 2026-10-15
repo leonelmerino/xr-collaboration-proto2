@@ -26,6 +26,26 @@ Formas en la capa 28 que borran lo virtual donde está la mano real, así en ese
 - **Cómo calibrar el desfase:** con `occlusion show`, mover la mano de lado a lado a velocidad constante y tomar
   snapshots. Si la forma de color va detrás de la mano real, subir `offset`; si va adelante, bajarlo.
 
+## Visor nativo (APK, 2026-10-15)
+El visor (VIVE Focus Vision, runtime OpenXR 6.2) no tiene extensión de malla de mano ni profundidad en vivo
+(nada como `XR_FB_hand_tracking_mesh`, `XR_META_environment_depth`); solo las 26 articulaciones de
+`XR_EXT_hand_tracking` (pose, radio y velocidades). Por eso la forma sigue siendo la malla con piel, pero:
+- **Mismo cuadro:** en el callback BeforeRender de XR Hands (pose para el instante en que se muestra el cuadro) se
+  mueven los huesos, se hornea la malla (`BakeMesh`) y se dibuja con `Graphics.DrawMesh`. Antes el
+  SkinnedMeshRenderer podía tomar los huesos del cuadro anterior (~11 ms a 90 Hz de atraso).
+- **Predicción** (`offset=MS` > 0): posición y rotación de cada articulación, con las velocidades del runtime si las
+  da (`fit.vel = runtime`), si no por diferencias (`diff`).
+- **Estela** (`trail=MS`, por defecto 30): además se dibuja la pose de hace MS. Si el passthrough muestra la mano
+  algo atrasada respecto del tracking, la unión de las dos poses igual la cubre. Con la mano quieta no cambia nada.
+- **Ajuste al usuario:** el largo muñeca → punta del medio (medido con el dedo estirado) escala el grosor de la malla
+  (`fit.L/R.lengthMm`, `scale`); `thickness=F` corrige a mano.
+- **Vista de ajuste:** `occlusion debug` = forma en cian + esferas magenta en cada articulación con el radio del
+  runtime (`joints` solo las esferas, `hide` apaga todo). Estado en `occlusionInfo.fit` (Hz del tracking por mano,
+  rapidez, escala, si se dibujó la estela).
+- **Calibrar (persona con el visor puesto):** `occlusion debug`, mover la mano de lado a lado: si el cian va detrás
+  de la mano real, subir `trail` u `offset`; si va adelante, bajar `offset` (negativo). Dedos más gruesos/delgados
+  que la forma: `thickness=1.1` / `0.9`.
+
 ## Agregar algo que tape (mesa, torre, otra persona…)
 ```csharp
 public sealed class TableOccluder : IOccluderSource
