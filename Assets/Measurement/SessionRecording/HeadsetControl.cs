@@ -18,6 +18,10 @@ namespace XRCollab.Measurement.Recording
         private const string LogPrefix = "[HeadsetControl] ";
         public const int DefaultPort = 47811;
 
+        /// <summary>Time.unscaledTime de la última orden del PC (el panel pregunta «status» cada 1 s): si es reciente,
+        /// el PC está conectado a esta app (RecordingIndicator la usa para el punto azul, sin depender de archivos).</summary>
+        public static float LastRequestTime = -999f;
+
         private RecordingControlServer _server;
         private string _marksPath;
         private string _label = "";
@@ -51,6 +55,7 @@ namespace XRCollab.Measurement.Recording
 
         private string HandleCommand(string line)
         {
+            LastRequestTime = Time.unscaledTime;
             RecordingCommand cmd = RecordingCommand.Parse(line, out string error);
             if (cmd == null) return RecordingControlServer.ErrorJson(error);
             DateTime now = PreciseClock.UtcNow;

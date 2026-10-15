@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using UnityEngine;
 using UnityEngine.UI;
+using XRCollab.Measurement.Recording;
 
 /// <summary>
 /// Punto chico arriba a la derecha de la vista del visor, para saber de un vistazo si el PC recibe la imagen:
@@ -57,6 +58,9 @@ public class RecordingIndicator : MonoBehaviour
         bool live = false;
         try { live = File.Exists(_livePath) && (DateTime.UtcNow - File.GetLastWriteTimeUtc(_livePath)).TotalSeconds < LiveTimeoutSeconds; }
         catch (Exception) { }
+        // Autorrecuperable: también azul si el PC le habló a la app hace poco por el canal de control (el panel pide
+        // «status» cada 1 s por adb). Así no depende de que alguien toque live_state.txt.
+        live |= Time.unscaledTime - HeadsetControl.LastRequestTime < LiveTimeoutSeconds;
         int state = rec ? 2 : live ? 1 : 0;
 
         if (_dot == null) _dot = CreateDot(out _image);
