@@ -524,12 +524,8 @@ public class AcquisitionEventManager : MonoBehaviour
     // el rol sale de -role host|client (el mismo de NetworkLauncher): solo el host manda START/STOP.
     private void ApplyCommandLineOverrides()
     {
-        string[] args = System.Environment.GetCommandLineArgs();
-        string Arg(string name)
-        {
-            int i = System.Array.IndexOf(args, name);
-            return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
-        }
+        // En el visor (Android) los mismos nombres llegan como extras del intent (am start --es acq-ip ...).
+        string Arg(string name) => XRCollab.Measurement.Recording.LaunchArgs.Get(name);
 
         // Sin argumentos (Play en el Editor): variables de entorno XRCOLLAB_ACQ_IP / XRCOLLAB_ROLE de cada PC.
         string ip = Arg("-acq-ip") ?? System.Environment.GetEnvironmentVariable("XRCOLLAB_ACQ_IP");
@@ -541,7 +537,7 @@ public class AcquisitionEventManager : MonoBehaviour
         if (int.TryParse(Arg("-acq-port"), out int port)) config.acquisitionPort = port;
         string role = (Arg("-role") ?? System.Environment.GetEnvironmentVariable("XRCOLLAB_ROLE") ?? "host").Trim().ToLowerInvariant();
         config.role = role == "client" ? AcquisitionNodeRole.Client : role == "helper" ? AcquisitionNodeRole.Helper : AcquisitionNodeRole.Host;
-        config.nodeId = Arg("-acq-node") ?? $"VR_{System.Environment.MachineName.ToUpperInvariant()}";
+        config.nodeId = Arg("-acq-node") ?? (Application.platform == RuntimePlatform.Android ? "VR_HEADSET" : $"VR_{System.Environment.MachineName.ToUpperInvariant()}");
         Debug.Log($"[AcquisitionEventManager] BioLab real: {config.acquisitionIp}:{config.acquisitionPort}, role={config.role}, node={config.nodeId}");
     }
 
