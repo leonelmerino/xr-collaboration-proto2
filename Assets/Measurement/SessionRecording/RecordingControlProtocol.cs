@@ -29,7 +29,7 @@ namespace XRCollab.Measurement.Recording
     ///   mark  texto libre (aplauso inicio, cambio de turno...)
     ///   cue   bad|cross|MAL COLOCADO|El bloque quedó torcido     (señal 3D en el visor; «cue clear» la quita)
     ///   snapshot [w=480]                                           (JPG de lo que ve el visor, en "jpg" de la respuesta)
-    ///   occlusion on|off|show|hide|soft|hard|offset=MS|inflate=MM|feather=0..1   (oclusión por las manos)
+    ///   occlusion on|off|show|hide|joints|debug|soft|hard|offset=MS|inflate=MM|feather=0..1|trail=MS|thickness=F   (oclusión por las manos)
     ///   turn start|end|place|show|hide                             (turno del participante, como si tocara el botón)
     ///   turn style solid|ghost|fade|ring · turn mode pad|gesture|both   (diseño del botón · botón y/o gesto)
     /// </code>
@@ -44,7 +44,7 @@ namespace XRCollab.Measurement.Recording
         public const int MaxCueLength = 300;
         public const int DefaultSnapshotWidth = 480;
         private static readonly Regex LabelPattern = new Regex("^[A-Za-z0-9_-]+$");
-        private static readonly Regex OcclusionArg = new Regex(@"^(on|off|show|hide|soft|hard|(offset|inflate|feather)=-?\d+(\.\d+)?)$");
+        private static readonly Regex OcclusionArg = new Regex(@"^(on|off|show|hide|joints|debug|soft|hard|(offset|inflate|feather|trail|thickness)=-?\d+(\.\d+)?)$");
         private static readonly string[] TurnArgs = { "start", "end", "place", "show", "hide" };
         private static readonly Regex TurnArg = new Regex(@"^(start|end|place|show|hide|style (solid|ghost|fade|ring)|mode (pad|gesture|both))$");
 
@@ -110,7 +110,7 @@ namespace XRCollab.Measurement.Recording
                     cmd.Text = rest.ToLowerInvariant();
                     if (!OcclusionArg.IsMatch(cmd.Text))
                     {
-                        error = "occlusion on|off|show|hide|soft|hard|offset=MS|inflate=MM|feather=0..1";
+                        error = "occlusion on|off|show|hide|joints|debug|soft|hard|offset=MS|inflate=MM|feather=0..1|trail=MS|thickness=F";
                         return null;
                     }
                     return cmd;

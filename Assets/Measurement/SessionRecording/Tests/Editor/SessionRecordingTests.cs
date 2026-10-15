@@ -177,6 +177,10 @@ namespace XRCollab.Measurement.Recording.Tests
             Assert.AreEqual("show", o.Text);
             Assert.AreEqual("offset=-35", RecordingCommand.Parse("occlusion offset=-35", out _).Text);
             Assert.AreEqual("feather=0.4", RecordingCommand.Parse("occlusion feather=0.4", out _).Text);
+            Assert.AreEqual("debug", RecordingCommand.Parse("occlusion debug", out _).Text);
+            Assert.AreEqual("joints", RecordingCommand.Parse("occlusion joints", out _).Text);
+            Assert.AreEqual("trail=30", RecordingCommand.Parse("occlusion trail=30", out _).Text);
+            Assert.AreEqual("thickness=1.1", RecordingCommand.Parse("occlusion thickness=1.1", out _).Text);
 
             RecordingCommand t = RecordingCommand.Parse("turn start\r", out error);
             Assert.IsNull(error);
