@@ -169,7 +169,7 @@ namespace XRCollab.Measurement.Turns
             string a = (arg ?? "").Trim().ToLowerInvariant();
             if (a.StartsWith("style "))
             {
-                if (!Enum.TryParse(a.Substring(6).Trim(), true, out TurnPadVisual.PadStyle st)) return "turn style solid|ghost|fade|ring";
+                if (!Enum.TryParse(a.Substring(6).Trim(), true, out TurnPadVisual.PadStyle st)) return "turn style field|solid|ghost|fade|ring";
                 _visual.Style = st;
                 Debug.Log($"{LogPrefix}diseño {st}");
                 AcquisitionEventManager.Instance?.LogLocalExternal("TURN_PAD", "STYLE " + st.ToString().ToUpperInvariant());
@@ -204,7 +204,7 @@ namespace XRCollab.Measurement.Turns
                     Visible = false;
                     return null;
                 default:
-                    return "turn start|end|place|show|hide|style solid|ghost|fade|ring|mode pad|gesture|both";
+                    return "turn start|end|place|show|hide|style field|solid|ghost|fade|ring|mode pad|gesture|both";
             }
         }
 
@@ -262,9 +262,10 @@ namespace XRCollab.Measurement.Turns
             {
                 Vector3 eye = _root.InverseTransformPoint(cam.transform.position);
                 cover = Mathf.Max(Cover(_hands.leftHand, space, eye), Cover(_hands.rightHand, space, eye));
+                _visual.HandLocal = Fingertip(_hands.leftHand, _hands.rightHand, space);
                 Probe(_hands.leftHand, space, ref _armedL, ref depth, ref who, ref hover, "hand_left");
                 Probe(_hands.rightHand, space, ref _armedR, ref depth, ref who, ref hover, "hand_right");
-                if (_visual.Style == TurnPadVisual.PadStyle.Fade || _visual.Style == TurnPadVisual.PadStyle.Ring)
+                if (_visual.Style != TurnPadVisual.PadStyle.Solid && _visual.Style != TurnPadVisual.PadStyle.Ghost)
                     near = Mathf.Max(Nearness(_hands.leftHand, space), Nearness(_hands.rightHand, space));
             }
             Hover = hover || who != null;
@@ -283,6 +284,21 @@ namespace XRCollab.Measurement.Turns
 
             if (InTurn && (int)TurnSeconds != _shownSecond) RefreshText();
             _visual.Tick(dt, Mathf.Clamp01(Progress), who != null ? Mathf.Clamp(depth, 0f, PressTravel) : 0f, Hover, near, cover);
+        }
+
+        /// <summary>Punta del índice más cercana al disco (coordenadas del disco), w = 1 a ≤ 4 cm, 0 a ≥ 12 cm.</summary>
+        private Vector4 Fingertip(XRHand left, XRHand right, Transform space)
+        {
+            Vector4 best = Vector4.zero;
+            float bestD = float.MaxValue;
+            for (int i = 0; i < 2; i++)
+            {
+                XRHand h = i == 0 ? left : right;
+                if (!h.isTracked || !Local(h, XRHandJointID.IndexTip, space, out Vector3 p)) continue;
+                float d = p.magnitude;
+                if (d < bestD) { bestD = d; best = new Vector4(p.x, p.y, p.z, 1f - Mathf.Clamp01((d - 0.04f) / 0.08f)); }
+            }
+            return best;
         }
 
         // Puntos de la mano que pueden tapar el disco visto desde el ojo (palma, nudillos, dedos).

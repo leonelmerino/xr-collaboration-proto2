@@ -56,6 +56,7 @@ public static class HeadsetBuild
     public static void BuildAndroid()
     {
         ConfigureAndroid();
+        FeedbackCueAssetsBuilder.Ensure();   // materiales de las señales y del botón «field» (Resources)
         string outPath = ArgValue("-out") ?? Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "..", "..",
             "development", "unity", "builds", "xr-collaboration-proto2-headset", ApkName));
         Directory.CreateDirectory(Path.GetDirectoryName(outPath));

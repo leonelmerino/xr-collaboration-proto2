@@ -50,7 +50,12 @@ It also writes a mark in the video's `marks.csv` (`TURN_START turno=3 source=han
 
 ## Design variants and turn gesture (2026-10-15)
 Without depth on VIVE PC streaming, the hand cut-out trails behind, so the hand can look like it is *under* the disc.
-- `turn style solid|ghost|fade|ring` (start: `-turnpad-style X`):
+- `turn style field|solid|ghost|fade|ring` (start: `-turnpad-style X`):
+  - **field** (default since 2026-10-15): no disc at all. A thin glowing outline plus ~450 light dots that flow along the
+    field lines of a magnet in the pad centre (rise from the middle, arc up, land on the rim), all computed in one
+    vertex shader (`Shaders/PadField.shader`, one draw call, additive light). Hand near: dots speed up and are pulled
+    toward the index tip; holding: they collapse onto the outline (the ring charges); toggle: flash. Nothing solid,
+    so the hand never looks like it is under the button and no occlusion is needed.
   - **solid**: the opaque metal disc (before).
   - **ghost**: always semi-transparent (face 45 %, base 30 %).
   - **fade**: opaque when the hand is far; translucent (≈ 18 %) as any fingertip or the palm comes within 15 → 3 cm.

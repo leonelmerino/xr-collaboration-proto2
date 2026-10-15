@@ -15,9 +15,10 @@ namespace XRCollab.Measurement.Cues
         public const string MetalMaterialName = "CueMetal";
         public const string AdditiveMaterialName = "CueAdditive";
         public const string AlphaMaterialName = "CueAlpha";
+        public const string PadFieldMaterialName = "PadField";   // botón de turno «field» (TurnPad/Shaders/PadField)
 
         public TMP_FontAsset Font;
-        public Material Text, Metal, Additive, Alpha;
+        public Material Text, Metal, Additive, Alpha, PadField;
         public Texture2D Glow, Rays, Ring, Spark, Shadow;
 
         public bool Ok => Font != null && Text != null && Metal != null && Additive != null && Alpha != null;
@@ -34,6 +35,7 @@ namespace XRCollab.Measurement.Cues
                 Metal = Resources.Load<Material>(ResourceFolder + "/" + MetalMaterialName),
                 Additive = Resources.Load<Material>(ResourceFolder + "/" + AdditiveMaterialName),
                 Alpha = Resources.Load<Material>(ResourceFolder + "/" + AlphaMaterialName),
+                PadField = Resources.Load<Material>(ResourceFolder + "/" + PadFieldMaterialName),
                 Font = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF") ?? TMP_Settings.defaultFontAsset,
             };
             a.Glow = Radial("CueGlow", 128, r => Mathf.Pow(Mathf.Clamp01(1f - r), 2.2f));

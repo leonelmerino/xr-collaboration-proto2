@@ -62,6 +62,10 @@ public static class FeedbackCueAssetsBuilder
         }
         else Debug.LogError("[FeedbackCues] no compila el shader XRCollab/CueFx: faltan CueAdditive/CueAlpha");
 
+        Shader field = Shader.Find("XRCollab/PadField");
+        if (field != null) Save(new Material(field), CueAssets.PadFieldMaterialName);
+        else Debug.LogError("[FeedbackCues] no compila el shader XRCollab/PadField: el botón de turno «field» queda sin puntos");
+
         AssetDatabase.SaveAssets();
         Debug.Log($"[FeedbackCues] materiales listos en {Folder}");
     }

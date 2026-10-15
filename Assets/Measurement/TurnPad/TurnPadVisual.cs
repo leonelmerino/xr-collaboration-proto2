@@ -23,11 +23,16 @@ namespace XRCollab.Measurement.Turns
         /// <summary>
         /// Diseño del disco (para que la mano no parezca quedar debajo del botón: sin profundidad, la oclusión llega
         /// tarde). Solid = metal opaco (antes); Ghost = semitransparente siempre; Fade = opaco lejos, se vuelve
-        /// translúcido al acercar la mano; Ring = al acercar la mano el disco desaparece y queda solo el anillo.
+        /// translúcido al acercar la mano; Ring = al acercar la mano el disco desaparece y queda solo el anillo;
+        /// Field (por defecto desde 2026-10-15) = sin disco: contorno fino + puntos de luz que fluyen por las líneas de
+        /// campo de un imán (Shaders/PadField). No tiene nada sólido, así que no necesita oclusión por la mano.
         /// </summary>
-        public enum PadStyle { Solid, Ghost, Fade, Ring }
+        public enum PadStyle { Solid, Ghost, Fade, Ring, Field }
 
-        public PadStyle Style = PadStyle.Solid;
+        public PadStyle Style = PadStyle.Field;
+
+        /// <summary>Punta del dedo más cercana en coordenadas del disco; w = 0..1 fuerza (0 = sin mano cerca).</summary>
+        public Vector4 HandLocal;
 
         public const float PadRadius = 0.045f;
         // Zona del texto en coordenadas del disco (para saber si la mano lo tapa).
@@ -57,6 +62,10 @@ namespace XRCollab.Measurement.Turns
         private readonly PadArc _track, _progress, _rippleA, _rippleB, _pinchTrack, _pinchArc;
         private readonly TextMeshPro _label, _sub;
         private readonly AudioSource _audio;
+        private readonly MeshRenderer _field;
+        private readonly MaterialPropertyBlock _fieldBlock = new MaterialPropertyBlock();
+        private float _flash;
+        private const int FieldDots = 450;
 
         private float _appearT = -1f, _moveT = -1f, _colorT = 1f, _rippleAT = -1f, _rippleBT = -1f;
         private Pose _from, _to;
@@ -83,6 +92,7 @@ namespace XRCollab.Measurement.Turns
             _track.Transform.localPosition = new Vector3(0f, 0f, -0.0135f);
             _progress = new PadArc("Progress", _body, assets.Alpha, layer, owned);
             _progress.Transform.localPosition = new Vector3(0f, 0f, -0.014f);
+            if (assets.PadField != null) _field = Field("Field", _body, assets.PadField, layer, owned);
 
             // Ondas en el mundo (no giran con el disco).
             _rippleA = new PadArc("RippleFrom", owner, assets.Alpha, layer, owned);
@@ -153,6 +163,7 @@ namespace XRCollab.Measurement.Turns
             if (animate)
             {
                 Ripple(_rippleB, ref _rippleBT, new Pose(Root.position, Root.rotation));
+                _flash = 1f;
                 if (_audio != null && Application.isPlaying) _audio.PlayOneShot(CueSynth.For(inTurn ? CueTone.Good : CueTone.Info), 0.7f);
             }
         }
@@ -209,6 +220,7 @@ namespace XRCollab.Measurement.Turns
         {
             _cover = Mathf.MoveTowards(_cover, Mathf.Clamp01(cover), dt * (cover > _cover ? CoverInPerSec : CoverOutPerSec));
             _colorT += dt / ColorFadeSeconds;
+            _flash = Mathf.MoveTowards(_flash, 0f, dt * 3f);
             _near = Mathf.MoveTowards(_near, Mathf.Clamp01(near), dt * (near > _near ? 8f : 3f));
             Color c = CurrentColor;
             ApplyColor(c);
@@ -244,7 +256,9 @@ namespace XRCollab.Measurement.Turns
             float trackSweep = _appearT >= 0f ? 360f * EaseOut(Mathf.Clamp01(_appearT / 0.58f)) : 360f;
             float trackAlpha = Moving ? 0.2f : hover ? 0.6f : 0.35f;
             if (Style == PadStyle.Ring || Style == PadStyle.Ghost) trackAlpha = Mathf.Max(trackAlpha, Mathf.Lerp(0.5f, 0.95f, _near));
+            if (Style == PadStyle.Field) trackAlpha = Mathf.Lerp(0.45f, 0.9f, Mathf.Max(_near, hold));
             _track.Set(0.0505f, 0.0525f, 0f, trackSweep, WithAlpha(c, trackAlpha * Visibility));
+            TickField(c, hold);
 
             // Progreso de «mantener»: arco horario desde las 12. Mientras viaja: dos segmentos que orbitan el anillo
             // (el giro de un disco liso no se ve).
@@ -305,8 +319,54 @@ namespace XRCollab.Measurement.Turns
 
         // ---------------- armado ----------------
 
+        private void TickField(Color c, float hold)
+        {
+            bool on = Style == PadStyle.Field && _field != null;
+            if (_field != null && _field.enabled != on) _field.enabled = on;
+            if (!on) return;
+            _fieldBlock.SetColor("_Color", c);
+            _fieldBlock.SetFloat("_Near", _near);
+            _fieldBlock.SetFloat("_Hold", Mathf.Clamp01(hold));
+            _fieldBlock.SetFloat("_Flash", _flash);
+            _fieldBlock.SetVector("_Hand", HandLocal);
+            _field.SetPropertyBlock(_fieldBlock);
+        }
+
+        /// <summary>Malla fija de <see cref="FieldDots"/> quads (esquina en uv0, semillas en uv1); el shader los mueve.</summary>
+        private static MeshRenderer Field(string name, Transform parent, Material mat, int layer, List<Material> owned)
+        {
+            var go = new GameObject(name) { layer = layer };
+            go.transform.SetParent(parent, false);
+            var verts = new Vector3[FieldDots * 4];
+            var corners = new Vector2[FieldDots * 4];
+            var seeds = new List<Vector4>(FieldDots * 4);
+            var tris = new int[FieldDots * 6];
+            var rng = new System.Random(1015);
+            Vector2[] q = { new Vector2(-1, -1), new Vector2(1, -1), new Vector2(1, 1), new Vector2(-1, 1) };
+            for (int i = 0; i < FieldDots; i++)
+            {
+                var seed = new Vector4((float)rng.NextDouble(), (float)rng.NextDouble(), (float)rng.NextDouble(), (float)rng.NextDouble());
+                for (int k = 0; k < 4; k++) { corners[i * 4 + k] = q[k]; seeds.Add(seed); }
+                int v = i * 4, t = i * 6;
+                tris[t] = v; tris[t + 1] = v + 1; tris[t + 2] = v + 2; tris[t + 3] = v; tris[t + 4] = v + 2; tris[t + 5] = v + 3;
+            }
+            var mesh = new Mesh { name = "PadFieldDots", vertices = verts, uv = corners, triangles = tris };
+            mesh.SetUVs(1, seeds);
+            mesh.bounds = new Bounds(Vector3.zero, Vector3.one * 0.3f);   // los puntos se mueven en el shader
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var r = go.AddComponent<MeshRenderer>();
+            var m = new Material(mat);
+            owned.Add(m);
+            r.sharedMaterial = m;
+            Setup(r);
+            return r;
+        }
+
         private void ApplyColor(Color c)
         {
+            bool field = Style == PadStyle.Field;
+            if (_faceRenderer.enabled == field) { _faceRenderer.enabled = !field; _baseRenderer.enabled = !field; }
+            if (field) return;
             if (Style == PadStyle.Solid && _cover < 0.01f)
             {
                 if (_faceRenderer.sharedMaterial != _metal) { _faceRenderer.sharedMaterial = _metal; _baseRenderer.sharedMaterial = _metal; }
