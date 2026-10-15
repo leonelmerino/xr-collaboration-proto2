@@ -25,7 +25,7 @@ namespace XRCollab.Measurement.Turns
         /// tarde). Solid = metal opaco (antes); Ghost = semitransparente siempre; Fade = opaco lejos, se vuelve
         /// translúcido al acercar la mano; Ring = al acercar la mano el disco desaparece y queda solo el anillo;
         /// Field (por defecto desde 2026-10-15) = sin disco: un campo de puntos con forma de gaussiana 3D cuya cima sube
-        /// hacia la punta del dedo (Shaders/PadField) y texto en Teko. Nada sólido: no necesita oclusión por la mano.
+        /// hacia la punta del dedo (Shaders/PadField) y texto curvo en Geist. Nada sólido: no necesita oclusión por la mano.
         /// </summary>
         public enum PadStyle { Solid, Ghost, Fade, Ring, Field }
 
@@ -118,6 +118,10 @@ namespace XRCollab.Measurement.Turns
             _defaultFont = assets.Font;
             _defaultText = textMat;
             _fieldFont = assets.PadFont;
+            // Texto curvo (solo «field»): cada letra se pone sobre un arco alrededor del campo, después de que TMP arma la
+            // malla y antes de subirla, así sobrevive a cada cambio de texto (el contador del turno cambia cada segundo).
+            _label.OnPreRenderText += info => Curve(info, true);
+            _sub.OnPreRenderText += info => Curve(info, false);
             if (assets.PadText != null) { _fieldText = new Material(assets.PadText); owned.Add(_fieldText); }
 
             _audio = owner.gameObject.AddComponent<AudioSource>();
@@ -383,20 +387,50 @@ namespace XRCollab.Measurement.Turns
         {
             _appliedStyle = Style;
             bool field = Style == PadStyle.Field && _fieldFont != null && _fieldText != null;
-            _labels.localPosition = Style == PadStyle.Field ? new Vector3(0f, FieldRadius + 0.026f, -0.004f) : new Vector3(0f, PadRadius + 0.03f, -0.006f);
+            // Campo: el texto se centra en el botón y Curve lo dobla en arcos alrededor de los puntos.
+            _labels.localPosition = field ? new Vector3(0f, 0f, -0.004f) : new Vector3(0f, PadRadius + 0.03f, -0.006f);
             foreach (TextMeshPro t in new[] { _label, _sub })
             {
                 t.font = field ? _fieldFont : _defaultFont;
                 t.fontSharedMaterial = field ? _fieldText : _defaultText;
+                t.fontStyle = field ? FontStyles.UpperCase : FontStyles.Bold | FontStyles.UpperCase;
             }
-            _label.fontSize = field ? 0.34f : 0.22f;
-            _label.characterSpacing = field ? 14f : 3f;
-            _label.fontStyle = field ? FontStyles.UpperCase : FontStyles.Bold | FontStyles.UpperCase;
-            _sub.fontSize = field ? 0.2f : 0.145f;
-            _sub.characterSpacing = field ? 10f : 3f;
-            _sub.fontStyle = field ? FontStyles.UpperCase : FontStyles.Bold | FontStyles.UpperCase;
-            _label.transform.localPosition = new Vector3(0f, field ? 0.016f : 0.013f, 0f);
-            _sub.transform.localPosition = new Vector3(0f, field ? -0.008f : -0.009f, 0f);
+            _label.fontSize = field ? 0.2f : 0.22f;
+            _label.characterSpacing = field ? 22f : 3f;
+            _sub.fontSize = field ? 0.125f : 0.145f;
+            _sub.characterSpacing = field ? 26f : 3f;
+            _label.transform.localPosition = field ? Vector3.zero : new Vector3(0f, 0.013f, 0f);
+            _sub.transform.localPosition = field ? Vector3.zero : new Vector3(0f, -0.009f, 0f);
+            _label.ForceMeshUpdate();
+            _sub.ForceMeshUpdate();
+        }
+
+        // Radios de los arcos del texto (m): el título por arriba, hacia afuera; el subtítulo por abajo, de cara al
+        // participante (las letras crecen hacia el centro, así su base queda en el radio de afuera).
+        private const float TitleArcRadius = FieldRadius + 0.011f;
+        private const float SubArcRadius = FieldRadius + 0.019f;
+
+        /// <summary>
+        /// Dobla el texto ya armado por TMP sobre un arco. Arriba (<paramref name="top"/>): de izquierda a derecha en
+        /// sentido horario, la parte de arriba de las letras hacia afuera. Abajo: sentido antihorario, las letras
+        /// derechas para quien mira desde el borde cercano.
+        /// </summary>
+        private void Curve(TMP_TextInfo info, bool top)
+        {
+            if (_appliedStyle != PadStyle.Field || _fieldFont == null || info == null) return;
+            float r = top ? TitleArcRadius : SubArcRadius;
+            for (int i = 0; i < info.characterCount; i++)
+            {
+                TMP_CharacterInfo ci = info.characterInfo[i];
+                if (!ci.isVisible) continue;
+                Vector3[] v = info.meshInfo[ci.materialReferenceIndex].vertices;
+                int vi = ci.vertexIndex;
+                var pivot = new Vector3((v[vi].x + v[vi + 2].x) * 0.5f, ci.baseLine, 0f);
+                float ang = top ? Mathf.PI * 0.5f - pivot.x / r : -Mathf.PI * 0.5f + pivot.x / r;
+                var at = new Vector3(r * Mathf.Cos(ang), r * Mathf.Sin(ang), 0f);
+                Quaternion q = Quaternion.Euler(0f, 0f, (top ? ang - Mathf.PI * 0.5f : ang + Mathf.PI * 0.5f) * Mathf.Rad2Deg);
+                for (int k = 0; k < 4; k++) v[vi + k] = at + q * (v[vi + k] - pivot);
+            }
         }
 
         private void ApplyColor(Color c)

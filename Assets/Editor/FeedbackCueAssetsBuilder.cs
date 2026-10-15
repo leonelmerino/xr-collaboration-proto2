@@ -72,11 +72,11 @@ public static class FeedbackCueAssetsBuilder
         Debug.Log($"[FeedbackCues] materiales listos en {Folder}");
     }
 
-    private const string PadFontTtf = "Assets/Measurement/TurnPad/Fonts/Teko-Bold.ttf";
-    private const string PadFontChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑÜ0123456789 :·.,-–/()%";
+    private const string PadFontTtf = "Assets/Measurement/TurnPad/Fonts/Geist-Regular.ttf";
+    private const string PadFontChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑÜ0123456789 :·.,-–/()%_";
 
     /// <summary>
-    /// Fuente del botón «field»: Teko Bold (OFL, TurnPad/Fonts) como atlas SDF estático con las letras que usa el botón
+    /// Fuente del botón «field»: Geist Regular (OFL, TurnPad/Fonts) como atlas SDF estático con las letras que usa el botón
     /// (mayúsculas), con LiberationSans de respaldo; y su material CueText (sin bisel, limpio).
     /// </summary>
     private static void EnsurePadFont(Shader sdf, TMP_FontAsset fallback)
@@ -92,7 +92,7 @@ public static class FeedbackCueAssetsBuilder
                 AtlasPopulationMode.Dynamic, false);
             fa.name = CueAssets.PadFontName;
             fa.TryAddCharacters(PadFontChars, out string missing);
-            if (!string.IsNullOrEmpty(missing)) Debug.LogWarning($"[FeedbackCues] Teko sin: {missing} (usa la de respaldo)");
+            if (!string.IsNullOrEmpty(missing)) Debug.LogWarning($"[FeedbackCues] Geist sin: {missing} (usa la de respaldo)");
             fa.atlasPopulationMode = AtlasPopulationMode.Static;
             AssetDatabase.CreateAsset(fa, path);
             fa.atlasTextures[0].name = CueAssets.PadFontName + " Atlas";
@@ -104,11 +104,11 @@ public static class FeedbackCueAssetsBuilder
             AssetDatabase.SaveAssets();
         }
         var text = new Material(sdf);
-        text.CopyPropertiesFromMaterial(fa.material);   // atlas y proporciones de Teko
+        text.CopyPropertiesFromMaterial(fa.material);   // atlas y proporciones de Geist
         text.SetColor("_FaceColor", Color.white);
         text.SetColor("_OutlineColor", new Color(0.02f, 0.03f, 0.04f, 0.85f));
-        text.SetFloat("_OutlineWidth", 0.08f);
-        text.SetFloat("_FaceDilate", 0.04f);
+        text.SetFloat("_OutlineWidth", 0.05f);
+        text.SetFloat("_FaceDilate", 0.02f);
         text.SetFloat("_BoldDilate", 0f);
         text.SetFloat("_Bevel", 0f);
         text.SetFloat("_Glossiness", 0.2f);

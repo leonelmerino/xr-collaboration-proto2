@@ -16,7 +16,7 @@ namespace XRCollab.Measurement.Cues
         public const string AdditiveMaterialName = "CueAdditive";
         public const string AlphaMaterialName = "CueAlpha";
         public const string PadFieldMaterialName = "PadField";   // botón de turno «field» (TurnPad/Shaders/PadField)
-        public const string PadFontName = "PadFont SDF";          // Teko (OFL) para el texto del botón «field»
+        public const string PadFontName = "PadFont SDF";          // Geist (OFL) para el texto del botón «field»
         public const string PadTextMaterialName = "PadText";
 
         public TMP_FontAsset Font, PadFont;

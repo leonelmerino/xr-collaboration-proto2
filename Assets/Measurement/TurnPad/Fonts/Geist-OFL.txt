@@ -1,0 +1,2 @@
+Geist Regular - Copyright 2024 The Geist Project Authors (Vercel). SIL Open Font License 1.1 (https://openfontlicense.org).
+Copied from the next.js package (@vercel/og). Used for the curved «field» turn-button labels.
