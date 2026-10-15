@@ -118,9 +118,12 @@ public static class HeadsetBuild
         PlayerSettings.Android.forceInternetPermission = true;   // red con el host (opcional)
         PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
         PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[] { GraphicsDeviceType.OpenGLES3 });
+        // OpenXR sobre GLES rechaza Gamma (visto al armar vive-ar-baseline, 2026-10-15). Afecta también al build de
+        // PC (colorSpace es global): el proyecto queda en Linear.
+        PlayerSettings.colorSpace = ColorSpace.Linear;
         PlayerSettings.defaultInterfaceOrientation = UIOrientation.LandscapeLeft;
         EditorUserBuildSettings.androidBuildSystem = AndroidBuildSystem.Gradle;
-        Debug.Log($"[HeadsetBuild] Player: {PackageId}, IL2CPP ARM64, API mín. {PlayerSettings.Android.minSdkVersion}, GLES3");
+        Debug.Log($"[HeadsetBuild] Player: {PackageId}, IL2CPP ARM64, API mín. {PlayerSettings.Android.minSdkVersion}, GLES3, {PlayerSettings.colorSpace}");
     }
 
     private static string ArgValue(string name)
