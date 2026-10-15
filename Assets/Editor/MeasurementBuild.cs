@@ -13,6 +13,7 @@ using UnityEngine.XR.OpenXR;
 ///   - VIVE XR Passthrough:                     OFF (su hook de xrWaitFrame congela la app junto al Eye Tracker en Mono)
 ///   - VIVE XR Composition Layer (Passthrough): OFF (en Standalone crea el passthrough pero nunca lo envía: negro)
 ///   - VIVE XR Eye Tracker:                     sin cambios (lo usa el logger de mirada)
+///   - Hand Common Poses / KHR Simple Controller: OFF (sin uso; igual que el build del visor)
 /// Menú: XR Collab → Build medición (Win64). CLI:
 ///   Unity.exe -batchmode -quit -projectPath . -executeMethod MeasurementBuild.BuildWin64 [-out "ruta\XR Collaboration Measurement.exe"]
 /// Por defecto escribe en Desktop\dictuc\development\unity\builds\xr-collaboration-proto2-measurement.
@@ -34,6 +35,9 @@ public static class MeasurementBuild
                 "VivePassthrough" => false,
                 "ViveCompositionLayerPassthrough" => false,
                 nameof(PassthroughUnderlayFeature) => true,
+                // Como en el visor nativo (HeadsetBuild, 2026-10-15): nada de la medición los usa.
+                "HandCommonPosesInteraction" => false,
+                "KHRSimpleControllerProfile" => false,
                 _ => (bool?)null,
             };
             if (want.HasValue && feature.enabled != want.Value)

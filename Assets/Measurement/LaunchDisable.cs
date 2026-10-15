@@ -14,17 +14,17 @@ namespace XRCollab.Measurement
     /// (PC: <c>-off "A,B"</c>).
     ///  - <c>off list</c>: solo escribe en el log los tipos activos (en trozos, logcat corta líneas largas).
     ///  - <c>off all --es keep "A,B"</c>: apaga todos los scripts del proyecto (no los de Unity/paquetes) salvo los de keep.
-    ///  - En el visor (Android), sin <c>off</c>, se apaga <see cref="AndroidDefault"/>; <c>--es off none</c> deja todo.
+    ///  - En modo medición (visor y PC), sin <c>off</c>, se apaga <see cref="MeasurementDefault"/>; <c>off none</c> deja todo.
     /// </summary>
     public sealed class LaunchDisable : MonoBehaviour
     {
         private const float Delay = 5f;
 
         /// <summary>
-        /// Lo que en el visor nativo no sirve: depuración/HUD del PC y la locomoción de XRI (girar, teletransportarse,
-        /// trepar, moverse con controles), que en passthrough solo correría el rig respecto de la sala real.
+        /// Lo que en modo medición (passthrough) no sirve: HUD/visualizadores de depuración y la locomoción de XRI
+        /// (girar, teletransportarse, trepar, moverse con controles), que solo correría el rig respecto de la sala real.
         /// </summary>
-        public const string AndroidDefault =
+        public const string MeasurementDefault =
             "AvatarHandJointDebugViz,AvatarHandTunerHUD,BuildAuditHUD,BuildFlyCamera,PerformanceHUD,PinchDebugVisualizer,TrackerVisualizer," +
             "ActionBasedContinuousTurnProvider,ActionBasedSnapTurnProvider,ClimbProvider,DynamicMoveProvider,TeleportationProvider,ClimbTeleportDestinationIndicator";
 
@@ -32,9 +32,7 @@ namespace XRCollab.Measurement
         private static void Init()
         {
             string arg = LaunchArgs.Get("-off");
-#if UNITY_ANDROID && !UNITY_EDITOR
-            if (string.IsNullOrWhiteSpace(arg)) arg = AndroidDefault;
-#endif
+            if (string.IsNullOrWhiteSpace(arg) && MeasurementMode.IsActive) arg = MeasurementDefault;
             if (string.IsNullOrWhiteSpace(arg) || arg.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)) return;
             var go = new GameObject("[LaunchDisable]");
             DontDestroyOnLoad(go);
