@@ -46,7 +46,7 @@ namespace XRCollab.Measurement.Cues
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Init()
         {
-#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN || UNITY_ANDROID   // Android: build nativo en el visor (HeadsetBuild)
             if (FindObjectOfType<AppHealth>() != null) return;
             var go = new GameObject("[AppHealth]");
             DontDestroyOnLoad(go);
