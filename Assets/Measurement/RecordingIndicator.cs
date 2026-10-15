@@ -5,12 +5,13 @@ using UnityEngine.UI;
 
 /// <summary>
 /// Punto chico arriba a la derecha de la vista del visor, para saber de un vistazo si el PC recibe la imagen:
-///   - azul semitransparente: STIMULUS1 está recibiendo la imagen en vivo de este visor (Wi-Fi del router o USB);
+///   - azul semitransparente: STIMULUS1 está conectado a este visor (USB) y puede ver su imagen en vivo;
 ///   - rojo: además se está grabando el video de la sesión;
-///   - amarillo semitransparente: STIMULUS1 NO está recibiendo la imagen de este visor (sin Wi-Fi/USB o ventana cerrada).
-/// Solo en el build del visor (Android). La app no sabe nada de la red ni del video: la ventana «Visores en vivo» de
-/// STIMULUS1 (tools\headset-wall) escribe por adb, en Application.persistentDataPath, live_state.txt cada ~3 s
-/// mientras recibe imagen y rec_state.txt mientras graba. Acá solo se miran esos archivos.
+///   - amarillo semitransparente: STIMULUS1 perdió este visor (sin USB/adb o panel cerrado).
+/// Solo en el build del visor (Android). La app no sabe nada de la red ni del video: el panel de sesión
+/// (tools\lab-dashboard, desde 2026-10-15; antes la ventana «Visores en vivo») toca por adb live_state.txt en
+/// Application.persistentDataPath cada ~3 s mientras está conectado a la app (imagen en vivo disponible), y
+/// Record-LabHeadsets.ps1 -Direct deja rec_state.txt mientras graba. Acá solo se miran esos archivos.
 /// La telemetría no depende de esto.
 /// </summary>
 public class RecordingIndicator : MonoBehaviour
