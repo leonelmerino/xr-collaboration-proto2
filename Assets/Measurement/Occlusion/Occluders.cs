@@ -54,6 +54,7 @@ namespace XRCollab.Measurement.Occlusion
         private Camera _maskedCamera;
         private Material[] _current = Array.Empty<Material>();
         private string _handsKind = "";
+        private HandOccluderSource _hands;
 
         public Material Material => _material;
 
@@ -106,6 +107,7 @@ namespace XRCollab.Measurement.Occlusion
             _cube = PrimitiveMesh(PrimitiveType.Cube);
             RefreshMaterials();
             var hands = new HandOccluderSource();
+            _hands = hands;
             _handsKind = hands.Kind;
             Register(hands);
             Application.onBeforeRender += Draw;
@@ -122,7 +124,7 @@ namespace XRCollab.Measurement.Occlusion
             if (Instance == this) Instance = null;
         }
 
-        // -occlusion-offset-ms N, -occlusion-inflate-mm N, -occlusion-hard
+        // -occlusion-offset-ms N, -occlusion-inflate-mm N, -occlusion-trail-ms N, -occlusion-thickness F, -occlusion-hard
         private void ApplyCommandLine()
         {
             string[] args = Environment.GetCommandLineArgs();
@@ -134,6 +136,8 @@ namespace XRCollab.Measurement.Occlusion
                     case "-occlusion-hard": Soft = false; break;
                     case "-occlusion-offset-ms": if (TryFloat(next, out float o)) HandOccluderSource.OffsetMs = Mathf.Clamp(o, -200f, 200f); break;
                     case "-occlusion-inflate-mm": if (TryFloat(next, out float f)) SetInflate(f); break;
+                    case "-occlusion-trail-ms": if (TryFloat(next, out float tr)) HandOccluderSource.TrailMs = Mathf.Clamp(tr, 0f, 120f); break;
+                    case "-occlusion-thickness": if (TryFloat(next, out float th)) HandOccluderSource.Thickness = Mathf.Clamp(th, 0.6f, 1.6f); break;
                 }
             }
         }
@@ -156,7 +160,8 @@ namespace XRCollab.Measurement.Occlusion
 
         /// <summary>
         /// Orden «occlusion …» del canal de control. null = ok, si no el error.
-        /// on | off | show | hide | soft | hard | offset=MS (+ predice, - retrasa) | inflate=MM | feather=0..1
+        /// on | off | show | hide | joints | debug (show + joints) | soft | hard | offset=MS (+ predice, - retrasa) |
+        /// inflate=MM | feather=0..1 | trail=MS (estela) | thickness=0.6..1.6 (grosor de la mano)
         /// </summary>
         public string HandleCommand(string arg)
         {
@@ -169,13 +174,15 @@ namespace XRCollab.Measurement.Occlusion
                 switch (key)
                 {
                     case "offset": HandOccluderSource.OffsetMs = Mathf.Clamp(v, -200f, 200f); break;
+                    case "trail": HandOccluderSource.TrailMs = Mathf.Clamp(v, 0f, 120f); break;
+                    case "thickness": HandOccluderSource.Thickness = Mathf.Clamp(v, 0.6f, 1.6f); break;
                     case "inflate":
                         if (_softMaterial == null) return "sin material de recorte suave";
                         SetInflate(v); break;
                     case "feather":
                         if (_softMaterial == null) return "sin material de recorte suave";
                         _softMaterial.SetFloat("_Feather", Mathf.Clamp(v, 0.02f, 1f)); break;
-                    default: return "occlusion offset=MS | inflate=MM | feather=0..1";
+                    default: return "occlusion offset=MS | inflate=MM | feather=0..1 | trail=MS | thickness=F";
                 }
             }
             else
@@ -187,14 +194,20 @@ namespace XRCollab.Measurement.Occlusion
                     case "show":
                         if (_debugMaterial == null) return $"falta Resources/{DebugMaterialResource} (Assets/Editor/OcclusionAssetsBuilder.cs)";
                         ShowDebug = true; break;
-                    case "hide": ShowDebug = false; break;
+                    case "hide": ShowDebug = false; HandOccluderSource.ShowJoints = false; break;
+                    case "joints":
+                        if (_debugMaterial == null) return $"falta Resources/{DebugMaterialResource}";
+                        HandOccluderSource.ShowJoints = true; break;
+                    case "debug":
+                        if (_debugMaterial == null) return $"falta Resources/{DebugMaterialResource}";
+                        ShowDebug = true; HandOccluderSource.ShowJoints = true; break;
                     case "soft":
                         if (_softMaterial == null) return $"falta Resources/{SoftMaterialResource}";
                         Soft = true; break;
                     case "hard":
                         if (_material == null) return $"falta Resources/{MaterialResource}";
                         Soft = false; break;
-                    default: return "occlusion on|off|show|hide|soft|hard|offset=MS|inflate=MM|feather=0..1";
+                    default: return "occlusion on|off|show|hide|joints|debug|soft|hard|offset=MS|inflate=MM|feather=0..1|trail=MS|thickness=F";
                 }
             }
             RefreshMaterials();
@@ -204,7 +217,8 @@ namespace XRCollab.Measurement.Occlusion
 
         public string Describe() =>
             $"{(Enabled ? "activos" : "apagados")}, {(Soft ? "suave" : "duro")}{(ShowDebug ? ", visibles" : "")}, " +
-            $"desfase {HandOccluderSource.OffsetMs:+0;-0;0} ms, inflado {InflateMm:0.#} mm, borde {Feather:0.00}";
+            $"desfase {HandOccluderSource.OffsetMs:+0;-0;0} ms, estela {HandOccluderSource.TrailMs:0} ms, " +
+            $"grosor {HandOccluderSource.Thickness:0.00}, inflado {InflateMm:0.#} mm, borde {Feather:0.00}";
 
         public float InflateMm => _softMaterial != null ? _softMaterial.GetFloat("_Inflate") * 1000f : 0f;
         public float Feather => _softMaterial != null ? _softMaterial.GetFloat("_Feather") : 0f;
@@ -219,7 +233,8 @@ namespace XRCollab.Measurement.Occlusion
                    ",\"offsetMs\":" + HandOccluderSource.OffsetMs.ToString("0", c) +
                    ",\"inflateMm\":" + InflateMm.ToString("0.#", c) +
                    ",\"feather\":" + Feather.ToString("0.00", c) +
-                   ",\"hands\":\"" + handsKind + "\"}";
+                   ",\"hands\":\"" + handsKind + "\"" +
+                   (_hands != null ? ",\"fit\":" + _hands.FitJson() : "") + "}";
         }
 
         private void Draw()
@@ -247,9 +262,18 @@ namespace XRCollab.Measurement.Occlusion
         public void DrawBox(Vector3 center, Quaternion rotation, Vector3 size) =>
             DrawMesh(_cube, Matrix4x4.TRS(center, rotation, size));
 
-        public void DrawMesh(Mesh mesh, Matrix4x4 localToWorld)
+        public void DrawMesh(Mesh mesh, Matrix4x4 localToWorld) => DrawMesh(mesh, localToWorld, null);
+
+        /// <summary>Como <see cref="DrawMesh(Mesh, Matrix4x4)"/> con propiedades propias (p. ej. _Inflate por mano).</summary>
+        public void DrawMesh(Mesh mesh, Matrix4x4 localToWorld, MaterialPropertyBlock block)
         {
-            foreach (Material m in _current) Graphics.DrawMesh(mesh, localToWorld, m, Layer);
+            foreach (Material m in _current) Graphics.DrawMesh(mesh, localToWorld, m, Layer, null, 0, block);
+        }
+
+        /// <summary>Solo para la vista de ajuste: dibuja con el material de depuración (encima de todo, color del bloque).</summary>
+        public void DrawDebugMesh(Mesh mesh, Matrix4x4 localToWorld, MaterialPropertyBlock block)
+        {
+            if (_debugMaterial != null && Enabled) Graphics.DrawMesh(mesh, localToWorld, _debugMaterial, Layer, null, 0, block);
         }
 
         public Mesh CapsuleMesh => _capsule;

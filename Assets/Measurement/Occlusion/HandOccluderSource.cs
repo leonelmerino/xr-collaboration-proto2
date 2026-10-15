@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using UnityEngine;
-using UnityEngine.Rendering;
 using UnityEngine.XR.Hands;
 
 namespace XRCollab.Measurement.Occlusion
@@ -10,19 +10,25 @@ namespace XRCollab.Measurement.Occlusion
     /// Manos y antebrazos reales como oclusores.
     ///
     /// <b>Mano:</b> la malla con piel del ejemplo «Hand Visualizer» de XR Hands (Resources/Occlusion/Hands), con cada
-    /// hueso puesto en la pose de su articulación (26 de XR_EXT_hand_tracking): la silueta sigue la forma real de la mano
-    /// (palma, grosor de cada dedo) en vez de cápsulas. Si faltan los modelos, cápsulas por hueso como antes.
+    /// hueso puesto en la pose de su articulación (26 de XR_EXT_hand_tracking). El visor (VIVE Focus Vision) no ofrece
+    /// malla de mano ni profundidad en vivo por OpenXR, así que esta es la forma más fiel que hay. Ajuste al usuario:
+    /// el largo de la mano (muñeca → punta del medio, medido en vivo) escala el grosor de la malla, y
+    /// <see cref="Thickness"/> lo corrige a mano («occlusion thickness=1.1»).
     /// <b>Antebrazo:</b> de la muñeca al codo estimado (hombro desde la cabeza + brazo de dos huesos), ver
     /// <see cref="ForearmDirection"/>.
     ///
-    /// <b>Tiempo:</b> las poses se toman en el callback de XR Hands del momento BeforeRender (la más reciente posible,
-    /// como XRHandSkeletonDriver) y se guarda una historia corta. <see cref="OffsetMs"/> corre la pose en el tiempo
-    /// para que el recorte calce con el passthrough, que llega al visor con otra latencia que lo renderizado en el PC:
-    /// positivo = predice hacia adelante con la velocidad de cada articulación, negativo = usa poses de hace un rato.
-    /// Se ajusta en vivo con «occlusion offset=MS» mirando «occlusion show» en un snapshot mientras la mano se mueve.
+    /// <b>Tiempo (lo que más se notaba como «lag»):</b>
+    ///  - La pose sale del callback BeforeRender de XR Hands (en el visor, OpenXR la entrega para el instante en que se
+    ///    mostrará el cuadro) y en ese mismo callback se «hornea» la malla (BakeMesh) y se dibuja con Graphics.DrawMesh.
+    ///    Antes se movían los huesos de un SkinnedMeshRenderer, que puede tomar los huesos del cuadro anterior según
+    ///    cuándo corre el skinning: ahora la forma es siempre la pose de este cuadro.
+    ///  - <see cref="OffsetMs"/> corre la pose: + predice (posición Y rotación de cada articulación, con las velocidades
+    ///    del runtime si las da, si no por diferencias), − usa poses de antes.
+    ///  - <see cref="TrailMs"/>: además de la pose actual se dibuja la de hace TrailMs. La unión de las dos cubre el
+    ///    lugar donde se ve la mano en el passthrough aunque la cámara vaya algo atrasada respecto del tracking, sin
+    ///    agrandar la mano quieta (con la mano quieta las dos poses coinciden y no se dibuja la segunda).
     ///
-    /// Las poses de XR Hands están en el espacio de tracking: se pasan al mundo con el padre de la cámara (igual que
-    /// la mirada en GazeOverlay y las manos en BodyTrackingSessionLogger).
+    /// Las poses de XR Hands están en el espacio de tracking: se pasan al mundo con el padre de la cámara.
     /// </summary>
     public sealed class HandOccluderSource : IOccluderSource, IDisposable
     {
@@ -32,12 +38,20 @@ namespace XRCollab.Measurement.Occlusion
         /// <summary>Desfase temporal de la pose usada (ms): + predice, - retrasa.</summary>
         public static float OffsetMs;
 
-        /// <summary>Inflado extra según la rapidez de la mano (m por m/s): cubre lo que el desfase no alcanza a corregir
-        /// cuando la mano se mueve rápido (recomendación de Meta para recortes de manos sin profundidad).</summary>
-        public static float SpeedInflate = 0.015f;
-        private const float MaxSpeedInflate = 0.012f;
+        /// <summary>Estela (ms): también se dibuja la pose de hace este tiempo, ver la clase.</summary>
+        public static float TrailMs = 30f;
+
+        /// <summary>Corrección manual del grosor (1 = el de la malla escalada al largo de la mano del usuario).</summary>
+        public static float Thickness = 1f;
+
+        /// <summary>Esferas en cada articulación con el radio del runtime (vista de ajuste, «occlusion joints»).</summary>
+        public static bool ShowJoints;
+
+        /// <summary>Inflado extra según la rapidez de la mano (m por m/s), ver README.</summary>
+        public static float SpeedInflate = 0.01f;
+        private const float MaxSpeedInflate = 0.008f;
         private static readonly int InflateId = Shader.PropertyToID("_Inflate");
-        private readonly MaterialPropertyBlock _block = new MaterialPropertyBlock();
+        private static readonly int ColorId = Shader.PropertyToID("_Color");
 
         public static float CapsuleInflate = 1.15f;
         private const float DefaultFingerRadius = 0.009f;
@@ -45,6 +59,8 @@ namespace XRCollab.Measurement.Occlusion
         private const float WristRadius = 0.029f;
         private const float ElbowRadius = 0.038f;
         private const float MaxPredictMeters = 0.08f;
+        private const float MaxPredictDegrees = 45f;
+        private const float MinTrailSpeed = 0.05f;          // m/s: con la mano quieta no se dibuja la estela
 
         // Brazo de dos huesos desde un hombro estimado (como HandRayDriver): el tracking no da codo.
         private const float UpperArm = 0.30f;
@@ -52,7 +68,7 @@ namespace XRCollab.Measurement.Occlusion
         private const float ShoulderLateral = 0.18f;
         private const float ShoulderDown = 0.22f;
         private const float ShoulderBack = 0.06f;
-        private const float MaxWristBendDegrees = 70f;   // la muñeca se dobla a lo más ~70° respecto del antebrazo
+        private const float MaxWristBendDegrees = 70f;
 
         private static readonly int JointCount = XRHandJointID.EndMarker.ToIndex();
         private static readonly XRHandJointID[][] Fingers =
@@ -65,6 +81,12 @@ namespace XRCollab.Measurement.Occlusion
         };
         private static readonly XRHandJointID[] Knuckles =
             { XRHandJointID.IndexProximal, XRHandJointID.MiddleProximal, XRHandJointID.RingProximal, XRHandJointID.LittleProximal };
+        // Muñeca → punta del medio: el largo de la mano con que se escala la malla.
+        private static readonly XRHandJointID[] LengthChain =
+        {
+            XRHandJointID.Wrist, XRHandJointID.MiddleMetacarpal, XRHandJointID.MiddleProximal, XRHandJointID.MiddleIntermediate,
+            XRHandJointID.MiddleDistal, XRHandJointID.MiddleTip,
+        };
 
         /// <summary>Una pose de toda la mano en el espacio de tracking.</summary>
         private sealed class Sample
@@ -73,6 +95,9 @@ namespace XRCollab.Measurement.Occlusion
             public readonly Pose[] Joints = new Pose[JointCount];
             public readonly bool[] Valid = new bool[JointCount];
             public readonly float[] Radius = new float[JointCount];
+            public readonly Vector3[] LinVel = new Vector3[JointCount];
+            public readonly Vector3[] AngVel = new Vector3[JointCount];   // rad/s, eje en el espacio de tracking
+            public bool HasVel;
         }
 
         private sealed class Hand
@@ -80,41 +105,61 @@ namespace XRCollab.Measurement.Occlusion
             public bool Left;
             public readonly Sample[] Ring = new Sample[48];   // ~0,5 s a 90 Hz
             public int Count, Head;                            // Head = la más reciente
-            public readonly Sample Eval = new Sample();
+            public readonly Sample Eval = new Sample(), Trail = new Sample();
             public bool Tracked;
             public GameObject Model;
             public SkinnedMeshRenderer Skin;
             public Transform[] Bones;                          // por índice de articulación (null = sin hueso)
-            public MeshRenderer ForearmNear, ForearmFar;
-            public float Speed;                                // rapidez de la muñeca (m/s), de la última evaluación
+            public Transform[] ScaleRoots;                     // huesos movidos cuyo padre no es hueso movido
+            public Vector3[] ScaleRootsLocal;
+            public float TemplateLength;                       // largo muñeca → punta del medio de la malla (m)
+            public float UserLength;                           // el del usuario, suavizado (0 = aún no)
+            public Mesh Baked, BakedTrail;
+            public readonly MaterialPropertyBlock Block = new MaterialPropertyBlock();
+            public float Speed;                                // rapidez de la muñeca (m/s)
+            // Estadísticas para el canal de control
+            public int NewSamples;
+            public float SampleHz;
+            public bool TrailDrawn;
         }
 
         private readonly Hand[] _hands = { new Hand { Left = true }, new Hand { Left = false } };
         private readonly List<XRHandSubsystem> _list = new List<XRHandSubsystem>();
+        private readonly MaterialPropertyBlock _jointBlock = new MaterialPropertyBlock();
         private XRHandSubsystem _subsystem;
         private float _nextLookup;
         private Camera _cam;
-        private int _version = -1;
         private bool _meshes;
         private GameObject _root;
+        private Mesh _sphere;
+        private float _statsT;
+        private string _velSource = "?";
 
-        /// <summary>"mesh" (mallas con piel) o "capsules".</summary>
+        /// <summary>"mesh" (malla con piel horneada cada cuadro) o "capsules".</summary>
         public string Kind => _meshes ? "mesh" : "capsules";
 
         public HandOccluderSource()
         {
-            foreach (Hand h in _hands) for (int i = 0; i < h.Ring.Length; i++) h.Ring[i] = new Sample();
+            foreach (Hand h in _hands)
+                for (int i = 0; i < h.Ring.Length; i++) h.Ring[i] = new Sample();
             _root = new GameObject("[HandOccluders]");
             UnityEngine.Object.DontDestroyOnLoad(_root);
             _meshes = BuildModel(_hands[0], LeftModel, "L_") & BuildModel(_hands[1], RightModel, "R_");
             if (!_meshes) Debug.LogWarning("[Occluders] sin mallas de mano (Resources/" + LeftModel + "): se usan cápsulas");
-            foreach (Hand h in _hands) BuildForearm(h);
+            GameObject s = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            _sphere = s.GetComponent<MeshFilter>().sharedMesh;
+            UnityEngine.Object.Destroy(s);
         }
 
         public void Dispose()
         {
             if (_subsystem != null) _subsystem.updatedHands -= OnUpdatedHands;
             _subsystem = null;
+            foreach (Hand h in _hands)
+            {
+                if (h.Baked != null) UnityEngine.Object.Destroy(h.Baked);
+                if (h.BakedTrail != null) UnityEngine.Object.Destroy(h.BakedTrail);
+            }
             if (_root != null) UnityEngine.Object.Destroy(_root);
         }
 
@@ -134,7 +179,8 @@ namespace XRCollab.Measurement.Occlusion
             }
             h.Skin = h.Model.GetComponentInChildren<SkinnedMeshRenderer>(true);
             if (h.Skin == null) { UnityEngine.Object.Destroy(h.Model); h.Model = null; return false; }
-            Setup(h.Skin);
+            // El renderer nunca se dibuja solo: se hornea en BeforeRender y se dibuja con Graphics.DrawMesh.
+            h.Skin.enabled = false;
             h.Skin.updateWhenOffscreen = true;
             h.Bones = new Transform[JointCount];
             int found = 0;
@@ -144,41 +190,38 @@ namespace XRCollab.Measurement.Occlusion
                 if (byName.TryGetValue(prefix + id, out Transform b)) { h.Bones[i] = b; found++; }
             }
             if (found < 20) { UnityEngine.Object.Destroy(h.Model); h.Model = null; h.Skin = null; return false; }
-            h.Model.SetActive(false);
+
+            var bones = new HashSet<Transform>(h.Bones);
+            var roots = new List<Transform>();
+            foreach (Transform b in h.Bones) if (b != null && !bones.Contains(b.parent)) roots.Add(b);
+            h.ScaleRoots = roots.ToArray();
+            h.ScaleRootsLocal = roots.ConvertAll(r => r.localScale).ToArray();
+            h.TemplateLength = ChainLength(i => h.Bones[i] != null ? h.Bones[i].position : (Vector3?)null);
+            h.Baked = new Mesh { name = h.Model.name + "Baked" };
+            h.BakedTrail = new Mesh { name = h.Model.name + "Trail" };
+            h.Baked.MarkDynamic();
+            h.BakedTrail.MarkDynamic();
             return true;
         }
 
-        private void BuildForearm(Hand h)
+        private static float ChainLength(Func<int, Vector3?> at)
         {
-            h.ForearmNear = CapsuleRenderer((h.Left ? "Left" : "Right") + "ForearmNear");
-            h.ForearmFar = CapsuleRenderer((h.Left ? "Left" : "Right") + "ForearmFar");
-        }
-
-        private MeshRenderer CapsuleRenderer(string name)
-        {
-            GameObject go = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            go.name = name;
-            go.layer = Occluders.Layer;
-            UnityEngine.Object.Destroy(go.GetComponent<Collider>());
-            go.transform.SetParent(_root.transform, false);
-            var r = go.GetComponent<MeshRenderer>();
-            Setup(r);
-            go.SetActive(false);
-            return r;
-        }
-
-        private static void Setup(Renderer r)
-        {
-            r.shadowCastingMode = ShadowCastingMode.Off;
-            r.receiveShadows = false;
-            r.lightProbeUsage = LightProbeUsage.Off;
-            r.reflectionProbeUsage = ReflectionProbeUsage.Off;
-            r.allowOcclusionWhenDynamic = false;
-            r.sharedMaterials = Array.Empty<Material>();   // nada visible hasta que Occluders asigne sus materiales
+            float len = 0f;
+            Vector3? prev = null;
+            foreach (XRHandJointID id in LengthChain)
+            {
+                Vector3? p = at(id.ToIndex());
+                if (!p.HasValue) return 0f;
+                if (prev.HasValue) len += Vector3.Distance(prev.Value, p.Value);
+                prev = p;
+            }
+            return len;
         }
 
         // ---------------- cada cuadro ----------------
 
+        // Application.onBeforeRender (Occluders): solo busca el subsistema y las estadísticas. El dibujo va en el
+        // callback BeforeRender de XR Hands, que tiene la pose de este cuadro.
         public void DrawOccluders(Occluders occ, Camera cam)
         {
             _cam = cam;
@@ -196,49 +239,58 @@ namespace XRCollab.Measurement.Occlusion
                     if (_subsystem != null) _subsystem.updatedHands += OnUpdatedHands;
                 }
             }
-            if (_version != Occluders.Version) ApplyMaterials(occ);
-            bool on = _subsystem != null && _subsystem.running && occ.CurrentMaterials.Length > 0;
-            if (!on) foreach (Hand h in _hands) Show(h, false);
-            // Sin mallas: cápsulas inmediatas con la última pose evaluada (la del callback de este cuadro).
-            if (!_meshes && on)
-                foreach (Hand h in _hands) if (h.Tracked) DrawCapsules(occ, h.Eval, cam.transform.parent);
-        }
-
-        private void ApplyMaterials(Occluders occ)
-        {
-            _version = Occluders.Version;
-            Material[] mats = occ.CurrentMaterials;
-            foreach (Hand h in _hands)
+            float now = Time.unscaledTime;
+            if (now - _statsT >= 1f)
             {
-                if (h.Skin != null) h.Skin.sharedMaterials = mats;
-                h.ForearmNear.sharedMaterials = mats;
-                h.ForearmFar.sharedMaterials = mats;
+                float dt = now - _statsT;
+                foreach (Hand h in _hands) { h.SampleHz = h.NewSamples / dt; h.NewSamples = 0; }
+                _statsT = now;
             }
         }
 
-        // XR Hands llama esto dos veces por cuadro (Dynamic y BeforeRender). En BeforeRender queda la pose final.
+        // XR Hands llama esto dos veces por cuadro (Dynamic y BeforeRender). En BeforeRender queda la pose final y se dibuja.
         private void OnUpdatedHands(XRHandSubsystem s, XRHandSubsystem.UpdateSuccessFlags flags, XRHandSubsystem.UpdateType type)
         {
             double now = Time.realtimeSinceStartupAsDouble;
-            Transform space = _cam != null ? _cam.transform.parent : null;
             Record(_hands[0], s.leftHand, now);
             Record(_hands[1], s.rightHand, now);
+            if (type != XRHandSubsystem.UpdateType.BeforeRender) return;
+            Occluders occ = Occluders.Instance;
+            if (occ == null || _cam == null || occ.CurrentMaterials.Length == 0) return;
+            Transform space = _cam.transform.parent;
             foreach (Hand h in _hands)
             {
-                if (!h.Tracked || h.Count == 0) { Show(h, false); continue; }
-                Evaluate(h, now + OffsetMs / 1000.0);
-                if (_cam != null) Apply(h, space);
+                h.TrailDrawn = false;
+                if (!h.Tracked || h.Count == 0) continue;
+                Evaluate(h, now + OffsetMs / 1000.0, h.Eval, true);
+                if (!h.Eval.Valid[XRHandJointID.Wrist.ToIndex()]) continue;
+                UpdateUserLength(h);
+                float k = HandScale(h) * Thickness;
+                float inflate = occ.InflateMm / 1000f + Mathf.Min(MaxSpeedInflate, h.Speed * SpeedInflate);
+                h.Block.SetFloat(InflateId, inflate);
+                if (_meshes)
+                {
+                    DrawPose(occ, h, h.Eval, space, k, h.Baked);
+                    if (TrailMs > 0f && h.Speed >= MinTrailSpeed)
+                    {
+                        Evaluate(h, now + (OffsetMs - TrailMs) / 1000.0, h.Trail, false);
+                        if (h.Trail.Valid[XRHandJointID.Wrist.ToIndex()]) { DrawPose(occ, h, h.Trail, space, k, h.BakedTrail); h.TrailDrawn = true; }
+                    }
+                }
+                else DrawCapsules(occ, h.Eval, space, k, h.Block);
+                DrawForearm(occ, h, h.Eval, space, k);
+                if (ShowJoints) DrawJoints(occ, h.Eval, space);
             }
         }
 
-        private static void Record(Hand h, XRHand hand, double now)
+        private void Record(Hand h, XRHand hand, double now)
         {
             if (!hand.isTracked) { h.Tracked = false; h.Count = 0; return; }
             h.Tracked = true;
             int wrist = XRHandJointID.Wrist.ToIndex();
             bool hasWrist = hand.GetJoint(XRHandJointID.Wrist).TryGetPose(out Pose wp);
             // Mismos datos que la muestra anterior (el tracking corre a otra frecuencia que el render): no se duplica,
-            // así la velocidad no se va a cero entre muestras nuevas.
+            // así la velocidad por diferencias no se va a cero entre muestras nuevas.
             if (h.Count > 0 && hasWrist)
             {
                 Sample last = h.Ring[h.Head];
@@ -246,40 +298,72 @@ namespace XRCollab.Measurement.Occlusion
             }
             h.Head = (h.Head + 1) % h.Ring.Length;
             h.Count = Math.Min(h.Count + 1, h.Ring.Length);
+            h.NewSamples++;
             Sample smp = h.Ring[h.Head];
             smp.T = now;
+            bool vel = true;
             for (int i = 0; i < JointCount; i++)
             {
                 XRHandJoint j = hand.GetJoint(XRHandJointIDUtility.FromIndex(i));
                 smp.Valid[i] = j.TryGetPose(out smp.Joints[i]);
                 smp.Radius[i] = j.TryGetRadius(out float r) && r > 0.001f ? r : DefaultFingerRadius;
+                bool lv = j.TryGetLinearVelocity(out smp.LinVel[i]);
+                bool av = j.TryGetAngularVelocity(out smp.AngVel[i]);
+                if (smp.Valid[i] && !(lv && av)) vel = false;
             }
+            smp.HasVel = vel;
+            _velSource = vel ? "runtime" : "diff";
         }
 
         private Sample At(Hand h, int back) => h.Ring[(h.Head - back + h.Ring.Length * 2) % h.Ring.Length];
 
         /// <summary>Pose de la mano en el instante <paramref name="t"/> (interpolada hacia atrás o predicha hacia adelante).</summary>
-        private void Evaluate(Hand h, double t)
+        private void Evaluate(Hand h, double t, Sample e, bool setSpeed)
         {
-            Sample latest = At(h, 0), e = h.Eval;
+            Sample latest = At(h, 0);
             Array.Copy(latest.Radius, e.Radius, JointCount);
+            int w = XRHandJointID.Wrist.ToIndex();
             if (t >= latest.T)
             {
-                // Predicción: velocidad de cada articulación con una muestra de hace >= 20 ms (menos ruido).
-                Sample old = null;
-                for (int k = 1; k < h.Count; k++) { Sample c = At(h, k); if (latest.T - c.T >= 0.02) { old = c; break; } if (latest.T - c.T > 0.15) break; }
                 float ahead = (float)(t - latest.T);
+                // Velocidad: la del runtime (XrHandJointVelocitiesEXT) si viene; si no, por diferencias con una muestra
+                // de hace >= 20 ms (menos ruido).
+                Sample old = null;
+                if (!latest.HasVel)
+                    for (int k = 1; k < h.Count; k++) { Sample c = At(h, k); if (latest.T - c.T >= 0.02) { old = c; break; } if (latest.T - c.T > 0.15) break; }
                 float dt = old != null ? (float)(latest.T - old.T) : 0f;
-                int w = XRHandJointID.Wrist.ToIndex();
-                h.Speed = old != null && dt > 0f && latest.Valid[w] && old.Valid[w] ? (latest.Joints[w].position - old.Joints[w].position).magnitude / dt : 0f;
+                if (setSpeed)
+                {
+                    if (latest.HasVel && latest.Valid[w]) h.Speed = latest.LinVel[w].magnitude;
+                    else h.Speed = old != null && dt > 0f && latest.Valid[w] && old.Valid[w] ? (latest.Joints[w].position - old.Joints[w].position).magnitude / dt : 0f;
+                }
                 for (int i = 0; i < JointCount; i++)
                 {
                     e.Valid[i] = latest.Valid[i];
                     e.Joints[i] = latest.Joints[i];
-                    if (old == null || dt <= 0f || ahead <= 0f || !latest.Valid[i] || !old.Valid[i]) continue;
-                    Vector3 step = (latest.Joints[i].position - old.Joints[i].position) / dt * ahead;
+                    if (ahead <= 0f || !latest.Valid[i]) continue;
+                    Vector3 step;
+                    Quaternion turn;
+                    if (latest.HasVel)
+                    {
+                        step = latest.LinVel[i] * ahead;
+                        Vector3 av = latest.AngVel[i];
+                        float deg = Mathf.Min(av.magnitude * ahead * Mathf.Rad2Deg, MaxPredictDegrees);
+                        turn = deg > 0.01f ? Quaternion.AngleAxis(deg, av.normalized) : Quaternion.identity;
+                    }
+                    else
+                    {
+                        if (old == null || dt <= 0f || !old.Valid[i]) continue;
+                        step = (latest.Joints[i].position - old.Joints[i].position) / dt * ahead;
+                        Quaternion delta = latest.Joints[i].rotation * Quaternion.Inverse(old.Joints[i].rotation);
+                        delta.ToAngleAxis(out float ang, out Vector3 axis);
+                        if (ang > 180f) ang -= 360f;
+                        float deg = Mathf.Clamp(ang / dt * ahead, -MaxPredictDegrees, MaxPredictDegrees);
+                        turn = Mathf.Abs(deg) > 0.01f && !float.IsInfinity(axis.x) ? Quaternion.AngleAxis(deg, axis) : Quaternion.identity;
+                    }
                     if (step.sqrMagnitude > MaxPredictMeters * MaxPredictMeters) step = step.normalized * MaxPredictMeters;
                     e.Joints[i].position += step;
+                    e.Joints[i].rotation = turn * e.Joints[i].rotation;
                 }
                 return;
             }
@@ -292,8 +376,9 @@ namespace XRCollab.Measurement.Occlusion
                 if (c.T <= t) break;
             }
             float u = b.T > a.T ? Mathf.Clamp01((float)((t - a.T) / (b.T - a.T))) : 1f;
-            int wi = XRHandJointID.Wrist.ToIndex();
-            h.Speed = b.T > a.T && a.Valid[wi] && b.Valid[wi] ? (b.Joints[wi].position - a.Joints[wi].position).magnitude / (float)(b.T - a.T) : 0f;
+            if (setSpeed)
+                h.Speed = latest.HasVel && latest.Valid[w] ? latest.LinVel[w].magnitude
+                    : b.T > a.T && a.Valid[w] && b.Valid[w] ? (b.Joints[w].position - a.Joints[w].position).magnitude / (float)(b.T - a.T) : 0f;
             for (int i = 0; i < JointCount; i++)
             {
                 bool va = a.Valid[i], vb = b.Valid[i];
@@ -305,62 +390,67 @@ namespace XRCollab.Measurement.Occlusion
             }
         }
 
-        private void Apply(Hand h, Transform space)
+        // Largo de la mano del usuario (muñeca → punta del medio), suavizado: solo con el dedo medio bastante estirado.
+        private static void UpdateUserLength(Hand h)
         {
             Sample e = h.Eval;
-            int wrist = XRHandJointID.Wrist.ToIndex(), middle = XRHandJointID.MiddleProximal.ToIndex();
-            if (!e.Valid[wrist]) { Show(h, false); return; }
-            Show(h, true);
-            if (h.Model != null)
+            float len = ChainLength(i => e.Valid[i] ? e.Joints[i].position : (Vector3?)null);
+            if (len < 0.12f || len > 0.26f) return;
+            Vector3 wrist = e.Joints[XRHandJointID.Wrist.ToIndex()].position;
+            float straight = Vector3.Distance(wrist, e.Joints[XRHandJointID.MiddleTip.ToIndex()].position) / len;
+            if (straight < 0.93f) return;
+            h.UserLength = h.UserLength <= 0f ? len : Mathf.Lerp(h.UserLength, len, 0.02f);
+        }
+
+        /// <summary>Escala del grosor de la malla: largo de la mano del usuario / largo de la malla (0,8–1,25).</summary>
+        private static float HandScale(Hand h) =>
+            h.TemplateLength > 0.05f && h.UserLength > 0f ? Mathf.Clamp(h.UserLength / h.TemplateLength, 0.8f, 1.25f) : 1f;
+
+        private void DrawPose(Occluders occ, Hand h, Sample e, Transform space, float k, Mesh into)
+        {
+            for (int r = 0; r < h.ScaleRoots.Length; r++) h.ScaleRoots[r].localScale = h.ScaleRootsLocal[r] * k;
+            // En orden de índice: cada padre (muñeca, metacarpianos…) va antes que sus hijos.
+            for (int i = 0; i < JointCount; i++)
             {
-                // En orden de índice: cada padre (muñeca, metacarpianos…) va antes que sus hijos.
-                for (int i = 0; i < JointCount; i++)
-                {
-                    Transform b = h.Bones[i];
-                    if (b == null || !e.Valid[i]) continue;
-                    Pose p = e.Joints[i];
-                    b.SetPositionAndRotation(World(space, p.position), space != null ? space.rotation * p.rotation : p.rotation);
-                }
+                Transform b = h.Bones[i];
+                if (b == null || !e.Valid[i]) continue;
+                Pose p = e.Joints[i];
+                b.SetPositionAndRotation(World(space, p.position), space != null ? space.rotation * p.rotation : p.rotation);
             }
+            h.Skin.BakeMesh(into, true);
+            Transform t = h.Skin.transform;
+            occ.DrawMesh(into, Matrix4x4.TRS(t.position, t.rotation, Vector3.one), h.Block);
+        }
+
+        private void DrawForearm(Occluders occ, Hand h, Sample e, Transform space, float k)
+        {
+            int wrist = XRHandJointID.Wrist.ToIndex(), middle = XRHandJointID.MiddleProximal.ToIndex();
             Vector3 w = World(space, e.Joints[wrist].position);
             Vector3 back = e.Valid[middle] ? (w - World(space, e.Joints[middle].position)).normalized : -_cam.transform.forward;
             Vector3 dir = ForearmDirection(w, back, _cam.transform, h.Left);
             Vector3 mid = w + dir * (ForearmLength * 0.45f);
-            SetCapsule(h.ForearmNear, w, mid, WristRadius);
-            SetCapsule(h.ForearmFar, mid, w + dir * ForearmLength, ElbowRadius);
+            occ.DrawMesh(occ.CapsuleMesh, Occluders.CapsuleMatrix(w, mid, WristRadius * k), h.Block);
+            occ.DrawMesh(occ.CapsuleMesh, Occluders.CapsuleMatrix(mid, w + dir * ForearmLength, ElbowRadius * k), h.Block);
+        }
 
-            // Inflado: el del material (occlusion inflate=MM) + un poco más mientras la mano se mueve rápido.
-            Occluders occ = Occluders.Instance;
-            float inflate = (occ != null ? occ.InflateMm / 1000f : 0.004f) + Mathf.Min(MaxSpeedInflate, h.Speed * SpeedInflate);
-            _block.SetFloat(InflateId, inflate);
-            if (h.Skin != null) h.Skin.SetPropertyBlock(_block);
-            h.ForearmNear.SetPropertyBlock(_block);
-            h.ForearmFar.SetPropertyBlock(_block);
+        // Vista de ajuste: una esfera por articulación con el radio que da el runtime (magenta), encima de la forma.
+        private void DrawJoints(Occluders occ, Sample e, Transform space)
+        {
+            _jointBlock.SetColor(ColorId, new Color(1f, 0.1f, 0.8f, 0.8f));
+            for (int i = 0; i < JointCount; i++)
+            {
+                if (!e.Valid[i]) continue;
+                float d = e.Radius[i] * 2f;
+                occ.DrawDebugMesh(_sphere, Matrix4x4.TRS(World(space, e.Joints[i].position), Quaternion.identity, new Vector3(d, d, d)), _jointBlock);
+            }
         }
 
         private static Vector3 World(Transform space, Vector3 p) => space != null ? space.TransformPoint(p) : p;
 
-        private static void SetCapsule(MeshRenderer r, Vector3 a, Vector3 b, float radius)
-        {
-            Matrix4x4 m = Occluders.CapsuleMatrix(a, b, radius);
-            Transform t = r.transform;
-            t.SetPositionAndRotation(m.GetColumn(3), m.rotation);
-            t.localScale = m.lossyScale;
-        }
-
-        private void Show(Hand h, bool on)
-        {
-            bool model = on && _meshes;
-            if (h.Model != null && h.Model.activeSelf != model) h.Model.SetActive(model);
-            if (h.ForearmNear.gameObject.activeSelf != on) h.ForearmNear.gameObject.SetActive(on);
-            if (h.ForearmFar.gameObject.activeSelf != on) h.ForearmFar.gameObject.SetActive(on);
-        }
-
-        // Respaldo sin mallas: cápsulas por hueso + palma rellena.
-        private static void DrawCapsules(Occluders occ, Sample e, Transform space)
+        // Respaldo sin mallas: cápsulas por hueso (radio del runtime) + palma rellena.
+        private static void DrawCapsules(Occluders occ, Sample e, Transform space, float k, MaterialPropertyBlock block)
         {
             int wristI = XRHandJointID.Wrist.ToIndex();
-            if (!e.Valid[wristI]) return;
             Vector3 wrist = World(space, e.Joints[wristI].position);
             foreach (XRHandJointID[] finger in Fingers)
             {
@@ -372,20 +462,37 @@ namespace XRCollab.Measurement.Occlusion
                     int i = id.ToIndex();
                     if (!e.Valid[i]) { hasPrev = false; continue; }
                     Vector3 p = World(space, e.Joints[i].position);
-                    if (hasPrev) occ.DrawCapsule(prev, p, Mathf.Max(prevR, e.Radius[i]) * CapsuleInflate);
+                    if (hasPrev) occ.DrawMesh(occ.CapsuleMesh, Occluders.CapsuleMatrix(prev, p, Mathf.Max(prevR, e.Radius[i]) * CapsuleInflate * k), block);
                     prev = p; prevR = e.Radius[i]; hasPrev = true;
                 }
             }
             Vector3? lastKnuckle = null;
-            foreach (XRHandJointID k in Knuckles)
+            foreach (XRHandJointID kn in Knuckles)
             {
-                int i = k.ToIndex();
+                int i = kn.ToIndex();
                 if (!e.Valid[i]) continue;
                 Vector3 p = World(space, e.Joints[i].position);
-                occ.DrawCapsule(wrist, p, PalmRadius * CapsuleInflate);
-                if (lastKnuckle.HasValue) occ.DrawCapsule(lastKnuckle.Value, p, PalmRadius * CapsuleInflate);
+                occ.DrawMesh(occ.CapsuleMesh, Occluders.CapsuleMatrix(wrist, p, PalmRadius * CapsuleInflate * k), block);
+                if (lastKnuckle.HasValue) occ.DrawMesh(occ.CapsuleMesh, Occluders.CapsuleMatrix(lastKnuckle.Value, p, PalmRadius * CapsuleInflate * k), block);
                 lastKnuckle = p;
             }
+        }
+
+        /// <summary>Objeto JSON con el estado del ajuste (canal de control, "occlusionInfo.fit").</summary>
+        public string FitJson()
+        {
+            var c = CultureInfo.InvariantCulture;
+            string HandJson(Hand h) =>
+                "{\"tracked\":" + (h.Tracked ? "true" : "false") +
+                ",\"hz\":" + h.SampleHz.ToString("0", c) +
+                ",\"speed\":" + h.Speed.ToString("0.00", c) +
+                ",\"lengthMm\":" + (h.UserLength * 1000f).ToString("0", c) +
+                ",\"scale\":" + HandScale(h).ToString("0.00", c) +
+                ",\"trail\":" + (h.TrailDrawn ? "true" : "false") + "}";
+            return "{\"vel\":\"" + _velSource + "\",\"trailMs\":" + TrailMs.ToString("0", c) +
+                   ",\"thickness\":" + Thickness.ToString("0.00", c) + ",\"joints\":" + (ShowJoints ? "true" : "false") +
+                   ",\"templateMm\":" + (_hands[1].TemplateLength * 1000f).ToString("0", c) +
+                   ",\"L\":" + HandJson(_hands[0]) + ",\"R\":" + HandJson(_hands[1]) + "}";
         }
 
         /// <summary>
