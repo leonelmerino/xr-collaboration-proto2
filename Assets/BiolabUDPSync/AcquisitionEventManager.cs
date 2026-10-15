@@ -91,11 +91,54 @@ public class AcquisitionEventManager : MonoBehaviour
             config.acquisitionPort,
             config.responseTimeoutMs
         );
+
+        // La grabación del panel manda: al parar, SESSION_END + STOP a BioLab (host); al volver a empezar, START.
+        if (Instance == this) XRCollab.Measurement.Recording.AppControlHooks.AcquisitionSession = OnRecordingSession;
+    }
+
+    private bool quitting;
+
+    private void OnRecordingSession(bool started)
+    {
+        if (quitting || !isActiveAndEnabled) return;
+        if (started) { if (!sessionStarted) BeginExperimentalSession(); }
+        else if (sessionStarted) EndExperimentalSession();
     }
 
     private void OnDestroy()
     {
         if (Instance == this) Instance = null;
+        if (XRCollab.Measurement.Recording.AppControlHooks.AcquisitionSession == OnRecordingSession)
+            XRCollab.Measurement.Recording.AppControlHooks.AcquisitionSession = null;
+    }
+
+    // Al cerrar la app (también Stop-LabSession / cerrar ventana) los coroutines ya no corren: SESSION_END y STOP
+    // van en este hilo, con espera corta, para que BioLab no quede grabando.
+    private void OnApplicationQuit()
+    {
+        quitting = true;
+        if (!sessionStarted || udpClient == null) return;
+        try
+        {
+            // Task.Run: sin el contexto de Unity, si no el await interno esperaría al hilo principal (que está aquí).
+            int wait = config.responseTimeoutMs + 300;
+            string payload = BuildMetadataPayload("SESSION_END");
+            if (acquisitionReachable) System.Threading.Tasks.Task.Run(() => udpClient.SendEventAsync(config.nodeId, payload)).Wait(wait);
+            LogLocal("SESSION_END", "APP_QUIT");
+            if (config.IsHost && acquisitionReachable && acquisitionRunning)
+            {
+                var stop = System.Threading.Tasks.Task.Run(() => udpClient.StopAcquisitionAsync());
+                string r = stop.Wait(wait) ? stop.Result : "TIMEOUT";
+                Debug.Log($"[AcquisitionEventManager] STOP al cerrar la app: {r}");
+                LogLocal("SESSION_CONTROL", "STOP_RESULT_QUIT", r);
+                acquisitionRunning = false;
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[AcquisitionEventManager] STOP al cerrar la app falló: {e.Message}");
+        }
+        sessionStarted = false;
     }
 
     private IEnumerator Start()

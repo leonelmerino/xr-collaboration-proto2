@@ -23,5 +23,11 @@ namespace XRCollab.Measurement.Recording
 
         /// <summary>«turn start|end|place|show|hide»: botón de turno del participante. Devuelve null si salió bien o el error.</summary>
         public static Func<string, string> Turn;
+
+        /// <summary>
+        /// La grabación del panel empezó (true) o paró (false): la sesión de adquisición (BioLab) la sigue, así el host
+        /// manda STOP a BioLab al parar y START al volver a empezar. Lo registra AcquisitionEventManager.
+        /// </summary>
+        public static Action<bool> AcquisitionSession;
     }
 }

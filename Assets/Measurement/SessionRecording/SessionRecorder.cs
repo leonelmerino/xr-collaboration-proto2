@@ -258,6 +258,8 @@ namespace XRCollab.Measurement.Recording
         {
             (int w, int h) = RecordingFfmpeg.OutputSize(Screen.width, Screen.height, settings.width);
             _run = new RecordingRun(settings, _ffmpeg, _probe, _root, label, w, h, requestedUtc, startAtUtc);
+            try { AppControlHooks.AcquisitionSession?.Invoke(true); }
+            catch (Exception e) { Debug.LogWarning($"{LogPrefix}sesión de adquisición (inicio): {e.Message}"); }
             _bytesOnDisk = 0;
             _segmentCount = 0;
             Debug.Log($"{LogPrefix}grabación {(string.IsNullOrEmpty(label) ? "" : label + " ")}programada para {RecordingCommand.FormatUtc(startAtUtc)} → {_run.Dir} ({w}x{h} @ {settings.fps} fps, segmentos de {settings.segmentSeconds} s)");
@@ -266,6 +268,11 @@ namespace XRCollab.Measurement.Recording
         private void StopRun(DateTime now)
         {
             if (_run == null) return;
+            if (!_quitting)   // al cerrar la app el STOP lo manda AcquisitionEventManager.OnApplicationQuit
+            {
+                try { AppControlHooks.AcquisitionSession?.Invoke(false); }
+                catch (Exception e) { Debug.LogWarning($"{LogPrefix}sesión de adquisición (fin): {e.Message}"); }
+            }
             // Primero el audio (hilo principal: Microphone, AudioListener); el hilo de la grabación espera sus WAV.
             try { _run.Audio?.Stop(); }
             catch (Exception e) { Debug.LogWarning($"{LogPrefix}no se pudo detener el audio: {e.Message}"); }
