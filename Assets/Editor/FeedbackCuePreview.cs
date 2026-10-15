@@ -32,8 +32,6 @@ public static class FeedbackCuePreview
     public static void Render()
     {
         FeedbackCueAssetsBuilder.Ensure();
-        OcclusionAssetsBuilder.Ensure();
-        var occluderMat = Resources.Load<Material>(XRCollab.Measurement.Occlusion.Occluders.MaterialResource);
         // Escena nueva primero: cambiar de escena descarga las texturas creadas antes.
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
         string bgPath = Arg("-cue-bg");
@@ -84,18 +82,6 @@ public static class FeedbackCuePreview
             Vector3 pos = dir * 1.4f;
             FeedbackCueVisual v = FeedbackCueVisual.Create(spec, assets, pos, Quaternion.LookRotation(pos, Vector3.up), layer, lighting.KeyIntensity);
             v.ManualParticles = true;
-            // Prueba de oclusión: un «dedo» (cápsula que solo escribe profundidad) delante del título en la 3.ª señal.
-            GameObject finger = null;
-            if (s == 2 && occluderMat != null)
-            {
-                finger = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-                finger.layer = XRCollab.Measurement.Occlusion.Occluders.Layer;
-                finger.GetComponent<Renderer>().sharedMaterial = occluderMat;
-                finger.transform.position = pos + new Vector3(-0.12f, -0.02f, -0.45f);
-                finger.transform.rotation = Quaternion.Euler(0f, 0f, 20f);
-                finger.transform.localScale = new Vector3(0.022f, 0.09f, 0.022f);
-                cam.cullingMask |= 1 << XRCollab.Measurement.Occlusion.Occluders.Layer;
-            }
             float t = 0f;
             foreach (float target in Times)
             {

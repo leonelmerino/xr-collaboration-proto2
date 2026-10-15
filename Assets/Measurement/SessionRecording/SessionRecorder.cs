@@ -236,12 +236,6 @@ namespace XRCollab.Measurement.Recording
                     string reply = Reply(jpg != null, jpg == null ? "sin imagen del visor (espejo apagado o visor en reposo)" : "");
                     return jpg == null ? reply : reply.Substring(0, reply.Length - 1) + ",\"jpg\":\"" + jpg + "\"}";
                 }
-                case RecordingCommandKind.Occlusion:
-                {
-                    if (AppControlHooks.Occlusion == null) return Reply(false, "esta app no tiene oclusión por las manos");
-                    string occError = AppControlHooks.Occlusion(cmd.Text);
-                    return Reply(occError == null, occError ?? "");
-                }
                 case RecordingCommandKind.Turn:
                 {
                     // El botón de turno escribe él mismo su marca (también cuando se toca con la mano).

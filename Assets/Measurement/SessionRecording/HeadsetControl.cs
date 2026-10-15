@@ -9,8 +9,8 @@ namespace XRCollab.Measurement.Recording
     /// 127.0.0.1:47811 que <see cref="SessionRecorder"/> en el PC, sin video (el visor no graba pantalla).
     /// El panel (tools\lab-dashboard) llega por USB en el puerto fijo 127.0.0.1:47900 del PC
     /// (<c>adb forward tcp:47900 tcp:47811</c>, lo rehace el panel cada 5 s; Send-RecordingCommand.ps1 -Visor).
-    /// «start»/«stop» siguen a la sesión de adquisición (BioLab) y quedan como marcas; «cue», «turn», «occlusion» y
-    /// el estado de la app funcionan igual. «snapshot» no tiene imagen (usar adb screencap).
+    /// «start»/«stop» siguen a la sesión de adquisición (BioLab) y quedan como marcas; «cue», «turn» y el
+    /// estado de la app funcionan igual. «snapshot» no tiene imagen (usar adb screencap).
     /// Marcas: Application.persistentDataPath/control-marks.csv.
     /// </summary>
     public sealed class HeadsetControl : MonoBehaviour
@@ -81,12 +81,6 @@ namespace XRCollab.Measurement.Recording
                 }
                 case RecordingCommandKind.Snapshot:
                     return Reply(false, "visor nativo: sin snapshot por este canal (adb exec-out screencap -p)");
-                case RecordingCommandKind.Occlusion:
-                {
-                    if (AppControlHooks.Occlusion == null) return Reply(false, "esta app no tiene oclusión por las manos");
-                    string e = AppControlHooks.Occlusion(cmd.Text);
-                    return Reply(e == null, e ?? "");
-                }
                 case RecordingCommandKind.Turn:
                 {
                     if (AppControlHooks.Turn == null) return Reply(false, "esta app no tiene botón de turno");

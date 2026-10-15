@@ -202,9 +202,6 @@ namespace XRCollab.Measurement.Cues
                 Prop(sb, "light", "{" + "\"ambient\":" + Q(PassthroughLighting.Hex(l.AmbientLinear)) + ",\"key\":" + Q(PassthroughLighting.Hex(l.KeyColor)) +
                     ",\"keyIntensity\":" + Math.Round(l.KeyIntensity, 2).ToString(c) + ",\"coverage\":" + Math.Round(l.Coverage, 2).ToString(c) + "}");
             }
-            Prop(sb, "occlusion", Q(!XRCollab.Measurement.Occlusion.Occluders.Enabled ? "off" : XRCollab.Measurement.Occlusion.Occluders.ShowDebug ? "show" : "on"));
-            var occ = XRCollab.Measurement.Occlusion.Occluders.Instance;
-            if (occ != null) Prop(sb, "occlusionInfo", occ.HealthJson());
             XRCollab.Measurement.Turns.TurnPad pad = XRCollab.Measurement.Turns.TurnPad.Instance;
             Prop(sb, "turn", pad != null ? pad.HealthJson() : "null");
             if (sb[sb.Length - 1] == ',') sb.Length--;

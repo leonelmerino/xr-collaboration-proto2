@@ -14,8 +14,6 @@ namespace XRCollab.Measurement.Recording
         Cue,
         /// <summary>JPG chico de lo que ve el visor (espejo), para el panel de sesión.</summary>
         Snapshot,
-        /// <summary>Oclusión por las manos reales (Assets/Measurement/Occlusion): «occlusion on|off|show|hide».</summary>
-        Occlusion,
         /// <summary>Botón de turno del participante (Assets/Measurement/TurnPad): «turn start|end|place|show|hide».</summary>
         Turn,
     }
@@ -29,7 +27,6 @@ namespace XRCollab.Measurement.Recording
     ///   mark  texto libre (aplauso inicio, cambio de turno...)
     ///   cue   bad|cross|MAL COLOCADO|El bloque quedó torcido     (señal 3D en el visor; «cue clear» la quita)
     ///   snapshot [w=480]                                           (JPG de lo que ve el visor, en "jpg" de la respuesta)
-    ///   occlusion on|off|show|hide|joints|debug|soft|hard|offset=MS|inflate=MM|feather=0..1|trail=MS|thickness=F   (oclusión por las manos)
     ///   turn start|end|place|show|hide                             (turno del participante, como si tocara el botón)
     ///   turn style solid|ghost|fade|ring · turn mode pad|gesture|both   (diseño del botón · botón y/o gesto)
     /// </code>
@@ -44,7 +41,6 @@ namespace XRCollab.Measurement.Recording
         public const int MaxCueLength = 300;
         public const int DefaultSnapshotWidth = 480;
         private static readonly Regex LabelPattern = new Regex("^[A-Za-z0-9_-]+$");
-        private static readonly Regex OcclusionArg = new Regex(@"^(on|off|show|hide|joints|debug|soft|hard|(offset|inflate|feather|trail|thickness)=-?\d+(\.\d+)?)$");
         private static readonly string[] TurnArgs = { "start", "end", "place", "show", "hide" };
         private static readonly Regex TurnArg = new Regex(@"^(start|end|place|show|hide|style (solid|ghost|fade|ring)|mode (pad|gesture|both))$");
 
@@ -105,15 +101,6 @@ namespace XRCollab.Measurement.Recording
                         return null;
                     }
                     return cmd;
-                case "occlusion":
-                    cmd.Kind = RecordingCommandKind.Occlusion;
-                    cmd.Text = rest.ToLowerInvariant();
-                    if (!OcclusionArg.IsMatch(cmd.Text))
-                    {
-                        error = "occlusion on|off|show|hide|joints|debug|soft|hard|offset=MS|inflate=MM|feather=0..1|trail=MS|thickness=F";
-                        return null;
-                    }
-                    return cmd;
                 case "turn":
                     cmd.Kind = RecordingCommandKind.Turn;
                     cmd.Text = Regex.Replace(rest.ToLowerInvariant(), @"\s+", " ");
@@ -130,7 +117,7 @@ namespace XRCollab.Measurement.Recording
                     cmd.Kind = RecordingCommandKind.Stop;
                     break;
                 default:
-                    error = $"orden desconocida '{verb}' (status | start [label=X] [at=UTC] | stop [at=UTC] | mark texto | cue ... | snapshot | occlusion ... | turn ...)";
+                    error = $"orden desconocida '{verb}' (status | start [label=X] [at=UTC] | stop [at=UTC] | mark texto | cue ... | snapshot | turn ...)";
                     return null;
             }
 

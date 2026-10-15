@@ -18,9 +18,6 @@ namespace XRCollab.Measurement.Recording
         /// <summary>Estado en vivo de la app como objeto JSON ("{...}"); va en "app" de cada respuesta. null = nada.</summary>
         public static Func<string> Health;
 
-        /// <summary>«occlusion on|off|show|hide»: oclusión por las manos reales. Devuelve null si salió bien o el error.</summary>
-        public static Func<string, string> Occlusion;
-
         /// <summary>«turn start|end|place|show|hide»: botón de turno del participante. Devuelve null si salió bien o el error.</summary>
         public static Func<string, string> Turn;
 

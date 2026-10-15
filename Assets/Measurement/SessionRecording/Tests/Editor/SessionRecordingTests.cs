@@ -169,20 +169,9 @@ namespace XRCollab.Measurement.Recording.Tests
         }
 
         [Test]
-        public void Command_OcclusionAndTurn()
+        public void Command_Turn()
         {
-            RecordingCommand o = RecordingCommand.Parse("occlusion SHOW", out string error);
-            Assert.IsNull(error);
-            Assert.AreEqual(RecordingCommandKind.Occlusion, o.Kind);
-            Assert.AreEqual("show", o.Text);
-            Assert.AreEqual("offset=-35", RecordingCommand.Parse("occlusion offset=-35", out _).Text);
-            Assert.AreEqual("feather=0.4", RecordingCommand.Parse("occlusion feather=0.4", out _).Text);
-            Assert.AreEqual("debug", RecordingCommand.Parse("occlusion debug", out _).Text);
-            Assert.AreEqual("joints", RecordingCommand.Parse("occlusion joints", out _).Text);
-            Assert.AreEqual("trail=30", RecordingCommand.Parse("occlusion trail=30", out _).Text);
-            Assert.AreEqual("thickness=1.1", RecordingCommand.Parse("occlusion thickness=1.1", out _).Text);
-
-            RecordingCommand t = RecordingCommand.Parse("turn start\r", out error);
+            RecordingCommand t = RecordingCommand.Parse("turn start\r", out string error);
             Assert.IsNull(error);
             Assert.AreEqual(RecordingCommandKind.Turn, t.Kind);
             Assert.AreEqual("start", t.Text);
@@ -192,9 +181,7 @@ namespace XRCollab.Measurement.Recording.Tests
         }
 
         [TestCase("cue")]
-        [TestCase("occlusion")]
-        [TestCase("occlusion maybe")]
-        [TestCase("occlusion offset=abc")]
+        [TestCase("occlusion on")]
         [TestCase("turn")]
         [TestCase("turn next")]
         [TestCase("turn style glass")]

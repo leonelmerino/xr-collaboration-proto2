@@ -21,7 +21,6 @@ Cada señal queda en el CSV de eventos (`FEEDBACK_CUE`) y como marca del video s
   bisel e iluminación Standard), extruidas hacia atrás y un poco en diagonal. La cara tiene degradé.
   Los shaders de TMP no sirven en XR: suavizan el borde según el tamaño de la ventana del PC y no de la textura del
   ojo, y en el visor las letras se veían transparentes. `CueText` usa la derivada en pantalla (fwidth).
-- **Oclusión:** las manos y los antebrazos reales tapan la señal (`Assets/Measurement/Occlusion`).
 - **Ícono metálico biselado:** malla extruida hecha en código (`CueMeshes`) que refleja la sala.
 - **Fondo:** sombra suave detrás (se lee sobre fondos claros) y brillo aditivo, que suma luz sin tapar la sala.
 - **Animación:**
