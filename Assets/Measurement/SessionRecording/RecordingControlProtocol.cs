@@ -31,6 +31,7 @@ namespace XRCollab.Measurement.Recording
     ///   snapshot [w=480]                                           (JPG de lo que ve el visor, en "jpg" de la respuesta)
     ///   occlusion on|off|show|hide|soft|hard|offset=MS|inflate=MM|feather=0..1   (oclusión por las manos)
     ///   turn start|end|place|show|hide                             (turno del participante, como si tocara el botón)
+    ///   turn style solid|ghost|fade|ring · turn mode pad|gesture|both   (diseño del botón · botón y/o gesto)
     /// </code>
     /// <c>at</c> es una hora UTC ISO 8601: así varios PCs con los relojes sincronizados (NTP) empiezan en el mismo
     /// instante aunque la orden les llegue con distinta demora. Sin <c>at</c>, la orden corre apenas llega.
@@ -45,6 +46,7 @@ namespace XRCollab.Measurement.Recording
         private static readonly Regex LabelPattern = new Regex("^[A-Za-z0-9_-]+$");
         private static readonly Regex OcclusionArg = new Regex(@"^(on|off|show|hide|soft|hard|(offset|inflate|feather)=-?\d+(\.\d+)?)$");
         private static readonly string[] TurnArgs = { "start", "end", "place", "show", "hide" };
+        private static readonly Regex TurnArg = new Regex(@"^(start|end|place|show|hide|style (solid|ghost|fade|ring)|mode (pad|gesture|both))$");
 
         public RecordingCommandKind Kind { get; private set; }
         public string Label { get; private set; } = "";
@@ -114,10 +116,10 @@ namespace XRCollab.Measurement.Recording
                     return cmd;
                 case "turn":
                     cmd.Kind = RecordingCommandKind.Turn;
-                    cmd.Text = rest.ToLowerInvariant();
-                    if (Array.IndexOf(TurnArgs, cmd.Text) < 0)
+                    cmd.Text = Regex.Replace(rest.ToLowerInvariant(), @"\s+", " ");
+                    if (!TurnArg.IsMatch(cmd.Text))
                     {
-                        error = $"turn {string.Join("|", TurnArgs)}";
+                        error = $"turn {string.Join("|", TurnArgs)}|style solid|ghost|fade|ring|mode pad|gesture|both";
                         return null;
                     }
                     return cmd;

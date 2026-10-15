@@ -67,7 +67,24 @@ namespace XRCollab.Measurement.Turns
         private const float AutoPlaceFocusedSeconds = 3f;
         private const float AutoPlaceMaxPitch = 30f;
 
+        // Gesto de turno (alternativa al disco): pulgar arriba con el puño cerrado, quieto un rato.
+        private const float GestureHoldSeconds = 0.6f;
+        private const float GestureCooldownSeconds = 1.5f;
+        private const float ThumbUpCos = 0.75f;           // pulgar a ≤ ~41° de la vertical
+        private const float ThumbStraightDegrees = 40f;
+        private const float CurlDegrees = 80f;             // los otros 4 dedos doblados al menos esto
+        private const float TipToPalmMax = 0.075f;
+        private const float GestureStillMeters = 0.03f;
+
+        // Cercanía de la mano para los diseños Fade/Ring: 1 a ≤ 3 cm del disco, 0 a ≥ 15 cm.
+        private const float NearFull = 0.03f, NearNone = 0.15f;
+
+        public enum TurnMode { Pad, Gesture, Both }
+
         public static TurnPad Instance { get; private set; }
+
+        public TurnMode Mode { get; private set; } = TurnMode.Pad;
+        public TurnPadVisual.PadStyle Style => _visual != null ? _visual.Style : TurnPadVisual.PadStyle.Solid;
 
         /// <summary>Activa o no el mover con pinza (-noturnpad-pinch lo apaga).</summary>
         public static bool PinchToMove = true;
@@ -97,6 +114,9 @@ namespace XRCollab.Measurement.Turns
 
         private sealed class Pinch { public bool Active; public float Since, LastOpen = -10f; public Vector3 Anchor; }
         private readonly Pinch _pinchL = new Pinch(), _pinchR = new Pinch();
+        private sealed class Thumb { public bool Active, Armed = true; public float Since; public Vector3 Anchor; }
+        private readonly Thumb _thumbL = new Thumb(), _thumbR = new Thumb();
+        private float _gestureCooldownUntil;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Init()
@@ -117,6 +137,10 @@ namespace XRCollab.Measurement.Turns
             int i = Array.IndexOf(args, "-turnpad-side");
             if (i >= 0 && i + 1 < args.Length) _rightSide = !args[i + 1].Trim().Equals("left", StringComparison.OrdinalIgnoreCase);
             if (Array.IndexOf(args, "-noturnpad-pinch") >= 0) PinchToMove = false;
+            i = Array.IndexOf(args, "-turn-mode");
+            string mode = i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+            i = Array.IndexOf(args, "-turnpad-style");
+            string style = i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
             CueAssets assets = CueAssets.Load();
             if (!assets.Ok) { Debug.LogWarning($"{LogPrefix}faltan recursos de las señales:{assets.Missing}: sin botón de turno"); enabled = false; return; }
             _visual = new TurnPadVisual(transform, assets, FeedbackCueDirector.CueLayer, _owned);
@@ -124,6 +148,8 @@ namespace XRCollab.Measurement.Turns
             _root.gameObject.SetActive(false);
             RefreshText();
             AppControlHooks.Turn = HandleCommand;
+            if (style != null) HandleCommand("style " + style);
+            if (mode != null) HandleCommand("mode " + mode);
             Debug.Log($"{LogPrefix}listo (lado {(_rightSide ? "derecho" : "izquierdo")}); se coloca solo al ponerse el visor, con «turn place» o con la pinza");
         }
 
@@ -140,7 +166,25 @@ namespace XRCollab.Measurement.Turns
         /// <summary>«turn start|end|place|show|hide» (hilo principal). null = ok, si no el error.</summary>
         public string HandleCommand(string arg)
         {
-            switch ((arg ?? "").Trim().ToLowerInvariant())
+            string a = (arg ?? "").Trim().ToLowerInvariant();
+            if (a.StartsWith("style "))
+            {
+                if (!Enum.TryParse(a.Substring(6).Trim(), true, out TurnPadVisual.PadStyle st)) return "turn style solid|ghost|fade|ring";
+                _visual.Style = st;
+                Debug.Log($"{LogPrefix}diseño {st}");
+                AcquisitionEventManager.Instance?.LogLocalExternal("TURN_PAD", "STYLE " + st.ToString().ToUpperInvariant());
+                return null;
+            }
+            if (a.StartsWith("mode "))
+            {
+                if (!Enum.TryParse(a.Substring(5).Trim(), true, out TurnMode m)) return "turn mode pad|gesture|both";
+                Mode = m;
+                _hold = 0f;
+                Debug.Log($"{LogPrefix}modo {m}");
+                AcquisitionEventManager.Instance?.LogLocalExternal("TURN_PAD", "MODE " + m.ToString().ToUpperInvariant());
+                return null;
+            }
+            switch (a)
             {
                 case "start":
                     if (InTurn) return $"el turno {TurnNumber} ya está en curso";
@@ -160,7 +204,7 @@ namespace XRCollab.Measurement.Turns
                     Visible = false;
                     return null;
                 default:
-                    return "turn start|end|place|show|hide";
+                    return "turn start|end|place|show|hide|style solid|ghost|fade|ring|mode pad|gesture|both";
             }
         }
 
@@ -197,19 +241,29 @@ namespace XRCollab.Measurement.Turns
                 UpdatePinch(_hands.leftHand, _pinchL, space, now, "pinza izquierda", ref pinch, ref pinchAt);
                 UpdatePinch(_hands.rightHand, _pinchR, space, now, "pinza derecha", ref pinch, ref pinchAt);
             }
+
+            // Gesto de turno: pulgar arriba (alternativa más casual al disco). Usa el mismo anillo de progreso.
+            if (Mode != TurnMode.Pad && cam != null && handsOn && !_visual.Moving)
+            {
+                UpdateThumb(_hands.leftHand, _thumbL, space, now, "gesture_left", ref pinch, ref pinchAt);
+                UpdateThumb(_hands.rightHand, _thumbR, space, now, "gesture_right", ref pinch, ref pinchAt);
+            }
             _visual.Pinch(pinch, pinchAt, cam != null ? cam.transform.position : pinchAt - Vector3.forward);
 
-            bool show = Visible && Placed;
+            bool show = Visible && Placed && Mode != TurnMode.Gesture;
             if (_root.gameObject.activeSelf != show) _root.gameObject.SetActive(show);
             FeedbackCueDirector.PadVisible = show || pinch >= 0f;
 
             float depth = float.MaxValue;
             string who = null;
             bool hover = false;
+            float near = 0f;
             if (show && cam != null && handsOn && !_visual.Moving)
             {
                 Probe(_hands.leftHand, space, ref _armedL, ref depth, ref who, ref hover, "hand_left");
                 Probe(_hands.rightHand, space, ref _armedR, ref depth, ref who, ref hover, "hand_right");
+                if (_visual.Style == TurnPadVisual.PadStyle.Fade || _visual.Style == TurnPadVisual.PadStyle.Ring)
+                    near = Mathf.Max(Nearness(_hands.leftHand, space), Nearness(_hands.rightHand, space));
             }
             Hover = hover || who != null;
 
@@ -226,7 +280,90 @@ namespace XRCollab.Measurement.Turns
             }
 
             if (InTurn && (int)TurnSeconds != _shownSecond) RefreshText();
-            _visual.Tick(dt, Mathf.Clamp01(Progress), who != null ? Mathf.Clamp(depth, 0f, PressTravel) : 0f, Hover);
+            _visual.Tick(dt, Mathf.Clamp01(Progress), who != null ? Mathf.Clamp(depth, 0f, PressTravel) : 0f, Hover, near);
+        }
+
+        private static readonly XRHandJointID[] NearJoints =
+        {
+            XRHandJointID.Palm, XRHandJointID.ThumbTip, XRHandJointID.IndexTip, XRHandJointID.MiddleTip,
+            XRHandJointID.RingTip, XRHandJointID.LittleTip, XRHandJointID.IndexProximal, XRHandJointID.LittleProximal,
+        };
+
+        /// <summary>0..1: qué tan cerca está la mano (cualquier punta o la palma) del disco, para Fade/Ring.</summary>
+        private float Nearness(XRHand hand, Transform space)
+        {
+            if (!hand.isTracked) return 0f;
+            float best = float.MaxValue;
+            foreach (XRHandJointID id in NearJoints)
+            {
+                if (!Local(hand, id, space, out Vector3 p)) continue;
+                // Distancia al disco (no a su centro): radial fuera del borde + altura sobre la cara.
+                float radial = Mathf.Max(0f, new Vector2(p.x, p.y).magnitude - TurnPadVisual.PadRadius);
+                float d = new Vector2(radial, Mathf.Max(0f, -p.z)).magnitude;
+                if (d < best) best = d;
+            }
+            return best == float.MaxValue ? 0f : 1f - Mathf.Clamp01((best - NearFull) / (NearNone - NearFull));
+        }
+
+        /// <summary>
+        /// Gesto de turno: pulgar estirado hacia arriba, los otros cuatro dedos doblados contra la palma, la mano quieta
+        /// <see cref="GestureHoldSeconds"/>. Al manipular un bloque de Jenga el pulgar empuja o pinza (no apunta arriba
+        /// con el puño cerrado), así que no se dispara. Después hay que deshacer el gesto antes del siguiente.
+        /// </summary>
+        private void UpdateThumb(XRHand hand, Thumb ts, Transform space, float now, string source, ref float progress, ref Vector3 at)
+        {
+            if (!hand.isTracked || !ThumbsUp(hand, space, out Vector3 tip, out Vector3 palm))
+            {
+                ts.Active = false;
+                ts.Armed = true;
+                return;
+            }
+            if (!ts.Armed || now < _gestureCooldownUntil) return;
+            if (!ts.Active || (palm - ts.Anchor).magnitude > GestureStillMeters)
+            {
+                ts.Active = true;
+                ts.Since = now;
+                ts.Anchor = palm;
+                return;
+            }
+            float k = (now - ts.Since) / GestureHoldSeconds;
+            if (k < 1f)
+            {
+                if (k > progress) { progress = k; at = tip + Vector3.up * 0.02f; }
+                return;
+            }
+            ts.Active = false;
+            ts.Armed = false;
+            _gestureCooldownUntil = now + GestureCooldownSeconds;
+            _visual.PinchDone();
+            Toggle(source);
+        }
+
+        private static readonly XRHandJointID[][] CurledFingers =
+        {
+            new[] { XRHandJointID.IndexMetacarpal, XRHandJointID.IndexProximal, XRHandJointID.IndexDistal, XRHandJointID.IndexTip },
+            new[] { XRHandJointID.MiddleMetacarpal, XRHandJointID.MiddleProximal, XRHandJointID.MiddleDistal, XRHandJointID.MiddleTip },
+            new[] { XRHandJointID.RingMetacarpal, XRHandJointID.RingProximal, XRHandJointID.RingDistal, XRHandJointID.RingTip },
+            new[] { XRHandJointID.LittleMetacarpal, XRHandJointID.LittleProximal, XRHandJointID.LittleDistal, XRHandJointID.LittleTip },
+        };
+
+        private static bool ThumbsUp(XRHand hand, Transform space, out Vector3 tip, out Vector3 palm)
+        {
+            palm = default;
+            if (!World(hand, XRHandJointID.ThumbTip, space, out tip) || !World(hand, XRHandJointID.ThumbProximal, space, out Vector3 tp) ||
+                !World(hand, XRHandJointID.ThumbDistal, space, out Vector3 td) || !World(hand, XRHandJointID.ThumbMetacarpal, space, out Vector3 tm) ||
+                !World(hand, XRHandJointID.Palm, space, out palm)) return false;
+            if (Vector3.Dot((tip - tp).normalized, Vector3.up) < ThumbUpCos) return false;
+            if (Vector3.Angle(tp - tm, tip - td) > ThumbStraightDegrees) return false;
+            foreach (XRHandJointID[] f in CurledFingers)
+            {
+                if (!World(hand, f[0], space, out Vector3 m) || !World(hand, f[1], space, out Vector3 p) ||
+                    !World(hand, f[2], space, out Vector3 d) || !World(hand, f[3], space, out Vector3 t)) return false;
+                if (Vector3.Angle(p - m, t - d) < CurlDegrees) return false;
+                if ((t - palm).magnitude > TipToPalmMax) return false;
+            }
+            // El pulgar sobresale del puño (no envuelto alrededor de algo).
+            return tip.y - palm.y > 0.04f;
         }
 
         /// <summary>Mira la punta del índice de una mano: hover, y si está presionando válidamente el disco.</summary>
@@ -460,6 +597,8 @@ namespace XRCollab.Measurement.Turns
                    ",\"secs\":" + Math.Round(TurnSeconds, 1).ToString(c) +
                    ",\"hover\":" + (Hover ? "true" : "false") +
                    ",\"source\":\"" + LastSource + "\"" +
+                   ",\"style\":\"" + Style.ToString().ToLowerInvariant() + "\"" +
+                   ",\"mode\":\"" + Mode.ToString().ToLowerInvariant() + "\"" +
                    ",\"lastUtc\":\"" + _lastUtc + "\"}";
         }
     }

@@ -47,3 +47,17 @@ It also writes a mark in the video's `marks.csv` (`TURN_START turno=3 source=han
 
 ## Control channel (127.0.0.1:47811)
 `turn start|end` (operator fallback, source `panel`), `turn place`, `turn show|hide`. `-noturnpad` disables it.
+
+## Design variants and turn gesture (2026-10-15)
+Without depth on VIVE PC streaming, the hand cut-out trails behind, so the hand can look like it is *under* the disc.
+- `turn style solid|ghost|fade|ring` (start: `-turnpad-style X`):
+  - **solid**: the opaque metal disc (before).
+  - **ghost**: always semi-transparent (face 45 %, base 30 %).
+  - **fade**: opaque when the hand is far; translucent (≈ 18 %) as any fingertip or the palm comes within 15 → 3 cm.
+  - **ring**: like fade, but the disc vanishes completely near the hand, leaving only the ring and the hold arc.
+- `turn mode pad|gesture|both` (start: `-turn-mode X`): **gesture** = thumbs-up (thumb ≤ ~41° from vertical and
+  straight, the other four fingers curled against the palm, thumb tip ≥ 4 cm above the palm), hand still (≤ 3 cm) for
+  0.6 s; the same progress ring fills at the thumb. 1.5 s cooldown and the hand must leave the pose before the next.
+  Source is `gesture_left|gesture_right`; it emits the same `TURN_START|TURN_END` through `EmitInteractionEvent`.
+  In `gesture` mode the disc is hidden.
+- Both show up in the status JSON (`turn.style`, `turn.mode`) and are logged as `TURN_PAD STYLE …|MODE …`.

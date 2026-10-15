@@ -20,6 +20,15 @@ namespace XRCollab.Measurement.Turns
     /// </summary>
     public sealed class TurnPadVisual
     {
+        /// <summary>
+        /// Diseño del disco (para que la mano no parezca quedar debajo del botón: sin profundidad, la oclusión llega
+        /// tarde). Solid = metal opaco (antes); Ghost = semitransparente siempre; Fade = opaco lejos, se vuelve
+        /// translúcido al acercar la mano; Ring = al acercar la mano el disco desaparece y queda solo el anillo.
+        /// </summary>
+        public enum PadStyle { Solid, Ghost, Fade, Ring }
+
+        public PadStyle Style = PadStyle.Solid;
+
         public const float PadRadius = 0.045f;
         private const float AppearSeconds = 0.6f;
         private const float MoveSeconds = 0.85f;
@@ -34,8 +43,10 @@ namespace XRCollab.Measurement.Turns
         /// <summary>La pose del botón en la sala (la que usa el gesto).</summary>
         public readonly Transform Root;
         private readonly Transform _body, _face, _labels;
-        private readonly MeshRenderer _faceRenderer;
-        private readonly MaterialPropertyBlock _faceBlock = new MaterialPropertyBlock();
+        private readonly MeshRenderer _faceRenderer, _baseRenderer;
+        private readonly MaterialPropertyBlock _faceBlock = new MaterialPropertyBlock(), _baseBlock = new MaterialPropertyBlock();
+        private readonly Material _metal, _ghostBase, _ghostFace;
+        private float _near;   // 0 = mano lejos, 1 = mano sobre el disco (suavizado)
         private readonly PadArc _track, _progress, _rippleA, _rippleB, _pinchTrack, _pinchArc;
         private readonly TextMeshPro _label, _sub;
         private readonly AudioSource _audio;
@@ -53,8 +64,10 @@ namespace XRCollab.Measurement.Turns
             Root = Child("Pad", owner, layer);
             _body = Child("Body", Root, layer);
 
-            Disc("Base", _body, assets, PadRadius, 0.012f, 0.004f, 0f, layer).GetComponent<MeshRenderer>()
-                .SetPropertyBlock(Block(Base, 0.6f, 0.75f));
+            _metal = assets.Metal;
+            _ghostBase = Ghost(assets.Alpha, 3004, owned);
+            _ghostFace = Ghost(assets.Alpha, 3005, owned);
+            _baseRenderer = Disc("Base", _body, assets, PadRadius, 0.012f, 0.004f, 0f, layer).GetComponent<MeshRenderer>();
             GameObject face = Disc("Face", _body, assets, PadRadius * 0.78f, 0.008f, 0.003f, -0.009f, layer);
             _face = face.transform;
             _faceRenderer = face.GetComponent<MeshRenderer>();
@@ -183,9 +196,11 @@ namespace XRCollab.Measurement.Turns
 
         /// <param name="hold">progreso de «mantener» 0..1</param>
         /// <param name="press">cuánto se hunde la cara (m)</param>
-        public void Tick(float dt, float hold, float press, bool hover)
+        /// <param name="near">cercanía de la mano al disco 0..1 (1 = encima)</param>
+        public void Tick(float dt, float hold, float press, bool hover, float near = 0f)
         {
             _colorT += dt / ColorFadeSeconds;
+            _near = Mathf.MoveTowards(_near, Mathf.Clamp01(near), dt * (near > _near ? 8f : 3f));
             Color c = CurrentColor;
             ApplyColor(c);
 
@@ -219,6 +234,7 @@ namespace XRCollab.Measurement.Turns
             // Anillo base: se dibuja al aparecer; más visible con el dedo cerca.
             float trackSweep = _appearT >= 0f ? 360f * EaseOut(Mathf.Clamp01(_appearT / 0.58f)) : 360f;
             float trackAlpha = Moving ? 0.2f : hover ? 0.6f : 0.35f;
+            if (Style == PadStyle.Ring || Style == PadStyle.Ghost) trackAlpha = Mathf.Max(trackAlpha, Mathf.Lerp(0.5f, 0.95f, _near));
             _track.Set(0.0505f, 0.0525f, 0f, trackSweep, WithAlpha(c, trackAlpha));
 
             // Progreso de «mantener»: arco horario desde las 12. Mientras viaja: dos segmentos que orbitan el anillo
@@ -281,19 +297,41 @@ namespace XRCollab.Measurement.Turns
 
         private void ApplyColor(Color c)
         {
-            _faceBlock.SetColor("_Color", c);
-            _faceBlock.SetFloat("_Metallic", 0.3f);
-            _faceBlock.SetFloat("_Glossiness", 0.8f);
+            if (Style == PadStyle.Solid)
+            {
+                if (_faceRenderer.sharedMaterial != _metal) { _faceRenderer.sharedMaterial = _metal; _baseRenderer.sharedMaterial = _metal; }
+                _faceBlock.SetColor("_Color", c);
+                _faceBlock.SetFloat("_Metallic", 0.3f);
+                _faceBlock.SetFloat("_Glossiness", 0.8f);
+                _baseBlock.SetColor("_Color", Base);
+                _baseBlock.SetFloat("_Metallic", 0.6f);
+                _baseBlock.SetFloat("_Glossiness", 0.75f);
+            }
+            else
+            {
+                if (_faceRenderer.sharedMaterial != _ghostFace) { _faceRenderer.sharedMaterial = _ghostFace; _baseRenderer.sharedMaterial = _ghostBase; }
+                float face, bas;
+                switch (Style)
+                {
+                    case PadStyle.Ghost: face = 0.45f; bas = 0.3f; break;
+                    case PadStyle.Fade: face = Mathf.Lerp(0.95f, 0.18f, _near); bas = Mathf.Lerp(0.9f, 0.08f, _near); break;
+                    default: face = Mathf.Lerp(0.95f, 0f, _near); bas = Mathf.Lerp(0.9f, 0f, _near); break;   // Ring
+                }
+                _faceBlock.SetColor("_Color", WithAlpha(c, face));
+                _baseBlock.SetColor("_Color", WithAlpha(Color.Lerp(Base, c, 0.25f), bas));
+            }
             _faceRenderer.SetPropertyBlock(_faceBlock);
+            _baseRenderer.SetPropertyBlock(_baseBlock);
         }
 
-        private static MaterialPropertyBlock Block(Color c, float metallic, float gloss)
+        /// <summary>Material translúcido (CueFx alpha premultiplicado) para el disco; color por _Color.</summary>
+        private static Material Ghost(Material alpha, int queue, List<Material> owned)
         {
-            var b = new MaterialPropertyBlock();
-            b.SetColor("_Color", c);
-            b.SetFloat("_Metallic", metallic);
-            b.SetFloat("_Glossiness", gloss);
-            return b;
+            var m = new Material(alpha) { mainTexture = Texture2D.whiteTexture, renderQueue = queue };
+            m.SetFloat("_Premul", 1f);
+            m.SetFloat("_Intensity", 1f);
+            owned.Add(m);
+            return m;
         }
 
         private static Transform Child(string name, Transform parent, int layer)
@@ -308,7 +346,11 @@ namespace XRCollab.Measurement.Turns
             var go = new GameObject(name) { layer = layer };
             go.transform.SetParent(parent, false);
             go.transform.localPosition = new Vector3(0f, 0f, z);
-            go.AddComponent<MeshFilter>().sharedMesh = CueMeshes.Extrude(new[] { CueMeshes.Circle(radius, 64) }, depth, bevel, name);
+            Mesh mesh = CueMeshes.Extrude(new[] { CueMeshes.Circle(radius, 64) }, depth, bevel, name);
+            var white = new Color[mesh.vertexCount];
+            for (int i = 0; i < white.Length; i++) white[i] = Color.white;
+            mesh.colors = white;   // el shader translúcido multiplica por el color del vértice
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var r = go.AddComponent<MeshRenderer>();
             r.sharedMaterial = assets.Metal;
             Setup(r);
