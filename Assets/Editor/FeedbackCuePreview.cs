@@ -97,7 +97,6 @@ public static class FeedbackCuePreview
                 else UnityEngine.Object.DestroyImmediate(composed);
             }
             UnityEngine.Object.DestroyImmediate(v.gameObject);
-            if (finger != null) UnityEngine.Object.DestroyImmediate(finger);
         }
         if (sheet.Count > 0) File.WriteAllBytes(Path.Combine(outDir, "sheet.png"), Sheet(sheet, 3).EncodeToPNG());
         Debug.Log($"[CuePreview] listo: {outDir}");
