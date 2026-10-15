@@ -24,8 +24,8 @@ namespace XRCollab.Measurement.Turns
         /// Diseño del disco (para que la mano no parezca quedar debajo del botón: sin profundidad, la oclusión llega
         /// tarde). Solid = metal opaco (antes); Ghost = semitransparente siempre; Fade = opaco lejos, se vuelve
         /// translúcido al acercar la mano; Ring = al acercar la mano el disco desaparece y queda solo el anillo;
-        /// Field (por defecto desde 2026-10-15) = sin disco: contorno fino + puntos de luz que fluyen por las líneas de
-        /// campo de un imán (Shaders/PadField). No tiene nada sólido, así que no necesita oclusión por la mano.
+        /// Field (por defecto desde 2026-10-15) = sin disco: un campo de puntos con forma de gaussiana 3D cuya cima sube
+        /// hacia la punta del dedo (Shaders/PadField) y texto en Teko. Nada sólido: no necesita oclusión por la mano.
         /// </summary>
         public enum PadStyle { Solid, Ghost, Fade, Ring, Field }
 
@@ -64,8 +64,12 @@ namespace XRCollab.Measurement.Turns
         private readonly AudioSource _audio;
         private readonly MeshRenderer _field;
         private readonly MaterialPropertyBlock _fieldBlock = new MaterialPropertyBlock();
-        private float _flash;
-        private const int FieldDots = 450;
+        private float _flash, _fieldT;
+        private const int FieldDots = 1100;
+        public const float FieldRadius = 0.075f;   // radio del campo de puntos (m)
+        private PadStyle _appliedStyle = (PadStyle)(-1);
+        private readonly TMP_FontAsset _defaultFont, _fieldFont;
+        private readonly Material _defaultText, _fieldText;
 
         private float _appearT = -1f, _moveT = -1f, _colorT = 1f, _rippleAT = -1f, _rippleBT = -1f;
         private Pose _from, _to;
@@ -111,6 +115,10 @@ namespace XRCollab.Measurement.Turns
             _label = Text("Label", _labels, assets.Font, textMat, 0.22f, new Vector3(0f, 0.013f, 0f), layer);
             _sub = Text("Sub", _labels, assets.Font, textMat, 0.145f, new Vector3(0f, -0.009f, 0f), layer);
             _sub.fontStyle = FontStyles.Bold;
+            _defaultFont = assets.Font;
+            _defaultText = textMat;
+            _fieldFont = assets.PadFont;
+            if (assets.PadText != null) { _fieldText = new Material(assets.PadText); owned.Add(_fieldText); }
 
             _audio = owner.gameObject.AddComponent<AudioSource>();
             _audio.playOnAwake = false;
@@ -256,8 +264,13 @@ namespace XRCollab.Measurement.Turns
             float trackSweep = _appearT >= 0f ? 360f * EaseOut(Mathf.Clamp01(_appearT / 0.58f)) : 360f;
             float trackAlpha = Moving ? 0.2f : hover ? 0.6f : 0.35f;
             if (Style == PadStyle.Ring || Style == PadStyle.Ghost) trackAlpha = Mathf.Max(trackAlpha, Mathf.Lerp(0.5f, 0.95f, _near));
-            if (Style == PadStyle.Field) trackAlpha = Mathf.Lerp(0.45f, 0.9f, Mathf.Max(_near, hold));
-            _track.Set(0.0505f, 0.0525f, 0f, trackSweep, WithAlpha(c, trackAlpha * Visibility));
+            bool field = Style == PadStyle.Field && _field != null;
+            // Campo: el contorno es una línea finísima en el borde del campo de puntos.
+            float tIn = field ? FieldRadius + 0.0038f : 0.0505f, tOut = field ? FieldRadius + 0.0046f : 0.0525f;
+            float pIn = field ? FieldRadius + 0.0025f : 0.0495f, pOut = field ? FieldRadius + 0.0060f : 0.0565f;
+            if (field) trackAlpha = Mathf.Lerp(0.22f, 0.5f, Mathf.Max(_near, hold));
+            _track.Set(tIn, tOut, 0f, trackSweep, WithAlpha(Color.Lerp(c, Color.white, field ? 0.5f : 0f), trackAlpha * Visibility));
+            _fieldT += dt;
             TickField(c, hold);
 
             // Progreso de «mantener»: arco horario desde las 12. Mientras viaja: dos segmentos que orbitan el anillo
@@ -267,10 +280,10 @@ namespace XRCollab.Measurement.Turns
             if (Moving)
             {
                 float orbit = 540f * EaseInOut(Mathf.Clamp01(_moveT)) + 30f;
-                _progress.Set(0.0495f, 0.0565f, orbit, 70f, WithAlpha(Color.Lerp(c, Color.white, 0.35f), 0.95f));
-                _track.Set(0.0495f, 0.0565f, orbit + 180f, 70f, WithAlpha(Color.Lerp(c, Color.white, 0.35f), 0.95f));
+                _progress.Set(pIn, pOut, orbit, 70f, WithAlpha(Color.Lerp(c, Color.white, 0.35f), 0.95f));
+                _track.Set(pIn, pOut, orbit + 180f, 70f, WithAlpha(Color.Lerp(c, Color.white, 0.35f), 0.95f));
             }
-            else if (showProgress) _progress.Set(0.0495f, 0.0565f, 0f, 360f * Mathf.Clamp01(hold), WithAlpha(Color.Lerp(c, Color.white, 0.35f), 1f));   // el progreso se ve siempre (va por el borde)
+            else if (showProgress) _progress.Set(pIn, pOut, 0f, 360f * Mathf.Clamp01(hold), WithAlpha(Color.Lerp(c, Color.white, 0.35f), 1f));   // el progreso se ve siempre (va por el borde)
 
             // Texto: oculto mientras se mueve o aparece.
             bool labels = !Moving && (_appearT < 0f || _appearT > 0.5f);
@@ -324,6 +337,7 @@ namespace XRCollab.Measurement.Turns
             bool on = Style == PadStyle.Field && _field != null;
             if (_field != null && _field.enabled != on) _field.enabled = on;
             if (!on) return;
+            _fieldBlock.SetFloat("_T", _fieldT);
             _fieldBlock.SetColor("_Color", c);
             _fieldBlock.SetFloat("_Near", _near);
             _fieldBlock.SetFloat("_Hold", Mathf.Clamp01(hold));
@@ -343,9 +357,11 @@ namespace XRCollab.Measurement.Turns
             var tris = new int[FieldDots * 6];
             var rng = new System.Random(1015);
             Vector2[] q = { new Vector2(-1, -1), new Vector2(1, -1), new Vector2(1, 1), new Vector2(-1, 1) };
+            const float golden = 2.39996323f;   // patrón de girasol (filotaxis): reparto parejo sin anillos visibles
             for (int i = 0; i < FieldDots; i++)
             {
-                var seed = new Vector4((float)rng.NextDouble(), (float)rng.NextDouble(), (float)rng.NextDouble(), (float)rng.NextDouble());
+                float rad = FieldRadius * Mathf.Sqrt((i + 0.5f) / FieldDots), ang = i * golden;
+                var seed = new Vector4(rad * Mathf.Cos(ang), rad * Mathf.Sin(ang), (float)i / FieldDots, (float)rng.NextDouble());
                 for (int k = 0; k < 4; k++) { corners[i * 4 + k] = q[k]; seeds.Add(seed); }
                 int v = i * 4, t = i * 6;
                 tris[t] = v; tris[t + 1] = v + 1; tris[t + 2] = v + 2; tris[t + 3] = v; tris[t + 4] = v + 2; tris[t + 5] = v + 3;
@@ -362,8 +378,30 @@ namespace XRCollab.Measurement.Turns
             return r;
         }
 
+        // Al cambiar de diseño: tipografía y lugar del texto (el campo es más ancho que el disco).
+        private void ApplyStyle()
+        {
+            _appliedStyle = Style;
+            bool field = Style == PadStyle.Field && _fieldFont != null && _fieldText != null;
+            _labels.localPosition = Style == PadStyle.Field ? new Vector3(0f, FieldRadius + 0.026f, -0.004f) : new Vector3(0f, PadRadius + 0.03f, -0.006f);
+            foreach (TextMeshPro t in new[] { _label, _sub })
+            {
+                t.font = field ? _fieldFont : _defaultFont;
+                t.fontSharedMaterial = field ? _fieldText : _defaultText;
+            }
+            _label.fontSize = field ? 0.34f : 0.22f;
+            _label.characterSpacing = field ? 14f : 3f;
+            _label.fontStyle = field ? FontStyles.UpperCase : FontStyles.Bold | FontStyles.UpperCase;
+            _sub.fontSize = field ? 0.2f : 0.145f;
+            _sub.characterSpacing = field ? 10f : 3f;
+            _sub.fontStyle = field ? FontStyles.UpperCase : FontStyles.Bold | FontStyles.UpperCase;
+            _label.transform.localPosition = new Vector3(0f, field ? 0.016f : 0.013f, 0f);
+            _sub.transform.localPosition = new Vector3(0f, field ? -0.008f : -0.009f, 0f);
+        }
+
         private void ApplyColor(Color c)
         {
+            if (_appliedStyle != Style) ApplyStyle();
             bool field = Style == PadStyle.Field;
             if (_faceRenderer.enabled == field) { _faceRenderer.enabled = !field; _baseRenderer.enabled = !field; }
             if (field) return;

@@ -27,9 +27,10 @@ Material:
     m_Floats:
     - _Flash: 0
     - _Hold: 0
-    - _Intensity: 1.6
+    - _Intensity: 1.4
     - _Near: 0
-    - _Radius: 0.0515
+    - _R: 0.075
+    - _T: 0
     m_Colors:
     - _Color: {r: 0.10999996, g: 0.69, b: 0.47999996, a: 1}
     - _Hand: {r: 0, g: 0, b: 0, a: 0}

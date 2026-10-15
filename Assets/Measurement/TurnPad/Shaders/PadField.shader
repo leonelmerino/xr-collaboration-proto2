@@ -1,25 +1,30 @@
-// Botón de turno «field»: puntos de luz que fluyen por las líneas de campo de un imán (dipolo) puesto en el centro
-// del botón, como limaduras de hierro. Todo se calcula aquí (una malla fija de quads con semillas, un draw call):
-// el CPU solo pasa _Color, _Near, _Hold y _Hand. Aditivo (suma luz a la sala): no tapa nada, así que no necesita
-// oclusión por la mano.
-// Espacio del objeto = el del botón: -Z es «arriba» (la cara mira al participante), el plano z = 0 es la mesa.
+// Botón de turno «field»: un campo de puntos sobre la mesa (patrón de girasol, ~1100 puntos) con forma de gaussiana 3D.
+//  - Quieto: respira (una gaussiana baja en el centro + ondas suaves que salen del centro).
+//  - Dedo acercándose: la gaussiana se mueve bajo la punta del dedo y su cima sube hacia él; se angosta, y los puntos
+//    de la cima crecen, se aclaran y se vuelven blancos.
+//  - Mantener: el campo se «llena» de luz del centro hacia afuera (el progreso).
+//  - Cambio de turno: una onda de choque recorre el campo.
+// Todo se calcula aquí (una malla fija de quads con su posición en uv1; un draw call). El CPU solo pasa _T, _Color,
+// _Near, _Hold, _Hand y _Flash. Alpha premultiplicado: los puntos se ven también sobre una mesa clara.
+// Espacio del objeto = el del botón: -Z es «arriba» (hacia el participante), el plano z = 0 es la mesa.
 Shader "XRCollab/PadField"
 {
     Properties
     {
         _Color ("Color", Color) = (0.11, 0.69, 0.48, 1)
-        _Intensity ("Intensity", Float) = 1.6
+        _Intensity ("Intensity", Float) = 1.4
+        _T ("Time (s)", Float) = 0
         _Near ("Hand nearness 0..1", Float) = 0
         _Hold ("Hold progress 0..1", Float) = 0
-        _Hand ("Fingertip (object space) + strength", Vector) = (0, 0, 0, 0)
-        _Flash ("Toggle flash 0..1", Float) = 0
-        _Radius ("Outline radius (m)", Float) = 0.0515
+        _Hand ("Fingertip (object space) + strength 0..1", Vector) = (0, 0, 0, 0)
+        _Flash ("Toggle shockwave 1..0", Float) = 0
+        _R ("Field radius (m)", Float) = 0.075
     }
     SubShader
     {
         Tags { "Queue" = "Transparent+12" "RenderType" = "Transparent" "IgnoreProjector" = "True" }
-        Blend One One
-        ColorMask RGB
+        Blend One OneMinusSrcAlpha
+        ColorMask RGBA
         ZWrite Off
         ZTest LEqual
         Cull Off
@@ -34,14 +39,14 @@ Shader "XRCollab/PadField"
             #include "UnityCG.cginc"
 
             fixed4 _Color;
-            float _Intensity, _Near, _Hold, _Flash, _Radius;
+            float _Intensity, _T, _Near, _Hold, _Flash, _R;
             float4 _Hand;
 
             struct appdata
             {
                 float4 vertex : POSITION;
                 float2 corner : TEXCOORD0;   // -1..1 esquina del quad
-                float4 seed : TEXCOORD1;     // 4 números al azar por punto
+                float4 seed : TEXCOORD1;     // xy = posición en la mesa (m), z = índice 0..1, w = azar
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -58,49 +63,61 @@ Shader "XRCollab/PadField"
                 v2f o;
                 UNITY_SETUP_INSTANCE_ID(v);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
-                float4 s = v.seed;
-                float t = _Time.y;
-                float energy = 1 + 1.6 * _Near + 2.5 * _Hold;
+                float2 xy = v.seed.xy;
+                float rnd = v.seed.w;
+                float rr = length(xy);
+                float r = rr / _R;                       // 0 centro .. 1 borde
+                float w = saturate(_Hand.w);
 
-                // Línea de campo de un dipolo vertical: r = L sin²θ. θ va del eje (sale del centro) al plano de la mesa
-                // (cae en el borde, a distancia L): solo la mitad de arriba, lo de abajo quedaría bajo la mesa.
-                float L = lerp(0.028, 0.085, s.x * s.x) * lerp(1, 0.82, _Near);
-                float u = frac(s.z + t * (0.07 + 0.11 * s.w) * energy);
-                float theta = lerp(0.32, 1.5708, u);
-                float sn = sin(theta);
-                float r = L * sn * sn;
-                float phi = 6.28318 * s.y + t * 0.1 * energy * (s.w > 0.5 ? 1 : -1) + 0.15 * sin(t * 0.7 + s.x * 9);
-                float3 p = float3(r * sn * cos(phi), r * sn * sin(phi), -r * cos(theta) * 1.1);
+                // Quieto: gaussiana baja que respira + ondas que salen del centro.
+                float breathe = 0.6 + 0.4 * sin(_T * 1.25);
+                float idle = 0.007 * breathe * exp(-r * r / 0.10) + 0.0011 * sin(r * 17.0 - _T * 2.1) * (1 - r);
 
-                // Mantener: los puntos se juntan sobre el contorno (el anillo se «carga»).
-                float3 ring = float3(_Radius * cos(phi), _Radius * sin(phi), -0.001);
-                p = lerp(p, ring, smoothstep(0, 1, _Hold) * 0.85);
+                // Dedo: la cima de la gaussiana bajo la punta, subiendo hacia ella.
+                float2 c = _Hand.xy;
+                float cl = length(c);
+                if (cl > _R * 0.9) c *= _R * 0.9 / cl;
+                float tipH = max(-_Hand.z, 0);
+                float sigma = lerp(0.042, 0.021, w);
+                float peak = w * clamp(tipH - 0.005, 0.004, 0.11);
+                float2 dc = xy - c;
+                float g = exp(-dot(dc, dc) / (2 * sigma * sigma));
+                float h = lerp(idle, 0, w * 0.75) + peak * g;
 
-                // Imán en la punta del dedo: cerca de ella los puntos se le acercan.
-                float3 d = _Hand.xyz - p;
-                float pull = _Hand.w * saturate(1 - length(d) / 0.06);
-                p += d * pull * pull * 0.55;
+                // Onda de choque al cambiar de turno.
+                float rs = (1 - _Flash) * _R * 1.35;
+                float shock = _Flash * exp(-pow(rr - rs, 2) / (2 * 0.005 * 0.005));
+                h += 0.010 * shock;
 
-                // Brillo: aparece y se apaga a lo largo de la línea + titileo.
-                float life = sin(3.14159 * u);
-                float twinkle = 0.55 + 0.45 * sin(t * (2.5 + 6 * s.x) + s.y * 40);
-                float a = life * twinkle * (0.55 + 0.45 * _Near + 0.6 * _Hold) + _Flash * 1.5;
+                // Mantener: el campo se llena de luz desde el centro.
+                float front = _Hold * 1.04;
+                float fill = _Hold > 0.001 ? smoothstep(front, front - 0.07, r) : 0;
 
-                float size = (0.0011 + 0.0011 * s.w) * (1 + 0.6 * _Hold + _Flash);
+                float3 p = float3(xy, -h);
+                float hn = saturate(h / 0.03);           // altura normalizada (brillo de la cima)
+                float heat = saturate(hn * 1.2 + g * w * 0.6 + fill * 0.55 + shock * 0.8);
+
+                float twinkle = 0.85 + 0.15 * sin(_T * (3 + 5 * rnd) + rnd * 40);
+                float edge = smoothstep(1.0, 0.72, r);
+                float a = edge * twinkle * saturate(0.38 + 0.25 * _Near + heat * 0.9 + fill * 0.35);
+
+                float size = lerp(0.0017, 0.0046, heat) * (0.85 + 0.3 * rnd);
                 float3 vc = UnityObjectToViewPos(float4(p, 1));
                 vc.xy += v.corner * size;
                 o.pos = mul(UNITY_MATRIX_P, float4(vc, 1));
                 o.corner = v.corner;
-                // Mezcla con blanco: el núcleo de cada punto es casi blanco, el halo del color del estado.
-                o.color = fixed4(lerp(_Color.rgb, 1, 0.45 + 0.3 * twinkle), a);
+                o.color = fixed4(lerp(saturate(_Color.rgb * 1.25), float3(1, 1, 1), saturate(heat * heat * 0.9)), a);
                 return o;
             }
 
             fixed4 frag(v2f i) : SV_Target
             {
                 float q = saturate(1 - dot(i.corner, i.corner));
-                q *= q;
-                return fixed4(i.color.rgb * q * i.color.a * _Intensity, 0);
+                float core = pow(q, 5);
+                float a = saturate((q * q * 0.55 + core * 0.9) * i.color.a);
+                // Premultiplicado: el núcleo es más claro que el halo.
+                float3 rgb = lerp(i.color.rgb, 1, core * 0.25) * a * _Intensity;
+                return fixed4(rgb, a * 0.9);
             }
             ENDCG
         }

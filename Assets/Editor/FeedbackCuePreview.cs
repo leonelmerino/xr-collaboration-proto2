@@ -188,6 +188,98 @@ public static class FeedbackCuePreview
         Debug.Log($"[PadPreview] listo: {outDir}");
     }
 
+    /// <summary>
+    /// Vista previa del botón «field» (campo de puntos gaussiano): quieto, dedo bajando (12 → 1 cm), mantener y la onda
+    /// del cambio de turno, con una esfera blanca donde está la punta del dedo.
+    ///   Unity.exe -batchmode -quit -projectPath . -executeMethod FeedbackCuePreview.RenderField -cue-bg sala.jpg -cue-out carpeta
+    /// </summary>
+    public static void RenderField()
+    {
+        FeedbackCueAssetsBuilder.Ensure();
+        EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        string bgPath = Arg("-cue-bg");
+        string outDir = Arg("-cue-out") ?? Path.Combine(Path.GetTempPath(), "field-preview");
+        Directory.CreateDirectory(outDir);
+        var bg = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+        if (bgPath == null || !bg.LoadImage(File.ReadAllBytes(bgPath))) { bg = new Texture2D(Width, Height); Fill(bg, new Color(0.45f, 0.44f, 0.42f)); }
+        Texture2D bgScaled = Scale(bg, Width, Height);
+
+        int layer = FeedbackCueDirector.CueLayer;
+        var cam = new GameObject("PreviewCamera").AddComponent<Camera>();
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = new Color(0f, 0f, 0f, 0f);
+        cam.cullingMask = 1 << layer;
+        cam.allowHDR = false;
+        cam.fieldOfView = 50f;
+        cam.nearClipPlane = 0.02f;
+        cam.transform.SetPositionAndRotation(Vector3.zero, Quaternion.Euler(45f, 0f, 0f));
+        Light key = FeedbackCueDirector.CueLight("CueKeyLight", null);
+        key.transform.rotation = Quaternion.Euler(60f, -30f, 0f);
+
+        CueAssets assets = CueAssets.Load();
+        if (!assets.Ok) { Debug.LogError("[FieldPreview] faltan recursos:" + assets.Missing); return; }
+        var owner = new GameObject("[TurnPadPreview]");
+        var owned = new List<Material>();
+        var v = new XRCollab.Measurement.Turns.TurnPadVisual(owner.transform, assets, layer, owned);
+        v.Style = XRCollab.Measurement.Turns.TurnPadVisual.PadStyle.Field;
+        v.SetText("INICIAR TURNO", "mantén el índice");
+        Vector3 at = new Vector3(0f, -0.42f, 0.40f);
+        v.Appear(new Pose(at, XRCollab.Measurement.Turns.TurnPadVisual.FlatRotation(at, Vector3.zero, Vector3.forward)));
+
+        GameObject tip = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        tip.layer = layer;
+        tip.transform.localScale = Vector3.one * 0.016f;
+        tip.GetComponent<Renderer>().sharedMaterial = assets.Metal;
+        tip.SetActive(false);
+
+        var rt = new RenderTexture(Width, Height, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB) { antiAliasing = 8 };
+        cam.targetTexture = rt;
+        var read = new Texture2D(Width, Height, TextureFormat.RGBA32, false);
+        var sheet = new List<Texture2D>();
+        int n = 0;
+        void Shot(string name)
+        {
+            cam.Render();
+            RenderTexture.active = rt;
+            read.ReadPixels(new Rect(0, 0, Width, Height), 0, 0);
+            read.Apply();
+            RenderTexture.active = null;
+            Texture2D composed = Compose(read, bgScaled);
+            File.WriteAllBytes(Path.Combine(outDir, $"field{n++:00}_{name}.png"), composed.EncodeToPNG());
+            sheet.Add(composed);
+        }
+        void Finger(Vector3 local)
+        {
+            float d = local.magnitude;
+            v.HandLocal = new Vector4(local.x, local.y, local.z, 1f - Mathf.Clamp01((d - 0.04f) / 0.08f));
+            tip.SetActive(true);
+            tip.transform.position = v.Root.TransformPoint(local);
+        }
+        void Run(float seconds, float hold = 0f, bool hover = false, float near = 0f)
+        {
+            for (float t = 0f; t < seconds; t += 1f / 60f) v.Tick(1f / 60f, hold, 0f, hover, near);
+        }
+
+        Run(1.2f); Shot("quieto");
+        Run(0.9f); Shot("quieto_respira");
+        Finger(new Vector3(0.015f, -0.01f, -0.11f)); Run(0.3f, 0f, false, 0.15f); Shot("dedo_11cm");
+        Finger(new Vector3(0.012f, -0.008f, -0.07f)); Run(0.3f, 0f, false, 0.5f); Shot("dedo_7cm");
+        Finger(new Vector3(0.008f, -0.004f, -0.04f)); Run(0.3f, 0f, true, 0.8f); Shot("dedo_4cm");
+        Finger(new Vector3(0.004f, 0f, -0.015f)); Run(0.3f, 0f, true, 1f); Shot("dedo_1.5cm");
+        Run(0.05f, 0.45f, true, 1f); Shot("mantener_45");
+        Run(0.05f, 0.9f, true, 1f); Shot("mantener_90");
+        v.SetTurnState(true, true);
+        v.SetText("TERMINAR TURNO", "turno 1 · 0:00");
+        tip.SetActive(false);
+        v.HandLocal = Vector4.zero;
+        Run(0.12f); Shot("onda_0.12");
+        Run(0.2f); Shot("onda_0.32");
+        Run(1.2f); Shot("en_turno");
+        File.WriteAllBytes(Path.Combine(outDir, "field-sheet.png"), Sheet(sheet, 3).EncodeToPNG());
+        foreach (Material m in owned) UnityEngine.Object.DestroyImmediate(m);
+        Debug.Log($"[FieldPreview] listo: {outDir}");
+    }
+
     // App (premultiplicada, sRGB) sobre la sala, en espacio lineal.
     private static Texture2D Compose(Texture2D app, Texture2D bg)
     {

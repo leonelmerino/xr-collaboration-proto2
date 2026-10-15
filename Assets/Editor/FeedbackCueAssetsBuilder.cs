@@ -62,12 +62,59 @@ public static class FeedbackCueAssetsBuilder
         }
         else Debug.LogError("[FeedbackCues] no compila el shader XRCollab/CueFx: faltan CueAdditive/CueAlpha");
 
+        EnsurePadFont(sdf, font);
+
         Shader field = Shader.Find("XRCollab/PadField");
         if (field != null) Save(new Material(field), CueAssets.PadFieldMaterialName);
         else Debug.LogError("[FeedbackCues] no compila el shader XRCollab/PadField: el botón de turno «field» queda sin puntos");
 
         AssetDatabase.SaveAssets();
         Debug.Log($"[FeedbackCues] materiales listos en {Folder}");
+    }
+
+    private const string PadFontTtf = "Assets/Measurement/TurnPad/Fonts/Teko-Bold.ttf";
+    private const string PadFontChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑÜ0123456789 :·.,-–/()%";
+
+    /// <summary>
+    /// Fuente del botón «field»: Teko Bold (OFL, TurnPad/Fonts) como atlas SDF estático con las letras que usa el botón
+    /// (mayúsculas), con LiberationSans de respaldo; y su material CueText (sin bisel, limpio).
+    /// </summary>
+    private static void EnsurePadFont(Shader sdf, TMP_FontAsset fallback)
+    {
+        if (sdf == null) return;
+        string path = $"{Folder}/{CueAssets.PadFontName}.asset";
+        var fa = AssetDatabase.LoadAssetAtPath<TMP_FontAsset>(path);
+        if (fa == null)
+        {
+            var ttf = AssetDatabase.LoadAssetAtPath<Font>(PadFontTtf);
+            if (ttf == null) { Debug.LogError($"[FeedbackCues] falta {PadFontTtf}: el botón «field» usa la fuente común"); return; }
+            fa = TMP_FontAsset.CreateFontAsset(ttf, 90, 9, UnityEngine.TextCore.LowLevel.GlyphRenderMode.SDFAA, 1024, 1024,
+                AtlasPopulationMode.Dynamic, false);
+            fa.name = CueAssets.PadFontName;
+            fa.TryAddCharacters(PadFontChars, out string missing);
+            if (!string.IsNullOrEmpty(missing)) Debug.LogWarning($"[FeedbackCues] Teko sin: {missing} (usa la de respaldo)");
+            fa.atlasPopulationMode = AtlasPopulationMode.Static;
+            AssetDatabase.CreateAsset(fa, path);
+            fa.atlasTextures[0].name = CueAssets.PadFontName + " Atlas";
+            AssetDatabase.AddObjectToAsset(fa.atlasTextures[0], fa);
+            fa.material.name = CueAssets.PadFontName + " Material";
+            AssetDatabase.AddObjectToAsset(fa.material, fa);
+            if (fallback != null) fa.fallbackFontAssetTable = new System.Collections.Generic.List<TMP_FontAsset> { fallback };
+            EditorUtility.SetDirty(fa);
+            AssetDatabase.SaveAssets();
+        }
+        var text = new Material(sdf);
+        text.CopyPropertiesFromMaterial(fa.material);   // atlas y proporciones de Teko
+        text.SetColor("_FaceColor", Color.white);
+        text.SetColor("_OutlineColor", new Color(0.02f, 0.03f, 0.04f, 0.85f));
+        text.SetFloat("_OutlineWidth", 0.08f);
+        text.SetFloat("_FaceDilate", 0.04f);
+        text.SetFloat("_BoldDilate", 0f);
+        text.SetFloat("_Bevel", 0f);
+        text.SetFloat("_Glossiness", 0.2f);
+        text.SetFloat("_OutlineGlossiness", 0f);
+        text.SetFloat("_Metallic", 0f);
+        Save(text, CueAssets.PadTextMaterialName);
     }
 
     private static Material Fx(Shader shader, BlendMode src, BlendMode dst, float colorMask)

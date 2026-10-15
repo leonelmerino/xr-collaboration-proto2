@@ -16,8 +16,11 @@ namespace XRCollab.Measurement.Cues
         public const string AdditiveMaterialName = "CueAdditive";
         public const string AlphaMaterialName = "CueAlpha";
         public const string PadFieldMaterialName = "PadField";   // botón de turno «field» (TurnPad/Shaders/PadField)
+        public const string PadFontName = "PadFont SDF";          // Teko (OFL) para el texto del botón «field»
+        public const string PadTextMaterialName = "PadText";
 
-        public TMP_FontAsset Font;
+        public TMP_FontAsset Font, PadFont;
+        public Material PadText;
         public Material Text, Metal, Additive, Alpha, PadField;
         public Texture2D Glow, Rays, Ring, Spark, Shadow;
 
@@ -36,6 +39,8 @@ namespace XRCollab.Measurement.Cues
                 Additive = Resources.Load<Material>(ResourceFolder + "/" + AdditiveMaterialName),
                 Alpha = Resources.Load<Material>(ResourceFolder + "/" + AlphaMaterialName),
                 PadField = Resources.Load<Material>(ResourceFolder + "/" + PadFieldMaterialName),
+                PadFont = Resources.Load<TMP_FontAsset>(ResourceFolder + "/" + PadFontName),
+                PadText = Resources.Load<Material>(ResourceFolder + "/" + PadTextMaterialName),
                 Font = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF") ?? TMP_Settings.defaultFontAsset,
             };
             a.Glow = Radial("CueGlow", 128, r => Mathf.Pow(Mathf.Clamp01(1f - r), 2.2f));
