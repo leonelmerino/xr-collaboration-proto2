@@ -7,7 +7,8 @@ namespace XRCollab.Measurement.Recording
     /// <summary>
     /// Canal de control del build nativo en el visor (Android, <c>HeadsetBuild</c>): el mismo protocolo de
     /// 127.0.0.1:47811 que <see cref="SessionRecorder"/> en el PC, sin video (el visor no graba pantalla).
-    /// El panel (tools\lab-dashboard) llega por USB con <c>adb forward tcp:47811 tcp:47811</c>.
+    /// El panel (tools\lab-dashboard) llega por USB en el puerto fijo 127.0.0.1:47900 del PC
+    /// (<c>adb forward tcp:47900 tcp:47811</c>, lo rehace el panel cada 5 s; Send-RecordingCommand.ps1 -Visor).
     /// «start»/«stop» siguen a la sesión de adquisición (BioLab) y quedan como marcas; «cue», «turn», «occlusion» y
     /// el estado de la app funcionan igual. «snapshot» no tiene imagen (usar adb screencap).
     /// Marcas: Application.persistentDataPath/control-marks.csv.
