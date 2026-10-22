@@ -9,6 +9,7 @@
         }
     ],
   "dependencies": {
+    "com.coplaydev.unity-mcp": "https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity#v10.0.0",
     "com.htc.upm.vive.openxr": "2.5.1",
     "com.unity.animation.rigging": "1.2.1",
     "com.unity.collab-proxy": "2.11.4",
