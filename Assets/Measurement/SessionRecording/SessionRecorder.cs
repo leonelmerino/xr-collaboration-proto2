@@ -103,6 +103,7 @@ namespace XRCollab.Measurement.Recording
             }
 
             if (settings.controlPort > 0) _control = RecordingControlServer.TryStart(settings.controlPort);
+            HeadsetMirror.NoticeChanged += OnMirrorNotice;
             _nextStatsLog = Time.unscaledTime + StatsLogIntervalSeconds;
             StartCoroutine(CaptureLoop());
 
@@ -344,6 +345,13 @@ namespace XRCollab.Measurement.Recording
             }
         }
 
+        // Visor sin imagen / vuelve la imagen, como marca (solo grabando: entre sesiones no interesa).
+        private void OnMirrorNotice(MirrorNotice notice)
+        {
+            if (_run == null) return;
+            Mark(notice == null ? "VISOR imagen OK" : "VISOR " + notice.Title);
+        }
+
         private void WriteMark(DateTime utc, string text)
         {
             string path = _run != null ? Path.Combine(_run.Dir, RecordingLayout.MarksFile) : Path.Combine(_root, RecordingLayout.MarksFile);
@@ -509,6 +517,7 @@ namespace XRCollab.Measurement.Recording
         {
             if (_quitting) return;
             _quitting = true;
+            HeadsetMirror.NoticeChanged -= OnMirrorNotice;
             if (Instance == this) Instance = null;
             StopAllCoroutines();
             _control?.Dispose();

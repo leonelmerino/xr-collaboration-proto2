@@ -47,6 +47,10 @@ namespace XRCollab.Measurement.Mirroring
         /// <summary>Aviso que se muestra ahora (null = hay imagen y todo está bien).</summary>
         public MirrorNotice Notice => _notice;
 
+        /// <summary>Cambió el aviso (null = volvió la imagen). SessionRecorder lo deja como marca en marks.csv, para saber en
+        /// los datos cuándo el participante perdió la imagen (2026-10-22).</summary>
+        public static event Action<MirrorNotice> NoticeChanged;
+
         /// <summary>
         /// Rectángulo de la imagen del visor en la ventana (píxeles de pantalla, origen abajo a la izquierda) y su
         /// vista (ambos ojos lado a lado, o solo el izquierdo). false si no se está mostrando imagen.
@@ -158,9 +162,15 @@ namespace XRCollab.Measurement.Mirroring
             var input = new DiagnosisInput(_source.Status, _view.Visible, _source.SecondsSinceLastFrame, _source.SecondsDark, app, _source.Wear);
             MirrorNotice notice = MirrorDiagnosis.Evaluate(input);
 
-            if (notice?.ToString() != _notice?.ToString())
+            bool changed = notice?.ToString() != _notice?.ToString();
+            if (changed)
                 Debug.Log(notice == null ? $"{LogPrefix}imagen OK" : $"{LogPrefix}aviso en pantalla: {notice}");
             _notice = notice;
+            if (changed)
+            {
+                try { NoticeChanged?.Invoke(notice); }
+                catch (Exception e) { Debug.LogWarning($"{LogPrefix}NoticeChanged: {e.Message}"); }
+            }
             _view.SetNotice(notice);
         }
 

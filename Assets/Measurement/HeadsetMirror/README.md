@@ -100,7 +100,8 @@ cuatro fuentes:
 | **El visor pausó la imagen** | Visor en la frente o sacado, o menú del visor en primer plano: VIVE Streaming pausa y la app baja a ~20 fps | Ponérselo bien sobre los ojos |
 | El visor dejó de enviar imagen | Sin cuadros ≥ 2 s con la app visible | Espera; si se durmió o se desconectó, se recupera solo |
 | El passthrough no está funcionando | Falla real de `PassthroughUnderlayFeature` | USB (no DP), «MR with passthrough» activado |
-| El visor muestra negro | Cuadros negros sin otra causa conocida (si el sensor dice «puesto», el problema es del streaming) | USB (no DP), «MR with passthrough», visor bien puesto |
+| El visor se está reconectando | Cuadros negros con el visor puesto: VIVE Streaming cortó la conexión USB y la retoma (~3 s, pantalla de carga). Se repetía con Ultra 3072/150M (2026-10-22) | Nada si vuelve sola; si es seguido: `tools\perf\Set-LabStreamingQuality.ps1` (2048/100M) y USB sin video |
+| El visor muestra negro | Cuadros negros sin saber si está puesto | Ponérselo; si sigue, lo de arriba y USB (no DP), «MR with passthrough» |
 | Se cortó la imagen / Conectando… | Reconexión en curso | Nada: se recupera solo |
 | Espejo oculto | Se apretó F5 | F5 |
 

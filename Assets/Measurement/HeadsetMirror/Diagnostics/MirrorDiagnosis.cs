@@ -175,11 +175,16 @@ namespace XRCollab.Measurement.Mirroring
             if (input.App.PassthroughProblem != null)
                 return new MirrorNotice("El passthrough no está funcionando",
                     input.App.PassthroughProblem + ". Revisar que VIVE Streaming sea por USB (no DisplayPort) y que «MR with passthrough» esté activado en VIVE Hub.");
+            // 2026-10-22: con el visor puesto, casi siempre es VIVE Streaming que cortó la conexión USB y la retoma (~3 s de
+            // pantalla de carga negra; el rrServer dice USBServerCloseClientConnection tras «Low Decode/Network FPS»). Pasaba
+            // decenas de veces por hora con el preset Ultra 3072/150M; con 2048/100M no. DP/«MR with passthrough» es raro.
             const string blackCauses = "VIVE Streaming por USB (en DisplayPort el passthrough se ve negro) y «MR with passthrough» activado en VIVE Hub. ";
+            const string reconnect = "VIVE Streaming cortó la conexión USB con el visor y la está retomando (pantalla de carga negra, suele durar ~3 s). " +
+                                     "Si pasa seguido: calidad de streaming 2048/100 Mbps (tools\\perf\\Set-LabStreamingQuality.ps1) y cable en un USB sin video. ";
             return input.Wear == HeadsetWear.OnFace
-                ? new MirrorNotice("El visor muestra negro", "El visor está puesto, así que revisar: " + blackCauses + UsbHint)
+                ? new MirrorNotice("El visor se está reconectando", reconnect + "Si no vuelve en 10 s, revisar: " + blackCauses + UsbHint)
                 : new MirrorNotice("El visor muestra negro",
-                    "Si no está bien puesto sobre los ojos, VIVE Streaming muestra su pantalla de espera: ponérselo. Si está puesto, revisar: " + blackCauses);
+                    "Si no está bien puesto sobre los ojos, VIVE Streaming muestra su pantalla de espera: ponérselo. Si está puesto: " + reconnect + "Si no vuelve: " + blackCauses);
         }
     }
 }

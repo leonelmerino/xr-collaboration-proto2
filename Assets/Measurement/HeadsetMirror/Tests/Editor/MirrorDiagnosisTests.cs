@@ -37,11 +37,13 @@ namespace XRCollab.Measurement.Mirroring.Tests
         }
 
         [Test]
-        public void OnFace_Dark_PointsToStreamingSettings()
+        public void OnFace_Dark_IsAStreamingReconnect()
         {
+            // 2026-10-22: con el visor puesto, el negro era VIVE Streaming cortando y retomando la conexión USB.
             MirrorNotice n = Diagnose(MirrorState.Streaming, dark: 3, wear: HeadsetWear.OnFace);
-            StringAssert.Contains("negro", n.Title);
-            StringAssert.Contains("está puesto", n.Hint);
+            StringAssert.Contains("reconectando", n.Title);
+            StringAssert.Contains("conexión USB", n.Hint);
+            StringAssert.Contains("2048", n.Hint);
             StringAssert.Contains("DisplayPort", n.Hint);
         }
 
