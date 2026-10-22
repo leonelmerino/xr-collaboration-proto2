@@ -67,6 +67,12 @@ public static class FeedbackCueAssetsBuilder
         Shader field = Shader.Find("XRCollab/PadField");
         if (field != null) Save(new Material(field), CueAssets.PadFieldMaterialName);
         else Debug.LogError("[FeedbackCues] no compila el shader XRCollab/PadField: el botón de turno «field» queda sin puntos");
+        Shader orb = Shader.Find("XRCollab/PadOrb");
+        if (orb != null) Save(new Material(orb), CueAssets.PadOrbMaterialName);
+        else Debug.LogError("[FeedbackCues] no compila el shader XRCollab/PadOrb: el botón de turno vuelve al diseño «field»");
+        Shader finger = Shader.Find("XRCollab/FingerGlow");
+        if (finger != null) Save(new Material(finger), CueAssets.FingerGlowMaterialName);
+        else Debug.LogError("[FeedbackCues] no compila el shader XRCollab/FingerGlow: el índice no se ilumina");
 
         AssetDatabase.SaveAssets();
         Debug.Log($"[FeedbackCues] materiales listos en {Folder}");

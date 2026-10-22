@@ -17,6 +17,10 @@ namespace XRCollab.Measurement.Turns
     ///  - Pinza en curso: un anillo de progreso en la punta de los dedos.
     /// El disco queda siempre horizontal (mirando hacia arriba) y el texto acostado más allá del disco, legible desde
     /// donde está el participante.
+    ///
+    /// «orb» (por defecto desde 2026-10-22): una esfera de luz de puntos (Shaders/PadOrb) que se activa metiendo la punta
+    /// del índice; el texto flota arriba y abajo de la esfera, de cara al participante, y el índice que se acerca se
+    /// ilumina (Shaders/FingerGlow). Recién movida queda tenue (<see cref="Dim"/>) hasta que la mano sale.
     /// </summary>
     public sealed class TurnPadVisual
     {
@@ -26,15 +30,23 @@ namespace XRCollab.Measurement.Turns
         /// translúcido al acercar la mano; Ring = al acercar la mano el disco desaparece y queda solo el anillo;
         /// Field (por defecto desde 2026-10-15) = sin disco: un campo de puntos con forma de gaussiana 3D cuya cima sube
         /// hacia la punta del dedo (Shaders/PadField) y texto curvo en Geist. Nada sólido: no necesita oclusión por la mano.
+        /// Orb (por defecto desde 2026-10-22) = esfera de puntos que se activa con la punta del índice.
         /// </summary>
-        public enum PadStyle { Solid, Ghost, Fade, Ring, Field }
+        public enum PadStyle { Solid, Ghost, Fade, Ring, Field, Orb }
 
-        public PadStyle Style = PadStyle.Field;
+        public PadStyle Style = PadStyle.Orb;
+        public bool IsOrb => Style == PadStyle.Orb && _orb != null;
+
+        /// <summary>0..1: recién movido, tenue y desactivado hasta que la mano sale (se suaviza).</summary>
+        public float Dim;
+        /// <summary>Orb: dirección (espacio del botón) por donde entró el dedo: de ahí parte el llenado y la onda.</summary>
+        public Vector3 HoldDir = Vector3.back;
 
         /// <summary>Punta del dedo más cercana en coordenadas del disco; w = 0..1 fuerza (0 = sin mano cerca).</summary>
         public Vector4 HandLocal;
 
         public const float PadRadius = 0.045f;
+        public const float OrbRadius = 0.035f;   // esfera de 7 cm
         // Zona del texto en coordenadas del disco (para saber si la mano lo tapa).
         public const float LabelHalfWidth = 0.06f, LabelBottom = PadRadius + 0.012f, LabelTop = PadRadius + 0.05f;
         private const float CoveredAlpha = 0.12f;   // cuánto queda del botón con la mano encima
@@ -64,7 +76,13 @@ namespace XRCollab.Measurement.Turns
         private readonly AudioSource _audio;
         private readonly MeshRenderer _field;
         private readonly MaterialPropertyBlock _fieldBlock = new MaterialPropertyBlock();
-        private float _flash, _fieldT;
+        private float _flash, _fieldT, _dim;
+        private readonly MeshRenderer _orb;
+        private readonly MaterialPropertyBlock _orbBlock = new MaterialPropertyBlock();
+        private const int OrbDots = 1000, OrbCores = 3;
+        private readonly MeshRenderer[] _fingers = new MeshRenderer[2];
+        private readonly MaterialPropertyBlock[] _fingerBlocks = { new MaterialPropertyBlock(), new MaterialPropertyBlock() };
+        private const int FingerDots = 220, TipGlows = 5, TetherDots = 80, Sheaths = 14;
         private const int FieldDots = 1100;
         public const float FieldRadius = 0.075f;   // radio del campo de puntos (m)
         private PadStyle _appliedStyle = (PadStyle)(-1);
@@ -97,6 +115,10 @@ namespace XRCollab.Measurement.Turns
             _progress = new PadArc("Progress", _body, assets.Alpha, layer, owned);
             _progress.Transform.localPosition = new Vector3(0f, 0f, -0.014f);
             if (assets.PadField != null) _field = Field("Field", _body, assets.PadField, layer, owned);
+            if (assets.PadOrb != null) _orb = Orb("Orb", _body, assets.PadOrb, layer, owned);
+            else Style = PadStyle.Field;
+            if (assets.FingerGlow != null)
+                for (int i = 0; i < 2; i++) _fingers[i] = Finger(i == 0 ? "FingerGlowLeft" : "FingerGlowRight", owner, assets.FingerGlow, layer, owned);
 
             // Ondas en el mundo (no giran con el disco).
             _rippleA = new PadArc("RippleFrom", owner, assets.Alpha, layer, owned);
@@ -143,6 +165,62 @@ namespace XRCollab.Measurement.Turns
             if (away.sqrMagnitude < 1e-6f) away = Vector3.forward;
             // -Z local (la cara) hacia arriba; +Y local (arriba del texto) alejándose del participante.
             return Quaternion.LookRotation(Vector3.down, away.normalized);
+        }
+
+        /// <summary>
+        /// Orb: de cara a <paramref name="eye"/> (también inclinado hacia arriba: está bajo los ojos) y con el «arriba» de
+        /// la cabeza (<paramref name="headUp"/>), así el texto se lee derecho y el aro se ve redondo. Disco: horizontal
+        /// (<see cref="FlatRotation"/>).
+        /// </summary>
+        public Quaternion RotationFor(Vector3 pos, Vector3 eye, Vector3 fallbackForward, Vector3 headUp)
+        {
+            if (!IsOrb) return FlatRotation(pos, eye, fallbackForward);
+            Vector3 away = pos - eye;
+            if (away.sqrMagnitude < 1e-4f) away = fallbackForward;
+            Vector3 up = Vector3.Cross(away, headUp).sqrMagnitude > 1e-6f ? headUp : Vector3.up;
+            if (Vector3.Cross(away, up).sqrMagnitude < 1e-6f) away = Vector3.forward;
+            return Quaternion.LookRotation(away.normalized, up);
+        }
+
+        /// <summary>
+        /// Acompañar al participante: la posición la suaviza TurnFollow; aquí solo se gira el texto hacia los ojos con
+        /// calma. No hace nada mientras viaja (pinza).
+        /// </summary>
+        public void Follow(Vector3 pos, Vector3 eye, Vector3 fallbackForward, Vector3 headUp, float dt)
+        {
+            if (Moving) return;
+            Quaternion target = RotationFor(pos, eye, fallbackForward, headUp);
+            Root.SetPositionAndRotation(pos, Quaternion.Slerp(Root.rotation, target, 1f - Mathf.Exp(-dt * 6f)));
+        }
+
+        /// <summary>
+        /// Índice iluminado de una mano (0 izquierda, 1 derecha): articulaciones del nudillo a la punta (mundo), el punto
+        /// de la esfera más cercano, brillo 0..1 y el hilo hacia la esfera 0..1. glow = 0 lo apaga.
+        /// </summary>
+        public void SetFinger(int hand, Vector3 knuckle, Vector3 mid, Vector3 distal, Vector3 tip, Vector3 orbPoint, float glow, float tether, float hold)
+        {
+            MeshRenderer r = _fingers[hand];
+            if (r == null) return;
+            bool on = IsOrb && (glow > 0.01f || tether > 0.01f);
+            if (r.enabled != on) r.enabled = on;
+            if (!on) return;
+            MaterialPropertyBlock b = _fingerBlocks[hand];
+            b.SetVector("_P0", knuckle);
+            b.SetVector("_P1", mid);
+            b.SetVector("_P2", distal);
+            b.SetVector("_P3", tip);
+            b.SetVector("_P4", orbPoint);
+            b.SetFloat("_Glow", glow);
+            b.SetFloat("_Tether", tether);
+            b.SetFloat("_Hold", hold);
+            b.SetFloat("_T", _fieldT);
+            b.SetColor("_Color", CurrentColor);
+            r.SetPropertyBlock(b);
+        }
+
+        public void HideFingers()
+        {
+            foreach (MeshRenderer r in _fingers) if (r != null && r.enabled) r.enabled = false;
         }
 
         public void Appear(Pose pose)
@@ -234,6 +312,8 @@ namespace XRCollab.Measurement.Turns
             _colorT += dt / ColorFadeSeconds;
             _flash = Mathf.MoveTowards(_flash, 0f, dt * 3f);
             _near = Mathf.MoveTowards(_near, Mathf.Clamp01(near), dt * (near > _near ? 8f : 3f));
+            _dim = Mathf.MoveTowards(_dim, Mathf.Clamp01(Dim), dt * (Dim > _dim ? 6f : 2.5f));   // se apaga rápido, vuelve con calma
+            float lit = Mathf.Lerp(1f, 0.3f, _dim);
             Color c = CurrentColor;
             ApplyColor(c);
 
@@ -268,14 +348,20 @@ namespace XRCollab.Measurement.Turns
             float trackSweep = _appearT >= 0f ? 360f * EaseOut(Mathf.Clamp01(_appearT / 0.58f)) : 360f;
             float trackAlpha = Moving ? 0.2f : hover ? 0.6f : 0.35f;
             if (Style == PadStyle.Ring || Style == PadStyle.Ghost) trackAlpha = Mathf.Max(trackAlpha, Mathf.Lerp(0.5f, 0.95f, _near));
-            bool field = Style == PadStyle.Field && _field != null;
-            // Campo: el contorno es una línea finísima en el borde del campo de puntos.
-            float tIn = field ? FieldRadius + 0.0038f : 0.0505f, tOut = field ? FieldRadius + 0.0046f : 0.0525f;
-            float pIn = field ? FieldRadius + 0.0025f : 0.0495f, pOut = field ? FieldRadius + 0.0060f : 0.0565f;
+            bool field = Style == PadStyle.Field && _field != null, orb = IsOrb;
+            // Campo: el contorno es una línea finísima en el borde del campo de puntos. Orb: un aro alrededor de la
+            // esfera, de cara al participante (el botón está de pie).
+            float tIn = orb ? OrbRadius + 0.0060f : field ? FieldRadius + 0.0038f : 0.0505f;
+            float tOut = orb ? OrbRadius + 0.0067f : field ? FieldRadius + 0.0046f : 0.0525f;
+            float pIn = orb ? OrbRadius + 0.0050f : field ? FieldRadius + 0.0025f : 0.0495f;
+            float pOut = orb ? OrbRadius + 0.0085f : field ? FieldRadius + 0.0060f : 0.0565f;
             if (field) trackAlpha = Mathf.Lerp(0.22f, 0.5f, Mathf.Max(_near, hold));
-            _track.Set(tIn, tOut, 0f, trackSweep, WithAlpha(Color.Lerp(c, Color.white, field ? 0.5f : 0f), trackAlpha * Visibility));
+            if (orb) trackAlpha = Mathf.Lerp(0.14f, 0.42f, Mathf.Max(_near, hold));
+            _track.Set(tIn, tOut, 0f, trackSweep, WithAlpha(Color.Lerp(c, Color.white, field || orb ? 0.5f : 0f), trackAlpha * Visibility * lit));
             _fieldT += dt;
             TickField(c, hold);
+            TickOrb(c, hold);
+            if (!orb) HideFingers();
 
             // Progreso de «mantener»: arco horario desde las 12. Mientras viaja: dos segmentos que orbitan el anillo
             // (el giro de un disco liso no se ve).
@@ -293,7 +379,7 @@ namespace XRCollab.Measurement.Turns
             bool labels = !Moving && (_appearT < 0f || _appearT > 0.5f);
             if (_labels.gameObject.activeSelf != labels) _labels.gameObject.SetActive(labels);
             _sub.color = Color.Lerp(Color.white, c, 0.55f);
-            _label.alpha = _sub.alpha = Visibility;
+            _label.alpha = _sub.alpha = Visibility * Mathf.Lerp(1f, 0.45f, _dim);
 
             TickRipple(_rippleA, ref _rippleAT, dt);
             TickRipple(_rippleB, ref _rippleBT, dt);
@@ -329,7 +415,7 @@ namespace XRCollab.Measurement.Turns
             if (t < 0f) return;
             t += dt / RippleSeconds;
             float k = EaseOut(Mathf.Clamp01(t));
-            float r = Mathf.Lerp(0.052f, 0.11f, k);
+            float r = IsOrb ? Mathf.Lerp(OrbRadius + 0.006f, 0.085f, k) : Mathf.Lerp(0.052f, 0.11f, k);
             arc.Set(r, r + Mathf.Lerp(0.003f, 0.0008f, k), 0f, 360f, WithAlpha(CurrentColor, 0.65f * (1f - k)));
             if (t >= 1f) { t = -1f; arc.Visible = false; }
         }
@@ -348,6 +434,86 @@ namespace XRCollab.Measurement.Turns
             _fieldBlock.SetFloat("_Flash", _flash);
             _fieldBlock.SetVector("_Hand", HandLocal);
             _field.SetPropertyBlock(_fieldBlock);
+        }
+
+        private void TickOrb(Color c, float hold)
+        {
+            bool on = IsOrb;
+            if (_orb != null && _orb.enabled != on) _orb.enabled = on;
+            if (!on) return;
+            _orbBlock.SetFloat("_T", _fieldT);
+            _orbBlock.SetColor("_Color", c);
+            _orbBlock.SetFloat("_Near", _near);
+            _orbBlock.SetFloat("_Hold", Mathf.Clamp01(hold));
+            _orbBlock.SetFloat("_Flash", _flash);
+            _orbBlock.SetFloat("_Dim", _dim);
+            _orbBlock.SetFloat("_R", OrbRadius);
+            _orbBlock.SetVector("_Hand", HandLocal);
+            _orbBlock.SetVector("_HoldDir", HoldDir);
+            _orb.SetPropertyBlock(_orbBlock);
+        }
+
+        /// <summary>Esfera: <see cref="OrbDots"/> quads en direcciones de Fibonacci (parejas, sin polos marcados) + el núcleo.</summary>
+        private static MeshRenderer Orb(string name, Transform parent, Material mat, int layer, List<Material> owned)
+        {
+            int n = OrbDots + OrbCores;
+            var seeds = new List<Vector4>(n * 4);
+            var rng = new System.Random(1022);
+            const float golden = 2.39996323f;
+            for (int i = 0; i < n; i++)
+            {
+                Vector4 seed;
+                if (i < OrbDots)
+                {
+                    float y = 1f - 2f * (i + 0.5f) / OrbDots, r = Mathf.Sqrt(1f - y * y), phi = i * golden;
+                    seed = new Vector4(Mathf.Cos(phi) * r, y, Mathf.Sin(phi) * r, (float)rng.NextDouble());
+                }
+                else seed = new Vector4(0f, 0f, 0f, (float)rng.NextDouble());   // núcleo
+                for (int k = 0; k < 4; k++) seeds.Add(seed);
+            }
+            return Quads(name, parent, mat, layer, owned, seeds, 0.3f);
+        }
+
+        /// <summary>Índice iluminado: corrientes por el dedo, brillo de la punta y el hilo a la esfera (posiciones en el shader).</summary>
+        private static MeshRenderer Finger(string name, Transform parent, Material mat, int layer, List<Material> owned)
+        {
+            var seeds = new List<Vector4>((FingerDots + TipGlows + TetherDots + Sheaths + 1) * 4);
+            var rng = new System.Random(name.Length * 77);
+            void Add(Vector4 seed) { for (int k = 0; k < 4; k++) seeds.Add(seed); }
+            for (int i = 0; i < FingerDots; i++) Add(new Vector4((i + (float)rng.NextDouble()) / FingerDots, (float)rng.NextDouble(), (float)rng.NextDouble(), 0f));
+            for (int i = 0; i < TipGlows; i++) Add(new Vector4(0f, 0f, (i + 0.5f) / TipGlows, 1f));
+            for (int i = 0; i < TetherDots; i++) Add(new Vector4((i + 0.5f) / TetherDots, (float)rng.NextDouble(), (float)rng.NextDouble(), 2f));
+            for (int i = 0; i < Sheaths; i++) Add(new Vector4((i + 0.5f) / Sheaths, 0f, (float)rng.NextDouble(), 3f));
+            Add(new Vector4(1f, 0f, 0.5f, 4f));   // aro de la punta
+            MeshRenderer r = Quads(name, parent, mat, layer, owned, seeds, 2000f);   // posiciones del mundo: que nunca se recorte
+            r.enabled = false;
+            return r;
+        }
+
+        private static MeshRenderer Quads(string name, Transform parent, Material mat, int layer, List<Material> owned, List<Vector4> seeds, float bounds)
+        {
+            int n = seeds.Count / 4;
+            var go = new GameObject(name) { layer = layer };
+            go.transform.SetParent(parent, false);
+            var corners = new Vector2[n * 4];
+            var tris = new int[n * 6];
+            Vector2[] q = { new Vector2(-1, -1), new Vector2(1, -1), new Vector2(1, 1), new Vector2(-1, 1) };
+            for (int i = 0; i < n; i++)
+            {
+                for (int k = 0; k < 4; k++) corners[i * 4 + k] = q[k];
+                int v = i * 4, t = i * 6;
+                tris[t] = v; tris[t + 1] = v + 1; tris[t + 2] = v + 2; tris[t + 3] = v; tris[t + 4] = v + 2; tris[t + 5] = v + 3;
+            }
+            var mesh = new Mesh { name = name + "Dots", vertices = new Vector3[n * 4], uv = corners, triangles = tris };
+            mesh.SetUVs(1, seeds);
+            mesh.bounds = new Bounds(Vector3.zero, Vector3.one * bounds);
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var r = go.AddComponent<MeshRenderer>();
+            var m = new Material(mat);
+            owned.Add(m);
+            r.sharedMaterial = m;
+            Setup(r);
+            return r;
         }
 
         /// <summary>Malla fija de <see cref="FieldDots"/> quads (esquina en uv0, semillas en uv1); el shader los mueve.</summary>
@@ -386,6 +552,26 @@ namespace XRCollab.Measurement.Turns
         private void ApplyStyle()
         {
             _appliedStyle = Style;
+            if (IsOrb && _fieldFont != null && _fieldText != null)
+            {
+                // Orb: título arriba de la esfera y subtítulo abajo, derechos y de cara al participante.
+                _labels.localPosition = Vector3.zero;
+                foreach (TextMeshPro t in new[] { _label, _sub })
+                {
+                    t.font = _fieldFont;
+                    t.fontSharedMaterial = _fieldText;
+                    t.fontStyle = FontStyles.UpperCase;
+                }
+                _label.fontSize = 0.2f;
+                _label.characterSpacing = 18f;
+                _sub.fontSize = 0.13f;
+                _sub.characterSpacing = 20f;
+                _label.transform.localPosition = new Vector3(0f, OrbRadius + 0.024f, 0f);
+                _sub.transform.localPosition = new Vector3(0f, -(OrbRadius + 0.02f), 0f);
+                _label.ForceMeshUpdate();
+                _sub.ForceMeshUpdate();
+                return;
+            }
             bool field = Style == PadStyle.Field && _fieldFont != null && _fieldText != null;
             // Campo: el texto se centra en el botón y Curve lo dobla en arcos alrededor de los puntos.
             _labels.localPosition = field ? new Vector3(0f, 0f, -0.004f) : new Vector3(0f, PadRadius + 0.03f, -0.006f);
@@ -436,7 +622,7 @@ namespace XRCollab.Measurement.Turns
         private void ApplyColor(Color c)
         {
             if (_appliedStyle != Style) ApplyStyle();
-            bool field = Style == PadStyle.Field;
+            bool field = Style == PadStyle.Field || IsOrb;   // sin disco
             if (_faceRenderer.enabled == field) { _faceRenderer.enabled = !field; _baseRenderer.enabled = !field; }
             if (field) return;
             if (Style == PadStyle.Solid && _cover < 0.01f)

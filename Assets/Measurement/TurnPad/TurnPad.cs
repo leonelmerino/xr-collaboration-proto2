@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using UnityEngine;
+using UnityEngine.XR;
 using UnityEngine.XR.Hands;
 using XRCollab.Measurement.Cues;
 using XRCollab.Measurement.Recording;
@@ -10,17 +11,24 @@ using XRCollab.Measurement.Recording;
 namespace XRCollab.Measurement.Turns
 {
     /// <summary>
-    /// Botón de turno del participante: un disco horizontal fijo en la sala que se presiona con la punta del índice
-    /// (hand tracking, sin controles) para marcar el INICIO y el FIN de su turno de Jenga. README en esta carpeta.
+    /// Botón de turno del participante (hand tracking, sin controles) para marcar el INICIO y el FIN de su turno de
+    /// Jenga. Desde 2026-10-22 es una esfera de luz («orb») que se activa metiendo la punta del índice; los diseños de
+    /// disco (field, solid…) siguen con «turn style». README en esta carpeta.
+    ///
+    /// Acompaña al participante (<see cref="TurnFollow"/>): vive en un círculo alrededor de su eje vertical, a un ángulo
+    /// respecto del frente de su cuerpo, a una distancia y a una altura desde el piso. Movimientos chicos no lo mueven;
+    /// al caminar o girarse de verdad vuelve suave a su lugar cómodo; con una mano yendo hacia él no se mueve.
     ///
     /// Para que no se active sin querer (las manos están todo el rato cerca de la torre):
-    ///  - cuenta solo la punta del índice, y con el índice estirado (apuntando);
-    ///  - el dedo tiene que llegar desde arriba del disco (no de lado ni por debajo);
-    ///  - si dos o más puntas de dedos están en el disco (palma, puño, un bloque en la mano) no cuenta;
+    ///  - cuenta solo la punta del índice, con el índice estirado (apuntando), entrando desde afuera;
+    ///  - esfera: si otra punta de dedo o la palma también está adentro (puño, pinza, mano abierta) no cuenta, y avisa
+    ///    «SOLO CON EL ÍNDICE»; disco: el dedo tiene que llegar desde arriba y no puede haber 2+ puntas encima;
     ///  - hay que mantenerlo <see cref="HoldSeconds"/>: un arco de progreso se llena mientras tanto;
     ///  - después de cada cambio hay que sacar el dedo antes de poder volver a presionar.
+    /// Al acercar la mano, el índice se ilumina (corrientes de luz hacia la punta y un hilo hacia la esfera).
     ///
-    /// Moverlo: pinza «OK» (pulgar con índice, los otros tres dedos estirados) quieta 0,8 s → el disco viaja hasta ahí.
+    /// Moverlo: pinza «OK» (pulgar con índice, los otros tres dedos estirados) quieta 0,8 s → elige la altura, el ángulo y
+    /// la distancia (dentro del alcance cómodo); el botón viaja ahí y queda tenue y desactivado hasta que la mano sale.
     ///
     /// Cada cambio sale por el camino oficial de eventos (Documentation/architecture.md):
     /// <c>AcquisitionEventManager.EmitInteractionEvent("TURN_START"|"TURN_END", "turn", ...)</c> → events.csv local +
@@ -61,10 +69,22 @@ namespace XRCollab.Measurement.Turns
         private const float PinchStillMeters = 0.03f;
         private const float MaxOtherFingerBend = 50f;
 
-        // Ubicación por defecto respecto de la cabeza al colocarlo (adelante, al lado de la mano, abajo).
-        private const float PlaceForward = 0.40f;
-        private const float PlaceSide = 0.24f;
-        private const float PlaceDown = 0.40f;
+        // Ubicación por defecto respecto del participante: 31° hacia el lado de la mano, a 45 cm del eje, 40 cm bajo los ojos.
+        private const float DefaultAngle = 31f;
+        private const float DefaultRadius = 0.45f;
+        private const float DefaultDrop = 0.40f;
+        private const float MinRadius = 0.22f, MaxRadius = 0.65f;   // alcance cómodo al elegir con la pinza
+
+        // Esfera («orb»).
+        private const float OrbTouchMargin = 0.008f;   // la punta cuenta hasta 8 mm fuera de la superficie
+        private const float OrbHoverRange = 0.12f;
+        private const float OrbArmOutside = 0.012f;    // para armar, la punta estuvo al menos esto fuera del área de toque
+        private const float FreezeRange = 0.25f;       // una mano a menos de esto del botón: no se mueve (va a tocarlo)
+        private const float ReleaseRange = 0.10f;      // recién movido: se activa cuando la mano entera está más lejos que esto…
+        private const float ReleaseHoldSeconds = 0.3f; // …durante esto
+        private const float GlowRange = 0.30f;         // el índice se ilumina desde 30 cm de la superficie
+        private const float TetherRange = 0.18f;       // y el hilo hacia la esfera desde 18 cm
+        private const float BadShapeSeconds = 0.25f, BadShapeHintSeconds = 1.6f;
         private const float AutoPlaceFocusedSeconds = 3f;
         private const float AutoPlaceMaxPitch = 30f;
 
@@ -115,6 +135,16 @@ namespace XRCollab.Measurement.Turns
         private int _shownSecond = -1;
         private string _toggleSource = "";
         private TurnCoordinator _coordinator;
+
+        // Dónde vive el botón respecto del participante: grados desde el frente del cuerpo (+ = derecha), m del eje, y
+        // altura (m, coordenadas del seguimiento: desde el piso si el origen es Floor).
+        private readonly TurnFollow _follow = new TurnFollow();
+        private float _angle, _radius = DefaultRadius, _height;
+        private TurnSnapshot _savedPad;        // ubicación guardada (se usa al colocarlo la primera vez)
+        private bool _disabled;                // recién movido: tenue y sin activar hasta que la mano salga
+        private float _clearSince = -1f, _badShapeSince = -1f, _badShapeUntil = -10f;
+        private string _hint = "";
+        private Vector3 _pressTip;
 
         private sealed class Pinch { public bool Active; public float Since, LastOpen = -10f; public Vector3 Anchor; }
         private readonly Pinch _pinchL = new Pinch(), _pinchR = new Pinch();
@@ -175,7 +205,7 @@ namespace XRCollab.Measurement.Turns
             string a = (arg ?? "").Trim().ToLowerInvariant();
             if (a.StartsWith("style "))
             {
-                if (!Enum.TryParse(a.Substring(6).Trim(), true, out TurnPadVisual.PadStyle st)) return "turn style field|solid|ghost|fade|ring";
+                if (!Enum.TryParse(a.Substring(6).Trim(), true, out TurnPadVisual.PadStyle st)) return "turn style orb|field|solid|ghost|fade|ring";
                 _visual.Style = st;
                 Debug.Log($"{LogPrefix}diseño {st}");
                 AcquisitionEventManager.Instance?.LogLocalExternal("TURN_PAD", "STYLE " + st.ToString().ToUpperInvariant());
@@ -218,7 +248,7 @@ namespace XRCollab.Measurement.Turns
                     Visible = false;
                     return null;
                 default:
-                    return "turn start|end|place|show|hide|style field|solid|ghost|fade|ring|mode pad|gesture|both|latest PC CLAVE";
+                    return "turn start|end|place|show|hide|style orb|field|solid|ghost|fade|ring|mode pad|gesture|both|latest PC CLAVE";
             }
         }
 
@@ -267,21 +297,69 @@ namespace XRCollab.Measurement.Turns
             bool show = Visible && Placed && Mode != TurnMode.Gesture;
             if (_root.gameObject.activeSelf != show) _root.gameObject.SetActive(show);
             FeedbackCueDirector.PadVisible = show || pinch >= 0f;
+            bool orb = _visual.IsOrb;
+
+            // Acompañar al participante (quieto si una mano va hacia el botón, se está presionando, pinzando o viajando).
+            if (cam != null)
+            {
+                Vector3 head = cam.transform.position;
+                bool reaching = show && handsOn && HandWithin(_root.position, FreezeRange, space);
+                bool frozen = !Placed || reaching || pinch >= 0f || _hold > 0f || _visual.Moving;
+                _follow.Update(head.x, head.z, HeadYaw(cam.transform), dt, frozen);
+                if (Placed) _visual.Follow(PadPosition(), head, cam.transform.forward, cam.transform.up, dt);
+            }
 
             float depth = float.MaxValue;
             string who = null;
-            bool hover = false;
+            bool hover = false, badShape = false;
             float near = 0f, cover = 0f;
             if (show && cam != null && handsOn && !_visual.Moving)
             {
-                Vector3 eye = _root.InverseTransformPoint(cam.transform.position);
-                cover = Mathf.Max(Cover(_hands.leftHand, space, eye), Cover(_hands.rightHand, space, eye));
-                _visual.HandLocal = Fingertip(_hands.leftHand, _hands.rightHand, space);
-                Probe(_hands.leftHand, space, ref _armedL, ref depth, ref who, ref hover, "hand_left");
-                Probe(_hands.rightHand, space, ref _armedR, ref depth, ref who, ref hover, "hand_right");
-                if (_visual.Style != TurnPadVisual.PadStyle.Solid && _visual.Style != TurnPadVisual.PadStyle.Ghost)
-                    near = Mathf.Max(Nearness(_hands.leftHand, space), Nearness(_hands.rightHand, space));
+                if (orb)
+                {
+                    Vector3 c = _root.position;
+                    ProbeOrb(_hands.leftHand, space, c, ref _armedL, ref depth, ref who, ref hover, ref badShape, "hand_left");
+                    ProbeOrb(_hands.rightHand, space, c, ref _armedR, ref depth, ref who, ref hover, ref badShape, "hand_right");
+                    _visual.HandLocal = OrbFingertip(_hands.leftHand, _hands.rightHand, space, c, out near);
+                    if (who != null) _visual.HoldDir = _root.InverseTransformDirection((_pressTip - c).normalized);
+                }
+                else
+                {
+                    Vector3 eye = _root.InverseTransformPoint(cam.transform.position);
+                    cover = Mathf.Max(Cover(_hands.leftHand, space, eye), Cover(_hands.rightHand, space, eye));
+                    _visual.HandLocal = Fingertip(_hands.leftHand, _hands.rightHand, space);
+                    Probe(_hands.leftHand, space, ref _armedL, ref depth, ref who, ref hover, "hand_left");
+                    Probe(_hands.rightHand, space, ref _armedR, ref depth, ref who, ref hover, "hand_right");
+                    if (_visual.Style != TurnPadVisual.PadStyle.Solid && _visual.Style != TurnPadVisual.PadStyle.Ghost)
+                        near = Mathf.Max(Nearness(_hands.leftHand, space), Nearness(_hands.rightHand, space));
+                }
             }
+
+            // Recién movido: tenue y sin activar hasta que la mano entera salga del botón.
+            if (_disabled)
+            {
+                float range = (orb ? TurnPadVisual.OrbRadius : TurnPadVisual.PadRadius) + ReleaseRange;
+                bool clear = !handsOn || !HandWithin(_root.position, range, space);
+                _clearSince = clear ? (_clearSince < 0f ? now : _clearSince) : -1f;
+                if (clear && now - _clearSince >= ReleaseHoldSeconds)
+                {
+                    _disabled = false;
+                    _latched = false;
+                    Debug.Log($"{LogPrefix}la mano salió: botón activo de nuevo");
+                }
+                who = null;
+                badShape = false;
+            }
+            _visual.Dim = _disabled ? 1f : 0f;
+
+            // Mano rara adentro de la esfera (puño, pinza, palma): no cuenta y lo dice.
+            _badShapeSince = badShape ? (_badShapeSince < 0f ? now : _badShapeSince) : -1f;
+            if (badShape && now - _badShapeSince >= BadShapeSeconds) _badShapeUntil = now + BadShapeHintSeconds;
+            string hint = _disabled ? "retira la mano" : now < _badShapeUntil ? "solo con el índice" : "";
+            if (hint != _hint) { _hint = hint; RefreshText(); }
+
+            if (orb && show && cam != null && handsOn && !_visual.Moving) UpdateFingers(space, _root.position, who);
+            else _visual.HideFingers();
             Hover = hover || who != null;
 
             if (who != null) _lastTouch = now;
@@ -298,6 +376,129 @@ namespace XRCollab.Measurement.Turns
 
             if (InTurn && (int)TurnSeconds != _shownSecond) RefreshText();
             _visual.Tick(dt, Mathf.Clamp01(Progress), who != null ? Mathf.Clamp(depth, 0f, PressTravel) : 0f, Hover, near, cover);
+        }
+
+        // ---------------- esfera («orb») ----------------
+
+        /// <summary>
+        /// Punta del índice de una mano contra la esfera de centro <paramref name="c"/>: hover, y si la está activando
+        /// válidamente (índice estirado, entrando desde afuera, sin otra punta ni la palma adentro). Si la punta está
+        /// adentro con otra forma de mano, <paramref name="badShape"/>.
+        /// </summary>
+        private void ProbeOrb(XRHand hand, Transform space, Vector3 c, ref bool armed, ref float bestDepth, ref string who,
+            ref bool hover, ref bool badShape, string name)
+        {
+            if (!hand.isTracked || !World(hand, XRHandJointID.IndexTip, space, out Vector3 tip)) { armed = false; return; }
+            float touch = TurnPadVisual.OrbRadius + OrbTouchMargin;
+            float d = (tip - c).magnitude;
+            bool others = OthersInOrb(hand, space, c);
+            if (d > touch)
+            {
+                if (others) badShape = true;   // palma, puño o pulgar adentro sin el índice
+                if (d > TurnPadVisual.OrbRadius + OrbHoverRange) { armed = false; return; }
+                hover = true;
+                if (d > touch + OrbArmOutside) armed = true;   // entra desde afuera
+                return;
+            }
+            hover = true;
+            if (!armed) return;
+            if (others || !IndexExtended(hand, space)) { badShape = true; return; }
+            if (d < bestDepth) { bestDepth = d; who = name; _pressTip = tip; }
+        }
+
+        private static readonly XRHandJointID[] OrbOtherJoints =
+            { XRHandJointID.ThumbTip, XRHandJointID.MiddleTip, XRHandJointID.RingTip, XRHandJointID.LittleTip, XRHandJointID.Palm };
+
+        /// <summary>Otra punta de dedo o la palma dentro de la esfera (+ margen): no es un índice apuntando.</summary>
+        private static bool OthersInOrb(XRHand hand, Transform space, Vector3 c)
+        {
+            foreach (XRHandJointID id in OrbOtherJoints)
+            {
+                if (!World(hand, id, space, out Vector3 p)) continue;
+                float lim = TurnPadVisual.OrbRadius + (id == XRHandJointID.Palm ? 0.02f : id == XRHandJointID.ThumbTip ? 0f : OrbTouchMargin);
+                if ((p - c).magnitude < lim) return true;
+            }
+            return false;
+        }
+
+        /// <summary>Punta del índice más cercana (coordenadas de la esfera), w = 1 a ≤ 2 cm de la superficie, 0 a ≥ 15 cm.</summary>
+        private Vector4 OrbFingertip(XRHand left, XRHand right, Transform space, Vector3 c, out float near)
+        {
+            Vector4 best = new Vector4(0f, 0f, -1f, 0f);
+            float bestD = float.MaxValue;
+            near = 0f;
+            for (int i = 0; i < 2; i++)
+            {
+                XRHand h = i == 0 ? left : right;
+                if (!h.isTracked || !World(h, XRHandJointID.IndexTip, space, out Vector3 tip)) continue;
+                float d = (tip - c).magnitude - TurnPadVisual.OrbRadius;
+                if (d >= bestD) continue;
+                bestD = d;
+                float w = 1f - Mathf.Clamp01((d - 0.02f) / 0.13f);
+                Vector3 local = _root.InverseTransformPoint(tip);
+                best = new Vector4(local.x, local.y, local.z, w);
+                near = w;
+            }
+            return best;
+        }
+
+        /// <summary>El índice de cada mano se ilumina al acercarse (más fuerte apuntando; con el hilo hacia la esfera).</summary>
+        private void UpdateFingers(Transform space, Vector3 c, string who)
+        {
+            for (int i = 0; i < 2; i++)
+            {
+                XRHand h = i == 0 ? _hands.leftHand : _hands.rightHand;
+                if (_disabled || !h.isTracked ||
+                    !World(h, XRHandJointID.IndexProximal, space, out Vector3 k) || !World(h, XRHandJointID.IndexIntermediate, space, out Vector3 m) ||
+                    !World(h, XRHandJointID.IndexDistal, space, out Vector3 d) || !World(h, XRHandJointID.IndexTip, space, out Vector3 t))
+                {
+                    _visual.SetFinger(i, default, default, default, default, default, 0f, 0f, 0f);
+                    continue;
+                }
+                float dist = (t - c).magnitude - TurnPadVisual.OrbRadius;
+                float glow = Mathf.SmoothStep(0f, 1f, 1f - Mathf.Clamp01((dist - 0.02f) / GlowRange));
+                bool pointing = IndexExtended(h, space);
+                if (!pointing) glow *= 0.35f;   // con el índice estirado brilla de verdad: así se entiende qué dedo usar
+                float tether = pointing && dist > OrbTouchMargin + 0.004f ? Mathf.SmoothStep(0f, 1f, 1f - Mathf.Clamp01((dist - 0.015f) / TetherRange)) : 0f;
+                bool pressing = who == (i == 0 ? "hand_left" : "hand_right");
+                Vector3 surface = c + (t - c).normalized * TurnPadVisual.OrbRadius;
+                _visual.SetFinger(i, k, m, d, t, surface, pressing ? 1f : glow, pressing ? 0f : tether, pressing ? Mathf.Clamp01(Progress) : 0f);
+            }
+        }
+
+        private static readonly XRHandJointID[] AnyJoint =
+        {
+            XRHandJointID.Wrist, XRHandJointID.Palm, XRHandJointID.ThumbTip, XRHandJointID.IndexTip, XRHandJointID.MiddleTip,
+            XRHandJointID.RingTip, XRHandJointID.LittleTip, XRHandJointID.IndexIntermediate, XRHandJointID.MiddleIntermediate,
+            XRHandJointID.ThumbDistal,
+        };
+
+        /// <summary>Alguna parte de alguna mano a menos de <paramref name="range"/> de <paramref name="c"/>.</summary>
+        private bool HandWithin(Vector3 c, float range, Transform space)
+        {
+            if (_hands == null || !_hands.running) return false;
+            for (int i = 0; i < 2; i++)
+            {
+                XRHand h = i == 0 ? _hands.leftHand : _hands.rightHand;
+                if (!h.isTracked) continue;
+                foreach (XRHandJointID id in AnyJoint)
+                    if (World(h, id, space, out Vector3 p) && (p - c).sqrMagnitude < range * range) return true;
+            }
+            return false;
+        }
+
+        /// <summary>Hacia dónde mira la cabeza en el plano del piso (grados, 0 = +z). Mirando muy abajo o arriba, usa la coronilla.</summary>
+        private static float HeadYaw(Transform head)
+        {
+            Vector3 f = Vector3.ProjectOnPlane(head.forward, Vector3.up);
+            if (f.sqrMagnitude < 0.04f) f = Vector3.ProjectOnPlane(head.forward.y < 0f ? head.up : -head.up, Vector3.up);
+            return Mathf.Atan2(f.x, f.z) * Mathf.Rad2Deg;
+        }
+
+        private Vector3 PadPosition()
+        {
+            _follow.PointAt(_angle, _radius, out float x, out float z);
+            return new Vector3(x, _height, z);
         }
 
         /// <summary>Punta del índice más cercana al disco (coordenadas del disco), w = 1 a ≤ 4 cm, 0 a ≥ 12 cm.</summary>
@@ -627,6 +828,8 @@ namespace XRCollab.Measurement.Turns
                 Day = Today, Number = TurnNumber, InTurn = InTurn, StartUtcTicks = InTurn ? TurnStartUtcTicks : 0,
                 LastDuration = _lastDuration, LastUtc = _lastUtc, Source = LastSource, LatestPc = latest.Pc, LatestKey = latest.Key,
             };
+            if (Placed) { s.PadAngle = _angle; s.PadRadius = _radius; s.PadHeight = _height; s.PadOrigin = OriginMode(); }
+            else if (_savedPad != null) { s.PadAngle = _savedPad.PadAngle; s.PadRadius = _savedPad.PadRadius; s.PadHeight = _savedPad.PadHeight; s.PadOrigin = _savedPad.PadOrigin; }
             string tmp = StatePath + ".tmp";
             try
             {
@@ -660,6 +863,7 @@ namespace XRCollab.Measurement.Turns
                 return;
             }
             long now = PreciseClock.UtcNow.Ticks;
+            if (s.PadRadius > 0f) _savedPad = s;   // ubicación elegida antes (vale aunque sea de otro día)
             if (s.SameDay(Today))
             {
                 TurnNumber = s.Number;
@@ -690,27 +894,36 @@ namespace XRCollab.Measurement.Turns
         {
             int s = (int)TurnSeconds;
             _shownSecond = s;
-            _visual.SetText(InTurn ? "TERMINAR TURNO" : "INICIAR TURNO",
-                InTurn ? $"turno {TurnNumber} · {s / 60}:{s % 60:00}" : TurnNumber == 0 ? "mantén el índice" : $"turno {TurnNumber} duró {s / 60}:{s % 60:00}");
+            string sub = InTurn ? $"turno {TurnNumber} · {s / 60}:{s % 60:00}"
+                : TurnNumber == 0 ? (_visual.IsOrb ? "toca con el índice" : "mantén el índice") : $"turno {TurnNumber} duró {s / 60}:{s % 60:00}";
+            _visual.SetText(InTurn ? "TERMINAR TURNO" : "INICIAR TURNO", _hint.Length > 0 ? _hint : sub);
         }
 
         // ---------------- ubicación ----------------
 
         /// <summary>
-        /// Coloca el disco fijo en la sala. Con <paramref name="atFinger"/> y una mano a la vista, donde está la punta
-        /// del índice (el participante muestra con el dedo dónde lo quiere); si no, adelante, abajo y al lado de la mano.
+        /// Coloca el botón. Con <paramref name="atFinger"/> y una mano a la vista, donde está la punta del índice (el
+        /// participante muestra con el dedo dónde lo quiere). Si no: la ubicación guardada (ángulo y distancia; la altura
+        /// solo si el origen del seguimiento es el piso, como cuando se guardó) o la de siempre, al lado de la mano.
         /// </summary>
         private bool Place(bool atFinger)
         {
             Camera cam = Camera.main;
             if (cam == null) return false;
             Transform head = cam.transform;
-            Vector3 fwd = Vector3.ProjectOnPlane(head.forward, Vector3.up);
-            if (fwd.sqrMagnitude < 1e-4f) fwd = Vector3.ProjectOnPlane(-head.up, Vector3.up);
-            fwd.Normalize();
-            Vector3 right = Vector3.Cross(Vector3.up, fwd);
-            Vector3 pos = head.position + fwd * PlaceForward + (_rightSide ? right : -right) * PlaceSide - Vector3.up * PlaceDown;
+            if (!_follow.Initialized || !Placed) _follow.Snap(head.position.x, head.position.z, HeadYaw(head));
+            else _follow.SnapPosition(head.position.x, head.position.z);
+            float angle = _rightSide ? DefaultAngle : -DefaultAngle, radius = DefaultRadius, height = head.position.y - DefaultDrop;
             string how = "por defecto";
+            if (!Placed && _savedPad != null && _savedPad.PadRadius > 0f)
+            {
+                angle = _savedPad.PadAngle;
+                radius = _savedPad.PadRadius;
+                if (_savedPad.PadOrigin == "Floor" && OriginMode() == "Floor") height = _savedPad.PadHeight;
+                how = "guardado";
+            }
+            _follow.PointAt(angle, radius, out float px, out float pz);
+            Vector3 pos = new Vector3(px, height, pz);
 
             if (atFinger && _hands != null && _hands.running)
             {
@@ -728,12 +941,25 @@ namespace XRCollab.Measurement.Turns
             return true;
         }
 
-        /// <summary>Deja el disco horizontal en <paramref name="pos"/> (mundo), con el texto legible desde los ojos.</summary>
+        /// <summary>
+        /// Lleva el botón a <paramref name="pos"/> (mundo), pero guardado como ubicación respecto del participante: el
+        /// eje pasa a ser su cabeza ahora (el frente del cuerpo no cambia), y quedan el ángulo, la distancia (dentro del
+        /// alcance cómodo) y la altura. Desde ahí lo acompaña. Queda tenue y desactivado hasta que la mano sale.
+        /// </summary>
         private void PlaceAt(Vector3 pos, string how)
         {
             Camera cam = Camera.main;
             Vector3 eye = cam != null ? cam.transform.position : pos - Vector3.forward;
-            var pose = new Pose(pos, TurnPadVisual.FlatRotation(pos, eye, cam != null ? cam.transform.forward : Vector3.forward));
+            if (cam != null)
+            {
+                if (_follow.Initialized) _follow.SnapPosition(eye.x, eye.z);
+                else _follow.Snap(eye.x, eye.z, HeadYaw(cam.transform));
+            }
+            _follow.ToPolar(pos.x, pos.z, out _angle, out float r);
+            _radius = Mathf.Clamp(r, MinRadius, MaxRadius);
+            _height = pos.y;
+            pos = PadPosition();
+            var pose = new Pose(pos, _visual.RotationFor(pos, eye, cam != null ? cam.transform.forward : Vector3.forward, cam != null ? cam.transform.up : Vector3.up));
             bool moved = Placed && Visible;
             if (moved) _visual.MoveTo(pose);
             else
@@ -745,8 +971,23 @@ namespace XRCollab.Measurement.Turns
             _hold = 0f;
             _latched = true;   // si el dedo quedó encima, primero hay que sacarlo
             _lastTouch = Time.unscaledTime;
-            Debug.Log($"{LogPrefix}{(moved ? "movido" : "colocado")} ({how}): {pos.ToString("F2")} (a {(pos - eye).magnitude:0.00} m de los ojos)");
-            AcquisitionEventManager.Instance?.LogLocalExternal("TURN_PAD", $"{(moved ? "MOVED" : "PLACED")} {how} pos={pos.x:F3};{pos.y:F3};{pos.z:F3}".Replace(',', '.'));
+            _disabled = true;   // hasta que la mano salga del botón
+            _clearSince = -1f;
+            var ci = CultureInfo.InvariantCulture;
+            string where = $"angle={_angle.ToString("F0", ci)} radius={_radius.ToString("F2", ci)} height={_height.ToString("F2", ci)} origin={OriginMode()}";
+            Debug.Log($"{LogPrefix}{(moved ? "movido" : "colocado")} ({how}): {where} (a {(pos - eye).magnitude:0.00} m de los ojos)");
+            AcquisitionEventManager.Instance?.LogLocalExternal("TURN_PAD", $"{(moved ? "MOVED" : "PLACED")} {how} {where} pos={pos.x.ToString("F3", ci)};{pos.y.ToString("F3", ci)};{pos.z.ToString("F3", ci)}");
+            SaveState();
+        }
+
+        /// <summary>Origen del seguimiento XR («Floor» = la altura es desde el piso; «Device» = desde donde partió la cabeza).</summary>
+        private static string OriginMode()
+        {
+            var list = new List<XRInputSubsystem>();
+            SubsystemManager.GetSubsystems(list);
+            foreach (XRInputSubsystem s in list)
+                if (s.running) return s.GetTrackingOriginMode().ToString();
+            return "";
         }
 
         // ---------------- estado para el panel ----------------
@@ -767,6 +1008,8 @@ namespace XRCollab.Measurement.Turns
                    ",\"me\":\"" + (_coordinator != null ? _coordinator.Sync.Me : "") + "\"" +
                    ",\"latestPc\":\"" + (_coordinator != null ? _coordinator.Sync.Ledger.Pc : "") + "\"" +
                    ",\"latestKey\":\"" + (_coordinator != null ? _coordinator.Sync.Ledger.Key.ToString(c) : "0") + "\"" +
+                   ",\"pad\":{\"angle\":" + Math.Round(_angle).ToString(c) + ",\"radius\":" + Math.Round(_radius, 2).ToString(c) +
+                   ",\"height\":" + Math.Round(_height, 2).ToString(c) + ",\"disabled\":" + (_disabled ? "true" : "false") + "}" +
                    ",\"lastUtc\":\"" + _lastUtc + "\"}";
         }
     }

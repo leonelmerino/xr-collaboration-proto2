@@ -28,7 +28,7 @@ namespace XRCollab.Measurement.Recording
     ///   cue   bad|cross|MAL COLOCADO|El bloque quedó torcido     (señal 3D en el visor; «cue clear» la quita)
     ///   snapshot [w=480]                                           (JPG de lo que ve el visor, en "jpg" de la respuesta)
     ///   turn start|end|place|show|hide                             (turno del participante, como si tocara el botón)
-    ///   turn style field|solid|ghost|fade|ring · turn mode pad|gesture|both   (diseño del botón · botón y/o gesto)
+    ///   turn style orb|field|solid|ghost|fade|ring · turn mode pad|gesture|both   (diseño del botón · botón y/o gesto)
     ///   turn latest PC CLAVE                                       (panel: turno más nuevo visto en otro PC; un solo turno a la vez)
     /// </code>
     /// <c>at</c> es una hora UTC ISO 8601: así varios PCs con los relojes sincronizados (NTP) empiezan en el mismo
@@ -43,7 +43,7 @@ namespace XRCollab.Measurement.Recording
         public const int DefaultSnapshotWidth = 480;
         private static readonly Regex LabelPattern = new Regex("^[A-Za-z0-9_-]+$");
         private static readonly string[] TurnArgs = { "start", "end", "place", "show", "hide" };
-        private static readonly Regex TurnArg = new Regex(@"^(start|end|place|show|hide|style (field|solid|ghost|fade|ring)|mode (pad|gesture|both)|latest [a-z0-9_-]{1,64} \d{1,19})$");
+        private static readonly Regex TurnArg = new Regex(@"^(start|end|place|show|hide|style (orb|field|solid|ghost|fade|ring)|mode (pad|gesture|both)|latest [a-z0-9_-]{1,64} \d{1,19})$");
 
         public RecordingCommandKind Kind { get; private set; }
         public string Label { get; private set; } = "";
@@ -107,7 +107,7 @@ namespace XRCollab.Measurement.Recording
                     cmd.Text = Regex.Replace(rest.ToLowerInvariant(), @"\s+", " ");
                     if (!TurnArg.IsMatch(cmd.Text))
                     {
-                        error = $"turn {string.Join("|", TurnArgs)}|style field|solid|ghost|fade|ring|mode pad|gesture|both";
+                        error = $"turn {string.Join("|", TurnArgs)}|style orb|field|solid|ghost|fade|ring|mode pad|gesture|both|latest PC CLAVE";
                         return null;
                     }
                     return cmd;

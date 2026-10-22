@@ -64,6 +64,10 @@ namespace XRCollab.Measurement.Turns
         public string Source = "";
         public string LatestPc = "";
         public long LatestKey;
+        // Dónde vive el botón respecto del participante (TurnFollow): grados, m del eje, altura (m) y el origen del
+        // seguimiento con que se midió la altura («Floor» = desde el piso). PadRadius 0 = nunca se colocó.
+        public float PadAngle, PadRadius, PadHeight;
+        public string PadOrigin = "";
 
         public string Serialize()
         {
@@ -78,6 +82,10 @@ namespace XRCollab.Measurement.Turns
             sb.Append("source=").Append(Source).Append('\n');
             sb.Append("latestPc=").Append(LatestPc).Append('\n');
             sb.Append("latestKey=").Append(LatestKey.ToString(c)).Append('\n');
+            sb.Append("padAngle=").Append(PadAngle.ToString("R", c)).Append('\n');
+            sb.Append("padRadius=").Append(PadRadius.ToString("R", c)).Append('\n');
+            sb.Append("padHeight=").Append(PadHeight.ToString("R", c)).Append('\n');
+            sb.Append("padOrigin=").Append(PadOrigin).Append('\n');
             return sb.ToString();
         }
 
@@ -103,6 +111,10 @@ namespace XRCollab.Measurement.Turns
                     case "source": s.Source = v; break;
                     case "latestPc": s.LatestPc = v; break;
                     case "latestKey": long.TryParse(v, NumberStyles.Integer, c, out s.LatestKey); break;
+                    case "padAngle": float.TryParse(v, NumberStyles.Float, c, out s.PadAngle); break;
+                    case "padRadius": float.TryParse(v, NumberStyles.Float, c, out s.PadRadius); break;
+                    case "padHeight": float.TryParse(v, NumberStyles.Float, c, out s.PadHeight); break;
+                    case "padOrigin": s.PadOrigin = v; break;
                 }
             }
             return s;

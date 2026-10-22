@@ -189,6 +189,110 @@ public static class FeedbackCuePreview
     }
 
     /// <summary>
+    /// Vista previa del botón «orb» (esfera de puntos) con el índice iluminado (un índice sintético que se acerca desde
+    /// abajo a la derecha): quieto, índice a 20 y a 5 cm, adentro manteniendo, el cambio de turno, en turno, mano rara
+    /// adentro («solo con el índice») y recién movido (tenue hasta que la mano sale).
+    ///   Unity.exe -batchmode -quit -projectPath . -executeMethod FeedbackCuePreview.RenderOrb -cue-bg mesa.png -cue-out carpeta
+    /// </summary>
+    public static void RenderOrb()
+    {
+        FeedbackCueAssetsBuilder.Ensure();
+        EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        string bgPath = Arg("-cue-bg");
+        string outDir = Arg("-cue-out") ?? Path.Combine(Path.GetTempPath(), "orb-preview");
+        Directory.CreateDirectory(outDir);
+        var bg = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+        if (bgPath == null || !bg.LoadImage(File.ReadAllBytes(bgPath))) { bg = new Texture2D(Width, Height); Fill(bg, new Color(0.45f, 0.44f, 0.42f)); }
+        Texture2D bgScaled = Scale(bg, Width, Height);
+
+        int layer = FeedbackCueDirector.CueLayer;
+        var cam = new GameObject("PreviewCamera").AddComponent<Camera>();
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = new Color(0f, 0f, 0f, 0f);
+        cam.cullingMask = 1 << layer;
+        cam.allowHDR = false;
+        cam.fieldOfView = 58f;
+        cam.nearClipPlane = 0.05f;
+        cam.transform.SetPositionAndRotation(Vector3.zero, Quaternion.Euler(30f, 0f, 0f));
+        var lighting = new PassthroughLighting();
+        Light key = FeedbackCueDirector.CueLight("CueKeyLight", null);
+        Light fill = FeedbackCueDirector.CueLight("CueFillLight", null);
+        Texture2D frame = BothEyes(bgScaled);
+        for (int i = 0; i < 3; i++) lighting.Sample(frame, cam.transform.rotation);
+        lighting.Apply(key, fill, cam.transform.forward);
+
+        CueAssets assets = CueAssets.Load();
+        if (!assets.Ok || assets.PadOrb == null) { Debug.LogError("[OrbPreview] faltan recursos:" + assets.Missing + (assets.PadOrb == null ? " PadOrb" : "")); return; }
+        var owner = new GameObject("[TurnPadPreview]");
+        var owned = new List<Material>();
+        var v = new XRCollab.Measurement.Turns.TurnPadVisual(owner.transform, assets, layer, owned);
+        float R = XRCollab.Measurement.Turns.TurnPadVisual.OrbRadius;
+        Vector3 eye = Vector3.zero, c = new Vector3(0.10f, -0.24f, 0.40f);
+        v.Appear(new Pose(c, v.RotationFor(c, eye, Vector3.forward, cam.transform.up)));
+        // Índice sintético: llega desde abajo a la derecha (desde la mano del participante) hacia el centro.
+        Vector3 axis = (c - new Vector3(0.24f, -0.46f, 0.18f)).normalized;
+
+        var rt = new RenderTexture(Width, Height, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB) { antiAliasing = 8 };
+        cam.targetTexture = rt;
+        var read = new Texture2D(Width, Height, TextureFormat.RGBA32, false);
+        var sheet = new List<Texture2D>();
+        int n = 0;
+        void Shot(string name)
+        {
+            cam.Render();
+            RenderTexture.active = rt;
+            read.ReadPixels(new Rect(0, 0, Width, Height), 0, 0);
+            read.Apply();
+            RenderTexture.active = null;
+            Texture2D composed = Compose(read, bgScaled);
+            File.WriteAllBytes(Path.Combine(outDir, $"orb{n++:00}_{name}.png"), composed.EncodeToPNG());
+            sheet.Add(composed);
+        }
+        // gap = distancia de la punta a la superficie (m; negativo = adentro). glow < 0: índice apagado.
+        void Finger(float gap, float glow, float tether, float hold)
+        {
+            Vector3 tip = c - axis * (R + gap);
+            Vector3 bend = Vector3.down * 0.006f;
+            v.SetFinger(1, tip - axis * 0.09f + bend * 2f, tip - axis * 0.045f + bend, tip - axis * 0.02f, tip, c - axis * R, glow, tether, hold);
+            v.SetFinger(0, default, default, default, default, default, 0f, 0f, 0f);
+            Vector3 local = v.Root.InverseTransformPoint(tip);
+            float w = Mathf.Clamp01(1f - (gap - 0.02f) / 0.13f);
+            v.HandLocal = new Vector4(local.x, local.y, local.z, glow > 0f ? w : 0f);
+            v.HoldDir = v.Root.InverseTransformDirection(-axis);
+        }
+        void Run(float seconds, float hold = 0f, float near = 0f)
+        {
+            for (float t = 0f; t < seconds; t += 1f / 60f) v.Tick(1f / 60f, hold, 0f, near > 0f, near);
+        }
+
+        v.SetText("INICIAR TURNO", "toca con el índice");
+        Finger(0.5f, 0f, 0f, 0f);
+        Run(1.2f); Shot("quieta");
+        Finger(0.20f, 0.45f, 0.25f, 0f);
+        Run(0.4f, 0f, 0.1f); Shot("indice_20cm");
+        Finger(0.05f, 0.95f, 0.85f, 0f);
+        Run(0.4f, 0f, 0.9f); Shot("indice_5cm");
+        Finger(-0.012f, 1f, 0f, 0.55f);
+        Run(0.05f, 0.55f, 1f); Shot("adentro_mantener_55");
+        v.SetTurnState(true, true);
+        v.SetText("TERMINAR TURNO", "turno 1 · 0:00");
+        Run(0.12f, 0f, 1f); Shot("cambio_0.12");
+        Finger(0.5f, 0f, 0f, 0f);
+        v.SetText("TERMINAR TURNO", "turno 1 · 0:04");
+        Run(0.8f); Shot("en_turno");
+        v.SetText("TERMINAR TURNO", "solo con el índice");
+        Finger(-0.01f, 0.35f, 0f, 0f);
+        Run(0.4f, 0f, 1f); Shot("mano_rara_adentro");
+        v.Dim = 1f;
+        v.SetText("TERMINAR TURNO", "retira la mano");
+        Finger(-0.005f, 0f, 0f, 0f);
+        Run(0.6f, 0f, 1f); Shot("recien_movida");
+        File.WriteAllBytes(Path.Combine(outDir, "orb-sheet.png"), Sheet(sheet, 4).EncodeToPNG());
+        foreach (Material m in owned) UnityEngine.Object.DestroyImmediate(m);
+        Debug.Log($"[OrbPreview] listo: {outDir}");
+    }
+
+    /// <summary>
     /// Vista previa del botón «field» (campo de puntos gaussiano): quieto, dedo bajando (12 → 1 cm), mantener y la onda
     /// del cambio de turno, con una esfera blanca donde está la punta del dedo.
     ///   Unity.exe -batchmode -quit -projectPath . -executeMethod FeedbackCuePreview.RenderField -cue-bg sala.jpg -cue-out carpeta

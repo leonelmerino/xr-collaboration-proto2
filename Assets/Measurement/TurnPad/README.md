@@ -1,9 +1,26 @@
 # TurnPad: the participant marks their own turn
 
-A 9 cm disc fixed in the room, always **horizontal (face up)**, like a button lying on the table (passthrough
-measurement mode only). The label lies flat beyond the disc, readable from where the participant stands. The
-participant presses it from above with the tip of the index finger (hand tracking, no controllers) to mark
-**turn start**, and again for **turn end**.
+Since 2026-10-22 the button is a **7 cm sphere of light** (style `orb`) that **goes with the participant**. They
+activate it by putting the **tip of the index finger** into it (hand tracking, no controllers) to mark **turn start**,
+and again for **turn end** (passthrough measurement mode only). The older flat-disc designs (`field`, `solid`,
+`ghost`, `fade`, `ring`) are still available with `turn style X`.
+
+## Sphere and lit index finger (`orb`, 2026-10-22)
+On the first day with participants, people put odd hand shapes on the flat disc (palm, fist, pinch). They also
+didn't get where it was: it stayed fixed in the room, so it ended up behind the tower or out of reach.
+- **Sphere** (`Shaders/PadOrb`, one draw call): ~1000 light dots on a Fibonacci shell plus two dimmer inner shells
+  that turn the other way. It breathes, its back face is dimmer and its silhouette is brighter, so it reads as a
+  volume on any background. As the index comes close, the dots facing the fingertip stretch toward it. With the tip
+  inside, they open around it in a white hole. **Hold 0.45 s**: light fills the sphere from where the finger went in,
+  and a progress ring around it (facing the eyes) closes. The turn change sends a wave across it and the colour goes
+  green → orange. Title above and status below, always facing the eyes.
+- **Only the index:** the index tip must enter from outside with the index **extended**. If another fingertip or the
+  palm is inside too (fist, pinch, open hand), it doesn't count and the subtitle says **«SOLO CON EL ÍNDICE»**.
+- **Lit index finger** (`Shaders/FingerGlow`, one draw call per hand): from 30 cm away the index finger lights up.
+  It gets a soft sheath of light along the finger, dots that spiral up from the knuckle to the tip, a pulsing glow
+  and a crisp ring at the tip (the ring tightens while holding), and from 18 cm a stream of dots flowing from the
+  tip into the sphere. It only glows fully with the index extended (a fist gets a faint 35 % glow and no stream), so
+  it teaches which finger to use.
 
 ## Look and motion (`TurnPadVisual`)
 Sober and short, with no bounce:
@@ -15,7 +32,7 @@ Sober and short, with no bounce:
   leaves and one where it lands.
 - **Pinch:** a progress ring at the fingertips, which closes onto them when it completes.
 
-Batch preview with no headset: `FeedbackCuePreview.RenderPad` (Assets/Editor).
+Batch preview with no headset: `FeedbackCuePreview.RenderOrb` (sphere + lit finger), `RenderPad` / `RenderField` (discs), in Assets/Editor.
 
 ## Gesture (why it doesn't fire by accident)
 - Only the **index fingertip** counts, and only with the index **extended** (pointing, ≤ 50° bend).
@@ -57,24 +74,37 @@ marks.csv), so the next player only has to press their own button.
   carries `next_start_utc` = when the other turn really started.
 - No host and no panel: each PC keeps its local turn, and everything reconciles when either comes back.
 
-## Placement
-- **Automatic** the first time the headset is worn (FOCUSED 3 s, looking roughly level): 40 cm ahead, 24 cm to
-  the side of the hand (`-turnpad-side left|right`, default right), 40 cm below the eyes, facing the eyes.
-- **`turn place`** (panel button «Colocar»): at the tip of the participant's index finger (they point where they
-  want it), or the default spot if no hand is tracked. It stays fixed in the room after that.
-- **Pinch to move** (participant, no operator needed): an "OK" pinch (thumb tip on index tip, middle/ring/little
-  extended) held still for 0.8 s moves the disc to the pinch point. A blue ring at the fingers shrinks while holding.
-  To avoid moving it while handling blocks: the pinch must close from an open hand (> 4.5 cm apart within 0.6 s),
-  the other three fingers must stay straight (≤ 50° bend), and the pinch must stay within 3 cm. Thresholds follow
-  Ultraleap's pinch detector (on 2.2 cm / off 3.5 cm). `-noturnpad-pinch` disables it. Logged as `TURN_PAD MOVED`.
+## Placement: it goes with the participant (`Core/TurnFollow.cs`, 2026-10-22)
+The button lives on a circle around the participant's vertical axis. It sits at an **angle** from where their body
+faces, at a **distance** from that axis, and at a **height** from the floor (tracking-space y; "Floor" origin =
+from the floor). It is not a 1:1 head follow:
+- **Small moves don't move it:** leaning over the tower, glancing to the side. The dead zone is 22 cm and 45°, and
+  it also has to last 0.4 s / 0.8 s.
+- **Real moves:** walking or turning away. The axis then follows the head with a critically damped spring (no
+  bounce, no overshoot, < 3 cm per frame) until it is within 3 cm / 3°, then stops. The height never follows head
+  bobbing.
+- **Frozen** while any hand is within 25 cm of the button (they are reaching for it), while holding, pinching or
+  while the button is travelling.
+- **Default:** 31° to the side of the hand (`-turnpad-side left|right`), 45 cm from the axis, 40 cm below the eyes,
+  placed automatically the first time the headset is worn (FOCUSED 3 s, looking roughly level).
+- **Pinch to move** (participant, no operator): an "OK" pinch (thumb tip on index tip, middle/ring/little extended)
+  held still 0.8 s. The pinch point picks the **height, the angle and the distance** (distance clamped to
+  22–65 cm). The user's axis is taken from the head at that moment; the body front stays as it was. The button
+  travels there and then stays **dim and disabled until the whole hand is > 10 cm from it for 0.3 s**; the subtitle
+  says «RETIRA LA MANO». False-trigger guards are as before: the pinch must close from an open hand within 0.6 s,
+  the other three fingers straight, still within 3 cm. `-noturnpad-pinch` disables it.
+- **`turn place`** (panel «Colocar»): at the participant's index tip, or the default spot.
+- The chosen angle/distance (and the height, if the tracking origin is the floor) are saved in `turn-state.txt` and
+  reused after an app restart. Logged as `TURN_PAD PLACED|MOVED … angle= radius= height= origin=`. The status shows
+  `turn.pad {angle, radius, height, disabled}`.
 
 ## Control channel (127.0.0.1:47811)
 `turn start|end` (operator fallback, source `panel`), `turn place`, `turn show|hide`. `-noturnpad` disables it.
 
 ## Design variants and turn gesture (2026-10-15)
 Without depth on VIVE PC streaming, the hand cut-out trails behind, so the hand can look like it is *under* the disc.
-- `turn style field|solid|ghost|fade|ring` (start: `-turnpad-style X`):
-  - **field** (default since 2026-10-15): no disc at all. A thin glowing outline plus ~450 light dots that flow along the
+- `turn style orb|field|solid|ghost|fade|ring` (start: `-turnpad-style X`; `orb` is the default since 2026-10-22):
+  - **field** (default from 2026-10-15 to 2026-10-22): no disc at all. A thin glowing outline plus ~450 light dots that flow along the
     field lines of a magnet in the pad centre (rise from the middle, arc up, land on the rim), all computed in one
     vertex shader (`Shaders/PadField.shader`, one draw call, additive light). Hand near: dots speed up and are pulled
     toward the index tip; holding: they collapse onto the outline (the ring charges); toggle: flash. Nothing solid,

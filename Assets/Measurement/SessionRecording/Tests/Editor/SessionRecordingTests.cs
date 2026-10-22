@@ -178,6 +178,7 @@ namespace XRCollab.Measurement.Recording.Tests
             Assert.AreEqual("place", RecordingCommand.Parse("turn place", out _).Text);
             Assert.AreEqual("style ghost", RecordingCommand.Parse("turn style  Ghost", out _).Text);
             Assert.AreEqual("style field", RecordingCommand.Parse("turn style field", out _).Text);
+            Assert.AreEqual("style orb", RecordingCommand.Parse("turn style Orb", out _).Text);
             Assert.AreEqual("mode gesture", RecordingCommand.Parse("turn mode gesture", out _).Text);
             Assert.AreEqual("latest stimulus2 638966412345678901", RecordingCommand.Parse("turn latest STIMULUS2  638966412345678901", out _).Text);
         }

@@ -48,6 +48,7 @@ namespace XRCollab.Measurement.Turns.Tests
             {
                 Day = "2026-10-22", Number = 7, InTurn = true, StartUtcTicks = T0, LastDuration = 12.5,
                 LastUtc = "2026-10-22T18:00:00.000Z", Source = "hand_right", LatestPc = "STIMULUS2", LatestKey = T0 + 3,
+                PadAngle = -31.5f, PadRadius = 0.45f, PadHeight = 0.92f, PadOrigin = "Floor",
             };
             TurnSnapshot r = TurnSnapshot.Parse(s.Serialize().Replace("\n", "\r\n") + "garbage\nn=x\n");
             Assert.AreEqual(s.Serialize(), TurnSnapshot.Parse(s.Serialize()).Serialize());
@@ -55,6 +56,11 @@ namespace XRCollab.Measurement.Turns.Tests
             Assert.AreEqual("STIMULUS2", r.LatestPc);
             Assert.AreEqual(T0 + 3, r.LatestKey);
             Assert.AreEqual("hand_right", r.Source);
+            Assert.AreEqual(-31.5f, r.PadAngle);
+            Assert.AreEqual(0.45f, r.PadRadius);
+            Assert.AreEqual(0.92f, r.PadHeight);
+            Assert.AreEqual("Floor", r.PadOrigin);
+            Assert.AreEqual(0f, TurnSnapshot.Parse("n=3").PadRadius, "sin ubicación guardada");
 
             Assert.IsTrue(s.CanResume("2026-10-22", T0 + TimeSpan.FromMinutes(5).Ticks));
             Assert.IsFalse(s.CanResume("2026-10-23", T0 + TimeSpan.FromMinutes(5).Ticks));   // otro día
