@@ -1,0 +1,14 @@
+{
+    "name": "XRCollab.Measurement.Turns",
+    "rootNamespace": "XRCollab.Measurement.Turns",
+    "references": [],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": true
+}

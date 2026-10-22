@@ -34,6 +34,29 @@ Each change calls `AcquisitionEventManager.EmitInteractionEvent("TURN_START" | "
 It also writes a mark in the video's `marks.csv` (`TURN_START turno=3 source=hand_right`), and reports
 `"turn":{visible,placed,state,n,secs,hover,source}` in the app's status (session panel).
 
+## One turn at a time across PCs (`TurnCoordinator`, 2026-10-22)
+Only one participant can hold the turn. When someone starts a turn (disc, gesture or panel `turn start`), the turn in
+progress on any other PC ends by itself: `TURN_END` with `source=handover|next=<PC>` on that PC (events.csv, BioLab,
+marks.csv), so the next player only has to press their own button.
+- **Rule (`Core/TurnLedger.cs`, `Core/TurnSync.cs`, no Unity, EditMode tests):** every PC keeps the "newest turn known"
+  (PC, key). A turn start gets key = max(UTC ticks, newest known key + 1); the bigger key wins (tie: PC name). So a
+  press made after another one this PC knew about always wins, even with a wrong clock. Two presses that didn't know
+  about each other (simultaneous, or one PC cut off) are ordered by the clocks (ntp.uc.cl, ms apart): the later wins.
+  Merging is taking the max, so order, duplicates and path don't matter: everyone converges to the same owner.
+- **Network (`TurnCoordinator`):** the Netcode link host↔clients, one named message `XRC.TurnLatest` (PC, key).
+  - A client sends the host its newest turn when it starts a turn, when it (re)connects, and whenever the host knows
+    something older than it does. The host merges and, if it changed, tells everyone.
+  - The host repeats it every 2 s, so a lost message, a reconnecting client or a restarted app catches up by itself.
+- **Panel backup (`turn_guard_loop` in tools/lab-dashboard):** if an app still has an older "newest turn" for 2 checks in
+  a row (host down or restarting, client cut off from the host), the panel sends it `turn latest PC KEY` over the
+  control channel. That works without the host. The app status shows `turn.me`, `turn.latestPc`, `turn.latestKey`.
+- **App restarts (`turn-state.txt` in persistentDataPath):** the turn in progress, the turn number (per day) and the
+  newest known turn are saved on every change (tmp + replace). On startup a turn that began < 30 min ago is resumed
+  (`TURN_PAD RESUMED` in events.csv, no new TURN_START); an older one is not (`TURN_PAD STALE_NOT_RESUMED`). If
+  someone else took the turn meanwhile, the resumed turn ends as soon as the app hears about it, and the TURN_END
+  carries `next_start_utc` = when the other turn really started.
+- No host and no panel: each PC keeps its local turn, and everything reconciles when either comes back.
+
 ## Placement
 - **Automatic** the first time the headset is worn (FOCUSED 3 s, looking roughly level): 40 cm ahead, 24 cm to
   the side of the hand (`-turnpad-side left|right`, default right), 40 cm below the eyes, facing the eyes.

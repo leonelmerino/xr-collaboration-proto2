@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using UnityEngine;
 using UnityEngine.XR.Hands;
 using XRCollab.Measurement.Cues;
@@ -97,6 +98,8 @@ namespace XRCollab.Measurement.Turns
         public float Progress => _hold / HoldSeconds;
         public double TurnSeconds => InTurn ? Time.realtimeSinceStartupAsDouble - _turnStart : _lastDuration;
         public string LastSource { get; private set; } = "";
+        /// <summary>Hora UTC (ticks) del inicio del turno en curso o del último: TurnCoordinator compara con esto.</summary>
+        public long TurnStartUtcTicks { get; private set; }
 
         private bool _rightSide = true;
         private TurnPadVisual _visual;
@@ -111,6 +114,7 @@ namespace XRCollab.Measurement.Turns
         private string _lastUtc = "";   // hora UTC del último cambio (panel: línea de tiempo exacta)
         private int _shownSecond = -1;
         private string _toggleSource = "";
+        private TurnCoordinator _coordinator;
 
         private sealed class Pinch { public bool Active; public float Since, LastOpen = -10f; public Vector3 Anchor; }
         private readonly Pinch _pinchL = new Pinch(), _pinchR = new Pinch();
@@ -148,6 +152,8 @@ namespace XRCollab.Measurement.Turns
             _root.gameObject.SetActive(false);
             RefreshText();
             AppControlHooks.Turn = HandleCommand;
+            _coordinator = gameObject.AddComponent<TurnCoordinator>();
+            LoadState();
             if (style != null) HandleCommand("style " + style);
             if (mode != null) HandleCommand("mode " + mode);
             Debug.Log($"{LogPrefix}listo (lado {(_rightSide ? "derecho" : "izquierdo")}); se coloca solo al ponerse el visor, con «turn place» o con la pinza");
@@ -184,6 +190,14 @@ namespace XRCollab.Measurement.Turns
                 AcquisitionEventManager.Instance?.LogLocalExternal("TURN_PAD", "MODE " + m.ToString().ToUpperInvariant());
                 return null;
             }
+            if (a.StartsWith("latest "))
+            {
+                // Respaldo del panel: el turno más nuevo que vio en otro PC (sirve aunque el host esté caído).
+                string[] p = a.Split(' ');
+                if (p.Length != 3 || !long.TryParse(p[2], NumberStyles.None, CultureInfo.InvariantCulture, out long key)) return "turn latest PC CLAVE";
+                _coordinator.Sync.OnPanel(p[1].ToUpperInvariant(), key);
+                return null;
+            }
             switch (a)
             {
                 case "start":
@@ -204,7 +218,7 @@ namespace XRCollab.Measurement.Turns
                     Visible = false;
                     return null;
                 default:
-                    return "turn start|end|place|show|hide|style field|solid|ghost|fade|ring|mode pad|gesture|both";
+                    return "turn start|end|place|show|hide|style field|solid|ghost|fade|ring|mode pad|gesture|both|latest PC CLAVE";
             }
         }
 
@@ -541,7 +555,21 @@ namespace XRCollab.Measurement.Turns
 
         // ---------------- turno ----------------
 
-        private void Toggle(string source)
+        /// <summary>
+        /// Otro PC inició un turno más nuevo (TurnCoordinator): termina el de este PC, con source=handover. Si el aviso
+        /// llegó tarde (red cortada, app reiniciada), next_start_utc dice cuándo empezó de verdad el turno del otro.
+        /// </summary>
+        public void EndForHandover(string nextPc, long nextKey)
+        {
+            if (!InTurn) return;
+            _hold = 0f;
+            Toggle("handover", $"|next={nextPc}" + (nextKey > 0 ? $"|next_start_utc={FormatTicks(nextKey)}" : ""));
+        }
+
+        private static string FormatTicks(long utcTicks) =>
+            utcTicks > 0 && utcTicks < DateTime.MaxValue.Ticks ? RecordingCommand.FormatUtc(new DateTime(utcTicks, DateTimeKind.Utc)) : "?";
+
+        private void Toggle(string source, string extraDetail = "")
         {
             double t = Time.realtimeSinceStartupAsDouble;
             _lastUtc = RecordingCommand.FormatUtc(PreciseClock.UtcNow);
@@ -554,6 +582,7 @@ namespace XRCollab.Measurement.Turns
                 InTurn = true;
                 TurnNumber++;
                 _turnStart = t;
+                TurnStartUtcTicks = PreciseClock.UtcNow.Ticks;
                 evt = EventStart;
                 detail = $"{TurnNumber}|source={source}";
             }
@@ -562,7 +591,7 @@ namespace XRCollab.Measurement.Turns
                 InTurn = false;
                 _lastDuration = t - _turnStart;
                 evt = EventEnd;
-                detail = $"{TurnNumber}|source={source}|duration_s={_lastDuration.ToString("F3", CultureInfo.InvariantCulture)}";
+                detail = $"{TurnNumber}|source={source}|duration_s={_lastDuration.ToString("F3", CultureInfo.InvariantCulture)}{extraDetail}";
             }
 
             // Camino oficial: events.csv + BioLab (UDP) con hora del host. Si la sesión de adquisición aún no partió,
@@ -576,6 +605,85 @@ namespace XRCollab.Measurement.Turns
 
             _visual.SetTurnState(InTurn, Application.isPlaying);
             RefreshText();
+            // Un solo turno a la vez: los demás PCs se enteran (host o panel) y el turno en curso de otro termina.
+            if (InTurn) _coordinator.Sync.StartTurn(TurnStartUtcTicks);
+            SaveState();
+        }
+
+        // ---------------- estado en disco (reinicios de la app) ----------------
+
+        private static string StatePath => Path.Combine(Application.persistentDataPath, "turn-state.txt");
+        private static string Today => DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+        /// <summary>
+        /// Guarda turno en curso, número de turno y turno más nuevo conocido, para que un reinicio de la app (cierre,
+        /// Watch-LabApps, Restart-LabStation) no los pierda. Se escribe a un .tmp y se reemplaza (no queda a medias).
+        /// </summary>
+        public void SaveState()
+        {
+            TurnLedger latest = _coordinator.Sync.Ledger;
+            var s = new TurnSnapshot
+            {
+                Day = Today, Number = TurnNumber, InTurn = InTurn, StartUtcTicks = InTurn ? TurnStartUtcTicks : 0,
+                LastDuration = _lastDuration, LastUtc = _lastUtc, Source = LastSource, LatestPc = latest.Pc, LatestKey = latest.Key,
+            };
+            string tmp = StatePath + ".tmp";
+            try
+            {
+                File.WriteAllText(tmp, s.Serialize());
+                if (File.Exists(StatePath)) File.Replace(tmp, StatePath, null);
+                else File.Move(tmp, StatePath);
+            }
+            catch (Exception e)
+            {
+                try { File.Copy(tmp, StatePath, true); }
+                catch { Debug.LogWarning($"{LogPrefix}no se pudo guardar {StatePath}: {e.Message}"); }
+            }
+        }
+
+        /// <summary>
+        /// Al abrir la app: el número de turno sigue si es del mismo día, y un turno en curso se retoma si empezó hace
+        /// menos de <see cref="TurnSnapshot.MaxResumeAge"/> (si no, queda anotado en events.csv y no se retoma). Si
+        /// mientras la app estaba cerrada otro PC tomó el turno, termina en cuanto se entera (handover).
+        /// </summary>
+        private void LoadState()
+        {
+            TurnSnapshot s;
+            try
+            {
+                if (!File.Exists(StatePath)) return;
+                s = TurnSnapshot.Parse(File.ReadAllText(StatePath));
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"{LogPrefix}no se pudo leer {StatePath}: {e.Message}");
+                return;
+            }
+            long now = PreciseClock.UtcNow.Ticks;
+            if (s.SameDay(Today))
+            {
+                TurnNumber = s.Number;
+                _lastDuration = s.LastDuration;
+                _lastUtc = s.LastUtc;
+                LastSource = s.Source;
+            }
+            if (s.CanResume(Today, now))
+            {
+                InTurn = true;
+                TurnStartUtcTicks = s.StartUtcTicks;
+                _turnStart = Time.realtimeSinceStartupAsDouble - (now - s.StartUtcTicks) / (double)TimeSpan.TicksPerSecond;
+                Debug.Log($"{LogPrefix}app reiniciada en pleno turno {TurnNumber} (empezó {FormatTicks(s.StartUtcTicks)}): se retoma");
+                AcquisitionEventManager.Instance?.LogLocalExternal("TURN_PAD", $"RESUMED turn={TurnNumber} start_utc={FormatTicks(s.StartUtcTicks)}");
+            }
+            else if (s.InTurn)
+            {
+                Debug.LogWarning($"{LogPrefix}turno {s.Number} guardado en curso pero viejo (empezó {FormatTicks(s.StartUtcTicks)}): no se retoma");
+                AcquisitionEventManager.Instance?.LogLocalExternal("TURN_PAD", $"STALE_NOT_RESUMED turn={s.Number} start_utc={FormatTicks(s.StartUtcTicks)}");
+            }
+            _visual.SetTurnState(InTurn, false);
+            RefreshText();
+            _coordinator.Sync.Restore(s.LatestPc, s.LatestKey);
+            SaveState();
         }
 
         private void RefreshText()
@@ -656,6 +764,9 @@ namespace XRCollab.Measurement.Turns
                    ",\"source\":\"" + LastSource + "\"" +
                    ",\"style\":\"" + Style.ToString().ToLowerInvariant() + "\"" +
                    ",\"mode\":\"" + Mode.ToString().ToLowerInvariant() + "\"" +
+                   ",\"me\":\"" + (_coordinator != null ? _coordinator.Sync.Me : "") + "\"" +
+                   ",\"latestPc\":\"" + (_coordinator != null ? _coordinator.Sync.Ledger.Pc : "") + "\"" +
+                   ",\"latestKey\":\"" + (_coordinator != null ? _coordinator.Sync.Ledger.Key.ToString(c) : "0") + "\"" +
                    ",\"lastUtc\":\"" + _lastUtc + "\"}";
         }
     }

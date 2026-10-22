@@ -179,6 +179,7 @@ namespace XRCollab.Measurement.Recording.Tests
             Assert.AreEqual("style ghost", RecordingCommand.Parse("turn style  Ghost", out _).Text);
             Assert.AreEqual("style field", RecordingCommand.Parse("turn style field", out _).Text);
             Assert.AreEqual("mode gesture", RecordingCommand.Parse("turn mode gesture", out _).Text);
+            Assert.AreEqual("latest stimulus2 638966412345678901", RecordingCommand.Parse("turn latest STIMULUS2  638966412345678901", out _).Text);
         }
 
         [TestCase("cue")]
@@ -187,6 +188,9 @@ namespace XRCollab.Measurement.Recording.Tests
         [TestCase("turn next")]
         [TestCase("turn style glass")]
         [TestCase("turn mode")]
+        [TestCase("turn latest STIMULUS2")]
+        [TestCase("turn latest STIMULUS2 12x")]
+        [TestCase("turn latest A;B 12")]
         [TestCase("snapshot w=10")]
         [TestCase("snapshot big")]
         [TestCase("record")]
