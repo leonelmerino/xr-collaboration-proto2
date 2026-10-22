@@ -204,6 +204,7 @@ namespace XRCollab.Measurement.Cues
             }
             XRCollab.Measurement.Turns.TurnPad pad = XRCollab.Measurement.Turns.TurnPad.Instance;
             Prop(sb, "turn", pad != null ? pad.HealthJson() : "null");
+            Prop(sb, "biolab", AcquisitionEventManager.Bridge != null ? AcquisitionEventManager.Bridge.HealthJson() : "null");
             if (sb[sb.Length - 1] == ',') sb.Length--;
             sb.Append('}');
             return sb.ToString();

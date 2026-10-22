@@ -33,6 +33,13 @@ public class AcquisitionEventManager : MonoBehaviour
     private BioLabUdpClient udpClient;
     private Coroutine heartbeatCoroutine;
 
+    /// <summary>
+    /// Puente BioLab en ACQUISITION (-biolab-bridge «ip;ip;…»): por ahí llegan a BioLab los eventos de interacción
+    /// (TURN_START/TURN_END) desde 2026-10-22, con confirmación. null = sin puente (solo el UDP directo de antes).
+    /// </summary>
+    public static BioLabBridgeClient Bridge { get; private set; }
+    private string lastBridgeReply = "";
+
     private void Awake()
     {
         if (Instance == null) Instance = this;
@@ -105,8 +112,22 @@ public class AcquisitionEventManager : MonoBehaviour
         else if (sessionStarted) EndExperimentalSession();
     }
 
+    // Lo que contestó BioLab (vía el puente) queda en events.csv; un cambio de OK a error también en el log.
+    private void Update()
+    {
+        if (Bridge == null || Instance != this) return;
+        while (Bridge.TryTakeResult(out string[] r))
+        {
+            LogLocal("BIOLAB_RESULT", $"{r[0]}|{r[1]}", r[2]);
+            bool ok = r[2] == "OK" || r[2] == "NOT_FORWARDED";
+            if (!ok && r[2] != lastBridgeReply) Debug.LogWarning($"[AcquisitionEventManager] BioLab no tomó {r[0]}: {r[2]}");
+            lastBridgeReply = r[2];
+        }
+    }
+
     private void OnDestroy()
     {
+        if (Instance == this && Bridge != null) { Bridge.Dispose(); Bridge = null; }
         if (Instance == this) Instance = null;
         if (XRCollab.Measurement.Recording.AppControlHooks.AcquisitionSession == OnRecordingSession)
             XRCollab.Measurement.Recording.AppControlHooks.AcquisitionSession = null;
@@ -117,6 +138,7 @@ public class AcquisitionEventManager : MonoBehaviour
     private void OnApplicationQuit()
     {
         quitting = true;
+        Bridge?.Flush(800);   // que el último TURN_END alcance a llegar
         if (!sessionStarted || udpClient == null) return;
         try
         {
@@ -238,6 +260,9 @@ public class AcquisitionEventManager : MonoBehaviour
     /// </summary>
     public void EmitInteractionEvent(string eventLabel, string detailKey = null, string detailValue = null)
     {
+        // Al puente siempre (también entre grabaciones del panel): BioLab decide si está grabando; el puente lo registra.
+        Bridge?.Send(eventLabel, detailValue ?? "", XRCollab.Measurement.Recording.RecordingCommand.FormatUtc(XRCollab.Measurement.Recording.PreciseClock.UtcNow));
+
         if (!sessionStarted)
         {
             LogLocal("INTERACTION_REJECTED", eventLabel, "Session not started");
@@ -498,6 +523,11 @@ public class AcquisitionEventManager : MonoBehaviour
 
         Debug.Log($"[AcquisitionEventManager] Forwarding event: {encoded}");
 
+        // Con puente, los eventos van por él (EmitInteractionEvent); el UDP directo mandaba este payload largo, que
+        // BioLab rechaza («invalid characters»).
+        if (Bridge != null)
+            yield break;
+
         if (!acquisitionReachable)
         {
             Debug.Log($"[AcquisitionEventManager] Acquisition unreachable. Event kept local: {encoded}");
@@ -526,6 +556,15 @@ public class AcquisitionEventManager : MonoBehaviour
     {
         // En el visor (Android) los mismos nombres llegan como extras del intent (am start --es acq-ip ...).
         string Arg(string name) => XRCollab.Measurement.Recording.LaunchArgs.Get(name);
+
+        string bridge = Arg("-biolab-bridge") ?? System.Environment.GetEnvironmentVariable("XRCOLLAB_BIOLAB_BRIDGE");
+        if (!string.IsNullOrWhiteSpace(bridge) && Bridge == null && Instance == this)
+        {
+            string node = Arg("-acq-node") ?? System.Environment.MachineName;
+            string pc = node.StartsWith("VR_", System.StringComparison.OrdinalIgnoreCase) ? node.Substring(3) : node;
+            Bridge = new BioLabBridgeClient(bridge, pc);
+            Debug.Log($"[AcquisitionEventManager] Puente BioLab: {Bridge.Targets} (pc={pc})");
+        }
 
         // Sin argumentos (Play en el Editor): variables de entorno XRCOLLAB_ACQ_IP / XRCOLLAB_ROLE de cada PC.
         string ip = Arg("-acq-ip") ?? System.Environment.GetEnvironmentVariable("XRCOLLAB_ACQ_IP");
