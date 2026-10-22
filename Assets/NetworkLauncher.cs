@@ -73,7 +73,7 @@ public class NetworkLauncher : MonoBehaviour
         yield return new WaitForSeconds(1f);   // NetworkManager y LanDiscoveryService ya inicializados
         Debug.Log($"[NetworkLauncher] -role {role} desde la línea de comandos.");
         if (role == "host") StartHost();
-        else if (role == "client") TryStartClient();
+        else if (role == "client") { TryStartClient(); StartCoroutine(ClientRejoinLoop()); }
         else Debug.LogWarning($"[NetworkLauncher] -role desconocido: {role} (usar host o client)");
 #endif
     }
@@ -220,7 +220,50 @@ public class NetworkLauncher : MonoBehaviour
         if (nm == null || nm.IsListening) return;
 
         if (_connectCoroutine != null) StopCoroutine(_connectCoroutine);
-        _connectCoroutine = StartCoroutine(ConnectClientCoroutine());
+        _clientSearching = false;
+        _connectCoroutine = StartCoroutine(ConnectClientGuarded());
+    }
+
+    private bool _clientSearching;   // discovery en curso (hasta discoveryWaitSec): el bucle de abajo no lo interrumpe
+
+    private IEnumerator ConnectClientGuarded()
+    {
+        _clientSearching = true;
+        try { yield return ConnectClientCoroutine(); }
+        finally { _clientSearching = false; }
+    }
+
+    private const float ClientRejoinCheckSec = 5f;
+    private const float ClientConnectTimeoutSec = 20f;
+
+    /// <summary>
+    /// PC con -role client: si no está conectado al host, lo vuelve a buscar solo. Antes buscaba una sola vez al
+    /// arrancar: si el host se reiniciaba (o arrancaba después), el cliente quedaba solo y Watch-LabApps reiniciaba la app
+    /// de los clientes en plena grabación (2026-10-22). Un intento colgado más de 20 s se corta y se reintenta.
+    /// </summary>
+    private IEnumerator ClientRejoinLoop()
+    {
+        var wait = new WaitForSecondsRealtime(ClientRejoinCheckSec);
+        float pendingSince = -1f;
+        while (true)
+        {
+            yield return wait;
+            var nm = NetworkManager.Singleton;
+            if (nm == null || _clientSearching) continue;
+            if (nm.IsConnectedClient) { pendingSince = -1f; continue; }
+            if (nm.IsListening)
+            {
+                if (pendingSince < 0f) pendingSince = Time.unscaledTime;
+                if (Time.unscaledTime - pendingSince < ClientConnectTimeoutSec) continue;
+                Debug.LogWarning($"[NetworkLauncher] Cliente sin conectar hace {ClientConnectTimeoutSec:0} s: se corta el intento y se busca el host de nuevo.");
+                nm.Shutdown();
+                pendingSince = -1f;
+                continue;
+            }
+            pendingSince = -1f;
+            Debug.Log("[NetworkLauncher] Cliente sin host (¿se reinició el host?): buscándolo de nuevo.");
+            TryStartClient();
+        }
     }
 
     private IEnumerator ConnectClientCoroutine()
