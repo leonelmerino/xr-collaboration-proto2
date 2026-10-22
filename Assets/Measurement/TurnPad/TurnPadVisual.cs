@@ -19,8 +19,8 @@ namespace XRCollab.Measurement.Turns
     /// donde está el participante.
     ///
     /// «orb» (por defecto desde 2026-10-22): una esfera de luz de puntos (Shaders/PadOrb) que se activa metiendo la punta
-    /// del índice; el texto flota arriba y abajo de la esfera, de cara al participante, y el índice que se acerca se
-    /// ilumina (Shaders/FingerGlow). Recién movida queda tenue (<see cref="Dim"/>) hasta que la mano sale.
+    /// del índice; el texto flota arriba y abajo de la esfera, de cara al participante. Recién movida queda tenue
+    /// (<see cref="Dim"/>) hasta que la mano sale.
     /// </summary>
     public sealed class TurnPadVisual
     {
@@ -80,9 +80,6 @@ namespace XRCollab.Measurement.Turns
         private readonly MeshRenderer _orb;
         private readonly MaterialPropertyBlock _orbBlock = new MaterialPropertyBlock();
         private const int OrbDots = 1000, OrbCores = 3;
-        private readonly MeshRenderer[] _fingers = new MeshRenderer[2];
-        private readonly MaterialPropertyBlock[] _fingerBlocks = { new MaterialPropertyBlock(), new MaterialPropertyBlock() };
-        private const int FingerDots = 220, TipGlows = 5, TetherDots = 80, Sheaths = 14;
         private const int FieldDots = 1100;
         public const float FieldRadius = 0.075f;   // radio del campo de puntos (m)
         private PadStyle _appliedStyle = (PadStyle)(-1);
@@ -117,8 +114,6 @@ namespace XRCollab.Measurement.Turns
             if (assets.PadField != null) _field = Field("Field", _body, assets.PadField, layer, owned);
             if (assets.PadOrb != null) _orb = Orb("Orb", _body, assets.PadOrb, layer, owned);
             else Style = PadStyle.Field;
-            if (assets.FingerGlow != null)
-                for (int i = 0; i < 2; i++) _fingers[i] = Finger(i == 0 ? "FingerGlowLeft" : "FingerGlowRight", owner, assets.FingerGlow, layer, owned);
 
             // Ondas en el mundo (no giran con el disco).
             _rippleA = new PadArc("RippleFrom", owner, assets.Alpha, layer, owned);
@@ -191,36 +186,6 @@ namespace XRCollab.Measurement.Turns
             if (Moving) return;
             Quaternion target = RotationFor(pos, eye, fallbackForward, headUp);
             Root.SetPositionAndRotation(pos, Quaternion.Slerp(Root.rotation, target, 1f - Mathf.Exp(-dt * 6f)));
-        }
-
-        /// <summary>
-        /// Índice iluminado de una mano (0 izquierda, 1 derecha): articulaciones del nudillo a la punta (mundo), el punto
-        /// de la esfera más cercano, brillo 0..1 y el hilo hacia la esfera 0..1. glow = 0 lo apaga.
-        /// </summary>
-        public void SetFinger(int hand, Vector3 knuckle, Vector3 mid, Vector3 distal, Vector3 tip, Vector3 orbPoint, float glow, float tether, float hold)
-        {
-            MeshRenderer r = _fingers[hand];
-            if (r == null) return;
-            bool on = IsOrb && (glow > 0.01f || tether > 0.01f);
-            if (r.enabled != on) r.enabled = on;
-            if (!on) return;
-            MaterialPropertyBlock b = _fingerBlocks[hand];
-            b.SetVector("_P0", knuckle);
-            b.SetVector("_P1", mid);
-            b.SetVector("_P2", distal);
-            b.SetVector("_P3", tip);
-            b.SetVector("_P4", orbPoint);
-            b.SetFloat("_Glow", glow);
-            b.SetFloat("_Tether", tether);
-            b.SetFloat("_Hold", hold);
-            b.SetFloat("_T", _fieldT);
-            b.SetColor("_Color", CurrentColor);
-            r.SetPropertyBlock(b);
-        }
-
-        public void HideFingers()
-        {
-            foreach (MeshRenderer r in _fingers) if (r != null && r.enabled) r.enabled = false;
         }
 
         public void Appear(Pose pose)
@@ -361,7 +326,6 @@ namespace XRCollab.Measurement.Turns
             _fieldT += dt;
             TickField(c, hold);
             TickOrb(c, hold);
-            if (!orb) HideFingers();
 
             // Progreso de «mantener»: arco horario desde las 12. Mientras viaja: dos segmentos que orbitan el anillo
             // (el giro de un disco liso no se ve).
@@ -472,22 +436,6 @@ namespace XRCollab.Measurement.Turns
                 for (int k = 0; k < 4; k++) seeds.Add(seed);
             }
             return Quads(name, parent, mat, layer, owned, seeds, 0.3f);
-        }
-
-        /// <summary>Índice iluminado: corrientes por el dedo, brillo de la punta y el hilo a la esfera (posiciones en el shader).</summary>
-        private static MeshRenderer Finger(string name, Transform parent, Material mat, int layer, List<Material> owned)
-        {
-            var seeds = new List<Vector4>((FingerDots + TipGlows + TetherDots + Sheaths + 1) * 4);
-            var rng = new System.Random(name.Length * 77);
-            void Add(Vector4 seed) { for (int k = 0; k < 4; k++) seeds.Add(seed); }
-            for (int i = 0; i < FingerDots; i++) Add(new Vector4((i + (float)rng.NextDouble()) / FingerDots, (float)rng.NextDouble(), (float)rng.NextDouble(), 0f));
-            for (int i = 0; i < TipGlows; i++) Add(new Vector4(0f, 0f, (i + 0.5f) / TipGlows, 1f));
-            for (int i = 0; i < TetherDots; i++) Add(new Vector4((i + 0.5f) / TetherDots, (float)rng.NextDouble(), (float)rng.NextDouble(), 2f));
-            for (int i = 0; i < Sheaths; i++) Add(new Vector4((i + 0.5f) / Sheaths, 0f, (float)rng.NextDouble(), 3f));
-            Add(new Vector4(1f, 0f, 0.5f, 4f));   // aro de la punta
-            MeshRenderer r = Quads(name, parent, mat, layer, owned, seeds, 2000f);   // posiciones del mundo: que nunca se recorte
-            r.enabled = false;
-            return r;
         }
 
         private static MeshRenderer Quads(string name, Transform parent, Material mat, int layer, List<Material> owned, List<Vector4> seeds, float bounds)

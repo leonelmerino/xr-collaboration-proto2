@@ -189,9 +189,9 @@ public static class FeedbackCuePreview
     }
 
     /// <summary>
-    /// Vista previa del botón «orb» (esfera de puntos) con el índice iluminado (un índice sintético que se acerca desde
-    /// abajo a la derecha): quieto, índice a 20 y a 5 cm, adentro manteniendo, el cambio de turno, en turno, mano rara
-    /// adentro («solo con el índice») y recién movido (tenue hasta que la mano sale).
+    /// Vista previa del botón «orb» (esfera de puntos) con la punta de un índice sintético que se acerca desde abajo a la
+    /// derecha: quieto, índice a 20 y a 5 cm, adentro manteniendo, el cambio de turno, en turno, mano rara adentro («solo
+    /// con el índice») y recién movido (tenue hasta que la mano sale).
     ///   Unity.exe -batchmode -quit -projectPath . -executeMethod FeedbackCuePreview.RenderOrb -cue-bg mesa.png -cue-out carpeta
     /// </summary>
     public static void RenderOrb()
@@ -248,13 +248,10 @@ public static class FeedbackCuePreview
             File.WriteAllBytes(Path.Combine(outDir, $"orb{n++:00}_{name}.png"), composed.EncodeToPNG());
             sheet.Add(composed);
         }
-        // gap = distancia de la punta a la superficie (m; negativo = adentro). glow < 0: índice apagado.
+        // gap = distancia de la punta a la superficie (m; negativo = adentro); glow = 0: sin mano cerca.
         void Finger(float gap, float glow, float tether, float hold)
         {
             Vector3 tip = c - axis * (R + gap);
-            Vector3 bend = Vector3.down * 0.006f;
-            v.SetFinger(1, tip - axis * 0.09f + bend * 2f, tip - axis * 0.045f + bend, tip - axis * 0.02f, tip, c - axis * R, glow, tether, hold);
-            v.SetFinger(0, default, default, default, default, default, 0f, 0f, 0f);
             Vector3 local = v.Root.InverseTransformPoint(tip);
             float w = Mathf.Clamp01(1f - (gap - 0.02f) / 0.13f);
             v.HandLocal = new Vector4(local.x, local.y, local.z, glow > 0f ? w : 0f);

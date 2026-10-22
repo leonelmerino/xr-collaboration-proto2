@@ -5,7 +5,7 @@ activate it by putting the **tip of the index finger** into it (hand tracking, n
 and again for **turn end** (passthrough measurement mode only). The older flat-disc designs (`field`, `solid`,
 `ghost`, `fade`, `ring`) are still available with `turn style X`.
 
-## Sphere and lit index finger (`orb`, 2026-10-22)
+## Sphere (`orb`, 2026-10-22)
 On the first day with participants, people put odd hand shapes on the flat disc (palm, fist, pinch). They also
 didn't get where it was: it stayed fixed in the room, so it ended up behind the tower or out of reach.
 - **Sphere** (`Shaders/PadOrb`, one draw call): ~1000 light dots on a Fibonacci shell plus two dimmer inner shells
@@ -16,11 +16,7 @@ didn't get where it was: it stayed fixed in the room, so it ended up behind the 
   green → orange. Title above and status below, always facing the eyes.
 - **Only the index:** the index tip must enter from outside with the index **extended**. If another fingertip or the
   palm is inside too (fist, pinch, open hand), it doesn't count and the subtitle says **«SOLO CON EL ÍNDICE»**.
-- **Lit index finger** (`Shaders/FingerGlow`, one draw call per hand): from 30 cm away the index finger lights up.
-  It gets a soft sheath of light along the finger, dots that spiral up from the knuckle to the tip, a pulsing glow
-  and a crisp ring at the tip (the ring tightens while holding), and from 18 cm a stream of dots flowing from the
-  tip into the sphere. It only glows fully with the index extended (a fist gets a faint 35 % glow and no stream), so
-  it teaches which finger to use.
+
 
 ## Look and motion (`TurnPadVisual`)
 Sober and short, with no bounce:
@@ -32,7 +28,7 @@ Sober and short, with no bounce:
   leaves and one where it lands.
 - **Pinch:** a progress ring at the fingertips, which closes onto them when it completes.
 
-Batch preview with no headset: `FeedbackCuePreview.RenderOrb` (sphere + lit finger), `RenderPad` / `RenderField` (discs), in Assets/Editor.
+Batch preview with no headset: `FeedbackCuePreview.RenderOrb` (sphere), `RenderPad` / `RenderField` (discs), in Assets/Editor.
 
 ## Gesture (why it doesn't fire by accident)
 - Only the **index fingertip** counts, and only with the index **extended** (pointing, ≤ 50° bend).

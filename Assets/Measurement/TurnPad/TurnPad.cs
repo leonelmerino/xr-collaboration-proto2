@@ -25,7 +25,6 @@ namespace XRCollab.Measurement.Turns
     ///    «SOLO CON EL ÍNDICE»; disco: el dedo tiene que llegar desde arriba y no puede haber 2+ puntas encima;
     ///  - hay que mantenerlo <see cref="HoldSeconds"/>: un arco de progreso se llena mientras tanto;
     ///  - después de cada cambio hay que sacar el dedo antes de poder volver a presionar.
-    /// Al acercar la mano, el índice se ilumina (corrientes de luz hacia la punta y un hilo hacia la esfera).
     ///
     /// Moverlo: pinza «OK» (pulgar con índice, los otros tres dedos estirados) quieta 0,8 s → elige la altura, el ángulo y
     /// la distancia (dentro del alcance cómodo); el botón viaja ahí y queda tenue y desactivado hasta que la mano sale.
@@ -82,8 +81,6 @@ namespace XRCollab.Measurement.Turns
         private const float FreezeRange = 0.25f;       // una mano a menos de esto del botón: no se mueve (va a tocarlo)
         private const float ReleaseRange = 0.10f;      // recién movido: se activa cuando la mano entera está más lejos que esto…
         private const float ReleaseHoldSeconds = 0.3f; // …durante esto
-        private const float GlowRange = 0.30f;         // el índice se ilumina desde 30 cm de la superficie
-        private const float TetherRange = 0.18f;       // y el hilo hacia la esfera desde 18 cm
         private const float BadShapeSeconds = 0.25f, BadShapeHintSeconds = 1.6f;
         private const float AutoPlaceFocusedSeconds = 3f;
         private const float AutoPlaceMaxPitch = 30f;
@@ -358,8 +355,6 @@ namespace XRCollab.Measurement.Turns
             string hint = _disabled ? "retira la mano" : now < _badShapeUntil ? "solo con el índice" : "";
             if (hint != _hint) { _hint = hint; RefreshText(); }
 
-            if (orb && show && cam != null && handsOn && !_visual.Moving) UpdateFingers(space, _root.position, who);
-            else _visual.HideFingers();
             Hover = hover || who != null;
 
             if (who != null) _lastTouch = now;
@@ -440,30 +435,6 @@ namespace XRCollab.Measurement.Turns
                 near = w;
             }
             return best;
-        }
-
-        /// <summary>El índice de cada mano se ilumina al acercarse (más fuerte apuntando; con el hilo hacia la esfera).</summary>
-        private void UpdateFingers(Transform space, Vector3 c, string who)
-        {
-            for (int i = 0; i < 2; i++)
-            {
-                XRHand h = i == 0 ? _hands.leftHand : _hands.rightHand;
-                if (_disabled || !h.isTracked ||
-                    !World(h, XRHandJointID.IndexProximal, space, out Vector3 k) || !World(h, XRHandJointID.IndexIntermediate, space, out Vector3 m) ||
-                    !World(h, XRHandJointID.IndexDistal, space, out Vector3 d) || !World(h, XRHandJointID.IndexTip, space, out Vector3 t))
-                {
-                    _visual.SetFinger(i, default, default, default, default, default, 0f, 0f, 0f);
-                    continue;
-                }
-                float dist = (t - c).magnitude - TurnPadVisual.OrbRadius;
-                float glow = Mathf.SmoothStep(0f, 1f, 1f - Mathf.Clamp01((dist - 0.02f) / GlowRange));
-                bool pointing = IndexExtended(h, space);
-                if (!pointing) glow *= 0.35f;   // con el índice estirado brilla de verdad: así se entiende qué dedo usar
-                float tether = pointing && dist > OrbTouchMargin + 0.004f ? Mathf.SmoothStep(0f, 1f, 1f - Mathf.Clamp01((dist - 0.015f) / TetherRange)) : 0f;
-                bool pressing = who == (i == 0 ? "hand_left" : "hand_right");
-                Vector3 surface = c + (t - c).normalized * TurnPadVisual.OrbRadius;
-                _visual.SetFinger(i, k, m, d, t, surface, pressing ? 1f : glow, pressing ? 0f : tether, pressing ? Mathf.Clamp01(Progress) : 0f);
-            }
         }
 
         private static readonly XRHandJointID[] AnyJoint =
