@@ -19,10 +19,11 @@ namespace XRCollab.Measurement.Cues
         public const string PadFontName = "PadFont SDF";          // Geist (OFL) para el texto del botón «field»
         public const string PadTextMaterialName = "PadText";
         public const string PadOrbMaterialName = "PadOrb";          // botón de turno «orb» (TurnPad/Shaders/PadOrb)
+        public const string PadOrbShellMaterialName = "PadOrbShell"; // su cáscara de vidrio (TurnPad/Shaders/PadOrbShell)
 
         public TMP_FontAsset Font, PadFont;
         public Material PadText;
-        public Material Text, Metal, Additive, Alpha, PadField, PadOrb;
+        public Material Text, Metal, Additive, Alpha, PadField, PadOrb, PadOrbShell;
         public Texture2D Glow, Rays, Ring, Spark, Shadow;
 
         public bool Ok => Font != null && Text != null && Metal != null && Additive != null && Alpha != null;
@@ -41,6 +42,7 @@ namespace XRCollab.Measurement.Cues
                 Alpha = Resources.Load<Material>(ResourceFolder + "/" + AlphaMaterialName),
                 PadField = Resources.Load<Material>(ResourceFolder + "/" + PadFieldMaterialName),
                 PadOrb = Resources.Load<Material>(ResourceFolder + "/" + PadOrbMaterialName),
+                PadOrbShell = Resources.Load<Material>(ResourceFolder + "/" + PadOrbShellMaterialName),
                 PadFont = Resources.Load<TMP_FontAsset>(ResourceFolder + "/" + PadFontName),
                 PadText = Resources.Load<Material>(ResourceFolder + "/" + PadTextMaterialName),
                 Font = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF") ?? TMP_Settings.defaultFontAsset,

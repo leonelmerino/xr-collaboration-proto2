@@ -70,6 +70,9 @@ public static class FeedbackCueAssetsBuilder
         Shader orb = Shader.Find("XRCollab/PadOrb");
         if (orb != null) Save(new Material(orb), CueAssets.PadOrbMaterialName);
         else Debug.LogError("[FeedbackCues] no compila el shader XRCollab/PadOrb: el botón de turno vuelve al diseño «field»");
+        Shader shell = Shader.Find("XRCollab/PadOrbShell");
+        if (shell != null) Save(new Material(shell), CueAssets.PadOrbShellMaterialName);
+        else Debug.LogError("[FeedbackCues] no compila el shader XRCollab/PadOrbShell: la esfera queda sin cáscara");
 
         AssetDatabase.SaveAssets();
         Debug.Log($"[FeedbackCues] materiales listos en {Folder}");

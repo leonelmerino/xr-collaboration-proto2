@@ -77,8 +77,9 @@ namespace XRCollab.Measurement.Turns
         private readonly MeshRenderer _field;
         private readonly MaterialPropertyBlock _fieldBlock = new MaterialPropertyBlock();
         private float _flash, _fieldT, _dim;
-        private readonly MeshRenderer _orb;
-        private readonly MaterialPropertyBlock _orbBlock = new MaterialPropertyBlock();
+        private readonly MeshRenderer _orb, _orbShell;   // puntos + cáscara de vidrio (sin ella se leía como un círculo)
+        private readonly MaterialPropertyBlock _orbBlock = new MaterialPropertyBlock(), _shellBlock = new MaterialPropertyBlock();
+        private static Mesh _sphereMesh;
         private const int OrbDots = 1000, OrbCores = 3;
         private const int FieldDots = 1100;
         public const float FieldRadius = 0.075f;   // radio del campo de puntos (m)
@@ -114,6 +115,7 @@ namespace XRCollab.Measurement.Turns
             if (assets.PadField != null) _field = Field("Field", _body, assets.PadField, layer, owned);
             if (assets.PadOrb != null) _orb = Orb("Orb", _body, assets.PadOrb, layer, owned);
             else Style = PadStyle.Field;
+            if (_orb != null && assets.PadOrbShell != null) _orbShell = Shell("OrbShell", _body, assets.PadOrbShell, layer, owned);
 
             // Ondas en el mundo (no giran con el disco).
             _rippleA = new PadArc("RippleFrom", owner, assets.Alpha, layer, owned);
@@ -321,7 +323,7 @@ namespace XRCollab.Measurement.Turns
             float pIn = orb ? OrbRadius + 0.0050f : field ? FieldRadius + 0.0025f : 0.0495f;
             float pOut = orb ? OrbRadius + 0.0085f : field ? FieldRadius + 0.0060f : 0.0565f;
             if (field) trackAlpha = Mathf.Lerp(0.22f, 0.5f, Mathf.Max(_near, hold));
-            if (orb) trackAlpha = Mathf.Lerp(0.14f, 0.42f, Mathf.Max(_near, hold));
+            if (orb) trackAlpha = hold > 0.01f ? Mathf.Lerp(0.2f, 0.45f, hold) : 0f;   // sin aro en reposo: un aro plano la aplanaba
             _track.Set(tIn, tOut, 0f, trackSweep, WithAlpha(Color.Lerp(c, Color.white, field || orb ? 0.5f : 0f), trackAlpha * Visibility * lit));
             _fieldT += dt;
             TickField(c, hold);
@@ -404,6 +406,7 @@ namespace XRCollab.Measurement.Turns
         {
             bool on = IsOrb;
             if (_orb != null && _orb.enabled != on) _orb.enabled = on;
+            if (_orbShell != null && !on && _orbShell.enabled) _orbShell.enabled = false;
             if (!on) return;
             _orbBlock.SetFloat("_T", _fieldT);
             _orbBlock.SetColor("_Color", c);
@@ -415,6 +418,35 @@ namespace XRCollab.Measurement.Turns
             _orbBlock.SetVector("_Hand", HandLocal);
             _orbBlock.SetVector("_HoldDir", HoldDir);
             _orb.SetPropertyBlock(_orbBlock);
+            if (_orbShell == null) return;
+            if (!_orbShell.enabled) _orbShell.enabled = true;
+            _shellBlock.SetColor("_Color", c);
+            _shellBlock.SetFloat("_Near", _near);
+            _shellBlock.SetFloat("_Hold", Mathf.Clamp01(hold));
+            _shellBlock.SetFloat("_Flash", _flash);
+            _shellBlock.SetFloat("_Dim", _dim);
+            _orbShell.SetPropertyBlock(_shellBlock);
+        }
+
+        /// <summary>Cáscara: una esfera de malla del radio de la esfera de puntos, con el shader de vidrio (PadOrbShell).</summary>
+        private static MeshRenderer Shell(string name, Transform parent, Material mat, int layer, List<Material> owned)
+        {
+            if (_sphereMesh == null)
+            {
+                GameObject tmp = GameObject.CreatePrimitive(PrimitiveType.Sphere);   // la malla de esfera de Unity (diámetro 1)
+                _sphereMesh = tmp.GetComponent<MeshFilter>().sharedMesh;
+                Object.DestroyImmediate(tmp);   // ya: que su collider no exista ni un cuadro
+            }
+            var go = new GameObject(name) { layer = layer };
+            go.transform.SetParent(parent, false);
+            go.transform.localScale = Vector3.one * (OrbRadius * 2f);
+            go.AddComponent<MeshFilter>().sharedMesh = _sphereMesh;
+            var r = go.AddComponent<MeshRenderer>();
+            var m = new Material(mat);
+            owned.Add(m);
+            r.sharedMaterial = m;
+            Setup(r);
+            return r;
         }
 
         /// <summary>Esfera: <see cref="OrbDots"/> quads en direcciones de Fibonacci (parejas, sin polos marcados) + el núcleo.</summary>

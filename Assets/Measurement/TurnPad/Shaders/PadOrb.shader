@@ -129,9 +129,14 @@ Shader "XRCollab/PadOrb"
 
                 // Borde: los puntos de la silueta brillan más y más blancos (la esfera se lee nítida sobre cualquier fondo).
                 float rim = (shell < 1 ? 0 : 1) * pow(saturate(1 - abs(2 * front01 - 1)), 2);
-                float heat = saturate(reach * (1 - outside) * 0.8 + hole * 1.3 + fill * 0.7 + shock * 0.9);
+                // Volumen: luz desde arriba y un poco de frente (el botón mira a los ojos: -Z = hacia el participante).
+                // Arriba más claro, abajo más oscuro, y un brillo arriba-adelante: se lee como esfera, no como círculo.
+                float3 L = normalize(float3(0, 0.85, -0.45));
+                float lit = shell < 1 ? 1 : 0.25 + 0.75 * saturate(dot(d, L));
+                float spot = shell < 1 ? 0 : pow(saturate(dot(d, normalize(L + float3(0, 0, -1)))), 28);
+                float heat = saturate(reach * (1 - outside) * 0.8 + hole * 1.3 + fill * 0.7 + shock * 0.9 + spot * 0.7);
                 float twinkle = 0.82 + 0.18 * sin(_T * (2.5 + 5 * rnd) + rnd * 40);
-                float a = twinkle * lerp(0.4, 1.0, front01) * (shell < 1 ? 0.5 : 1.0) *
+                float a = twinkle * lerp(0.2, 1.0, front01) * lit * (shell < 1 ? 0.5 : 1.0) *
                           saturate(0.5 + 0.25 * _Near + heat * 0.9 + fill * 0.3 + rim * 0.35);
                 float size = lerp(0.0019, 0.0046, heat) * (0.85 + 0.3 * rnd) * (shell < 1 ? 0.8 : 1.0) * (1 + 0.25 * rim);
                 float3 vc = viewP;
