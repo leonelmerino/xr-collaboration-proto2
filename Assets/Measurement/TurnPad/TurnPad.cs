@@ -235,6 +235,16 @@ namespace XRCollab.Measurement.Turns
                     if (!InTurn) return "no hay turno en curso";
                     Toggle("panel");
                     return null;
+                case "reset":
+                    // Panel: vuelve a contar desde el turno 1 (nueva sesión) sin reiniciar la app.
+                    if (InTurn) return $"el turno {TurnNumber} está en curso: termínalo antes de reiniciar la cuenta";
+                    TurnNumber = 0;
+                    _lastDuration = 0;
+                    _lastUtc = RecordingCommand.FormatUtc(PreciseClock.UtcNow);
+                    SaveState();
+                    Debug.Log($"{LogPrefix}cuenta de turnos reiniciada");
+                    AcquisitionEventManager.Instance?.LogLocalExternal("TURN_PAD", "RESET");
+                    return null;
                 case "place":
                     return Place(true) ? null : "no hay cámara XR todavía";
                 case "show":
@@ -245,7 +255,7 @@ namespace XRCollab.Measurement.Turns
                     Visible = false;
                     return null;
                 default:
-                    return "turn start|end|place|show|hide|style orb|field|solid|ghost|fade|ring|mode pad|gesture|both|latest PC CLAVE";
+                    return "turn start|end|reset|place|show|hide|style orb|field|solid|ghost|fade|ring|mode pad|gesture|both|latest PC CLAVE";
             }
         }
 
