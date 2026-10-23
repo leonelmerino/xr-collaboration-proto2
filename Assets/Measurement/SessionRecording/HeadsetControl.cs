@@ -22,6 +22,10 @@ namespace XRCollab.Measurement.Recording
         /// el PC está conectado a esta app (RecordingIndicator la usa para el punto azul, sin depender de archivos).</summary>
         public static float LastRequestTime = -999f;
 
+        /// <summary>Hay una sesión en curso («start» sin «stop»): RecordingIndicator pone el punto rojo aunque nadie
+        /// grabe el video del visor (S2/S3 graban por Lab-Recording.ps1, sin rec_state.txt).</summary>
+        public static bool SessionActive { get; private set; }
+
         private RecordingControlServer _server;
         private string _marksPath;
         private string _label = "";
@@ -65,12 +69,14 @@ namespace XRCollab.Measurement.Recording
                     if (_startUtc != null) return Reply(false, $"ya hay una sesión en curso ({_label}): mandar «stop» primero");
                     _label = cmd.Label ?? "";
                     _startUtc = cmd.AtUtc.HasValue && cmd.AtUtc.Value > now ? cmd.AtUtc.Value : now;
+                    SessionActive = true;
                     Session(true);
                     WriteMark(now, "start " + _label);
                     return Reply(true, "visor: sin video, solo marcas y BioLab");
                 case RecordingCommandKind.Stop:
                     if (_startUtc == null) return Reply(false, "no hay sesión en curso");
                     _startUtc = null;
+                    SessionActive = false;
                     Session(false);
                     WriteMark(now, "stop " + _label);
                     return Reply(true, "");

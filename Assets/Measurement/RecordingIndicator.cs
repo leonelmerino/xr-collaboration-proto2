@@ -7,7 +7,7 @@ using XRCollab.Measurement.Recording;
 /// <summary>
 /// Punto chico arriba a la derecha de la vista del visor, para saber de un vistazo si el PC recibe la imagen:
 ///   - azul semitransparente: STIMULUS1 está conectado a este visor (USB) y puede ver su imagen en vivo;
-///   - rojo: además se está grabando el video de la sesión;
+///   - rojo: hay una grabación en curso (sesión iniciada en la app o video del visor grabándose);
 ///   - amarillo semitransparente: STIMULUS1 perdió este visor (sin USB/adb o panel cerrado).
 /// Solo en el build del visor (Android). La app no sabe nada de la red ni del video: el panel de sesión
 /// (tools\lab-dashboard, desde 2026-10-15; antes la ventana «Visores en vivo») toca por adb live_state.txt en
@@ -54,7 +54,8 @@ public class RecordingIndicator : MonoBehaviour
         if (Time.unscaledTime < _next) return;
         _next = Time.unscaledTime + PollSeconds;
 
-        bool rec = File.Exists(_recPath);
+        // Rojo: video del visor grabándose (rec_state.txt, solo STIMULUS1) o sesión iniciada en la app («start» del panel).
+        bool rec = File.Exists(_recPath) || HeadsetControl.SessionActive;
         bool live = false;
         try { live = File.Exists(_livePath) && (DateTime.UtcNow - File.GetLastWriteTimeUtc(_livePath)).TotalSeconds < LiveTimeoutSeconds; }
         catch (Exception) { }
