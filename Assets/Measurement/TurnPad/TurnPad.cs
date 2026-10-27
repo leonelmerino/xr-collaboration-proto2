@@ -75,6 +75,9 @@ namespace XRCollab.Measurement.Turns
         private const float DefaultRadius = 0.33f;
         private const float DefaultDrop = 0.45f;
         private const float MinRadius = 0.20f, MaxRadius = 0.48f;   // alcance cómodo al elegir con la pinza
+        // Una ubicación guardada se usa al abrir la app solo si es sensata: al lado (no al frente, donde está la torre)
+        // y a una altura de mano respecto de los ojos. Si no, va el lugar por defecto.
+        private const float MinSavedSideAngle = 12f, MinSavedDrop = 0.20f, MaxSavedDrop = 0.65f;
 
         // Esfera («orb»).
         private const float OrbTouchMargin = 0.008f;   // la punta cuenta hasta 8 mm fuera de la superficie
@@ -914,10 +917,23 @@ namespace XRCollab.Measurement.Turns
             string how = "por defecto";
             if (!Placed && _savedPad != null && _savedPad.PadRadius > 0f)
             {
-                angle = _savedPad.PadAngle;
-                radius = _savedPad.PadRadius;
-                if (_savedPad.PadOrigin == "Floor" && OriginMode() == "Floor") height = _savedPad.PadHeight;
-                how = "guardado";
+                // Solo una ubicación guardada sensata (2026-10-27): en S2 volvía siempre una de otro día justo al frente
+                // (2°), a 0,60 m y a la altura de la mesa, detrás de la torre; el participante no lo veía ni lo movía.
+                float savedDrop = head.position.y - _savedPad.PadHeight;
+                bool floor = _savedPad.PadOrigin == "Floor" && OriginMode() == "Floor";
+                if (Mathf.Abs(_savedPad.PadAngle) < MinSavedSideAngle || _savedPad.PadRadius > MaxRadius ||
+                    (floor && (savedDrop < MinSavedDrop || savedDrop > MaxSavedDrop)))
+                {
+                    how = $"por defecto (descartado el guardado: angle={_savedPad.PadAngle:F0} radius={_savedPad.PadRadius:F2})";
+                    _savedPad = null;
+                }
+                else
+                {
+                    angle = _savedPad.PadAngle;
+                    radius = _savedPad.PadRadius;
+                    if (floor) height = _savedPad.PadHeight;
+                    how = "guardado";
+                }
             }
             _follow.PointAt(angle, radius, out float px, out float pz);
             Vector3 pos = new Vector3(px, height, pz);
