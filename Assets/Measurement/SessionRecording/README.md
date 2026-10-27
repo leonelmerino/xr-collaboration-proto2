@@ -92,6 +92,12 @@ Mientras graba video, graba también dos pistas de audio en WAV aparte (PCM 16 b
   dispositivo, `startUtc`, `effectiveRate`, muestras, segundos, error).
 - Barra de arriba: `REC ... · audio app+mic` (lo que falte, en naranjo: `sin mic`).
 
+### Micrófono en vivo del visor (app nativa, 2026-10-27)
+`HeadsetMicStream.cs`: en el visor, 127.0.0.1:47812. Con un oyente (el panel de sesión, botón de audífonos) prende el
+micrófono y manda «PCM16 16000 1» y audio s16le mono 16 kHz en bloques de ~40 ms; sin oyente el micrófono queda
+apagado. Si el PC se atrasa, se pierde audio viejo (≤ 0,5 s en cola) en vez de acumular latencia. RECORD_AUDIO lo da
+`adb install -g` (Deploy-LabHeadsetApp.ps1). El panel guarda lo que escucha en `sessionsudio-live`.
+
 ## Dónde queda
 
 `%USERPROFILE%\AppData\LocalLow\DefaultCompany\xr-collaboration-proto2\Recordings\` (junto a la telemetría):
