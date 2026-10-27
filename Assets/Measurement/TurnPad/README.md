@@ -81,21 +81,22 @@ from the floor). It is not a 1:1 head follow:
   bobbing.
 - **Frozen** while any hand is within 25 cm of the button (they are reaching for it), while holding, pinching or
   while the button is travelling.
-- **Default:** 31° to the side of the hand (`-turnpad-side left|right`), 45 cm from the axis, 40 cm below the eyes,
+- **Default:** 31° to the side of the hand (`-turnpad-side left|right`), 33 cm from the axis, 45 cm below the eyes (closer since 2026-10-27: at 45 cm participants found it too far),
   placed automatically the first time the headset is worn (FOCUSED 3 s, looking roughly level).
 - **Pinch to move** (participant, no operator): an "OK" pinch (thumb tip on index tip, middle/ring/little extended)
   held still 0.8 s. The pinch point picks the **height, the angle and the distance** (distance clamped to
-  22–65 cm). The user's axis is taken from the head at that moment; the body front stays as it was. The button
+  20–48 cm). The user's axis is taken from the head at that moment; the body front stays as it was. The button
   travels there and then stays **dim and disabled until the whole hand is > 10 cm from it for 0.3 s**; the subtitle
   says «RETIRA LA MANO». False-trigger guards are as before: the pinch must close from an open hand within 0.6 s,
   the other three fingers straight, still within 3 cm. `-noturnpad-pinch` disables it.
 - **`turn place`** (panel «Colocar»): at the participant's index tip, or the default spot.
+- **`turn near`** (panel «Acercar»): back to the default spot next to the hand, forgetting the saved one.
 - The chosen angle/distance (and the height, if the tracking origin is the floor) are saved in `turn-state.txt` and
   reused after an app restart. Logged as `TURN_PAD PLACED|MOVED … angle= radius= height= origin=`. The status shows
   `turn.pad {angle, radius, height, disabled}`.
 
 ## Control channel (127.0.0.1:47811)
-`turn start|end` (operator fallback, source `panel`), `turn place`, `turn show|hide`. `-noturnpad` disables it.
+`turn start|end` (operator fallback, source `panel`), `turn place`, `turn near`, `turn show|hide`. `-noturnpad` disables it.
 
 ## Design variants and turn gesture (2026-10-15)
 Without depth on VIVE PC streaming, the hand cut-out trails behind, so the hand can look like it is *under* the disc.

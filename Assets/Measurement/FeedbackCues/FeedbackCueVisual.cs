@@ -198,6 +198,16 @@ namespace XRCollab.Measurement.Cues
                 case CueIcon.Cross: Shape("Cross", CueMeshes.Cross(), depth, bevel, _pal.Icon, _pal.Metallic, _pal.Smoothness, 0f, assets); break;
                 case CueIcon.Star: Shape("Star", CueMeshes.Star(), depth, bevel, _pal.Icon, _pal.Metallic, _pal.Smoothness, 0f, assets); break;
                 case CueIcon.Bolt: Shape("Bolt", CueMeshes.Bolt(), depth, bevel, _pal.Icon, _pal.Metallic, _pal.Smoothness, 0f, assets); break;
+                case CueIcon.Tower:
+                    // Cada bloque un poco más adelante que el de abajo: las esquinas inclinadas no pelean en profundidad.
+                    for (int i = 0; i < CueMeshes.TowerBlocks.Length; i++)
+                    {
+                        Vector3 b = CueMeshes.TowerBlocks[i];
+                        Color c = i % 2 == 0 ? _pal.Icon : Color.Lerp(_pal.Icon, _pal.Side, 0.25f);
+                        Shape("Block" + i, CueMeshes.Block(new Vector2(b.x, b.y), CueMeshes.TowerBlockWidth, CueMeshes.TowerBlockHeight, b.z),
+                              depth, bevel * 0.6f, c, _pal.Metallic, _pal.Smoothness, -i * 0.004f, assets);
+                    }
+                    break;
                 case CueIcon.Warning:
                     Shape("Triangle", CueMeshes.Triangle(), depth, bevel, _pal.Icon, _pal.Metallic, _pal.Smoothness, 0f, assets);
                     Shape("Bang", CueMeshes.Bar(new Vector2(0f, -0.03f), new Vector2(0f, 0.2f), 0.075f), depth * 0.5f, 0.015f, dark, 0.2f, 0.6f, -depth * 0.62f, assets);

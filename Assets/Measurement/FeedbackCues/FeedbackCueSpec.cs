@@ -7,12 +7,12 @@ namespace XRCollab.Measurement.Cues
     /// <summary>Tono de la señal: define colores, ícono por defecto, sonido y animación.</summary>
     public enum CueTone { Great, Good, Bad, Slow, Warn, Info }
 
-    public enum CueIcon { Auto, None, Check, Cross, Clock, Star, Warning, Bolt }
+    public enum CueIcon { Auto, None, Check, Cross, Clock, Star, Warning, Bolt, Tower }
 
     /// <summary>
     /// Una señal 3D pedida desde afuera: «tono|ícono|título|subtítulo|segundos» (solo el título es obligatorio en la
     /// práctica; lo demás tiene valores por defecto). Ej.: «bad|cross|MAL COLOCADO|El bloque quedó torcido».
-    /// Tonos: great good bad slow warn info. Íconos: auto none check cross clock star warning bolt.
+    /// Tonos: great good bad slow warn info. Íconos: auto none check cross clock star warning bolt tower.
     /// </summary>
     public sealed class FeedbackCueSpec
     {
@@ -41,7 +41,7 @@ namespace XRCollab.Measurement.Cues
             else
             {
                 if (!TryTone(parts[0].Trim(), out spec.Tone)) { error = $"tono desconocido '{parts[0].Trim()}' (great good bad slow warn info)"; return null; }
-                if (parts.Length > 1 && !TryIcon(parts[1].Trim(), out spec.Icon)) { error = $"ícono desconocido '{parts[1].Trim()}' (auto none check cross clock star warning bolt)"; return null; }
+                if (parts.Length > 1 && !TryIcon(parts[1].Trim(), out spec.Icon)) { error = $"ícono desconocido '{parts[1].Trim()}' (auto none check cross clock star warning bolt tower)"; return null; }
                 if (parts.Length > 2) spec.Title = Clean(parts[2], MaxTitleLength);
                 if (parts.Length > 3) spec.Subtitle = Clean(parts[3], MaxSubtitleLength);
                 if (parts.Length > 4 && parts[4].Trim().Length > 0)
@@ -96,6 +96,7 @@ namespace XRCollab.Measurement.Cues
                 case "star": icon = CueIcon.Star; return true;
                 case "warning": icon = CueIcon.Warning; return true;
                 case "bolt": icon = CueIcon.Bolt; return true;
+                case "tower": icon = CueIcon.Tower; return true;
                 default: icon = CueIcon.Auto; return false;
             }
         }

@@ -69,10 +69,12 @@ namespace XRCollab.Measurement.Turns
         private const float MaxOtherFingerBend = 50f;
 
         // Ubicación por defecto respecto del participante: 31° hacia el lado de la mano, a 45 cm del eje, 40 cm bajo los ojos.
+        // 2026-10-27: más cerca y un poco más abajo. En la prueba del 2026-10-23 a los participantes el botón «les quedaba
+        // muy lejos» (0,45 m del eje, hasta 0,65 con la pinza) y el operador terminó marcando los turnos desde el panel.
         private const float DefaultAngle = 31f;
-        private const float DefaultRadius = 0.45f;
-        private const float DefaultDrop = 0.40f;
-        private const float MinRadius = 0.22f, MaxRadius = 0.65f;   // alcance cómodo al elegir con la pinza
+        private const float DefaultRadius = 0.33f;
+        private const float DefaultDrop = 0.45f;
+        private const float MinRadius = 0.20f, MaxRadius = 0.48f;   // alcance cómodo al elegir con la pinza
 
         // Esfera («orb»).
         private const float OrbTouchMargin = 0.008f;   // la punta cuenta hasta 8 mm fuera de la superficie
@@ -247,6 +249,11 @@ namespace XRCollab.Measurement.Turns
                     return null;
                 case "place":
                     return Place(true) ? null : "no hay cámara XR todavía";
+                case "near":
+                    // Panel «Acercar»: vuelve al lugar cómodo de siempre (al lado de la mano), olvidando el guardado.
+                    _savedPad = null;
+                    Visible = true;
+                    return PlaceDefault() ? null : "no hay cámara XR todavía";
                 case "show":
                     Visible = true;
                     if (!Placed) Place(false);
@@ -255,7 +262,7 @@ namespace XRCollab.Measurement.Turns
                     Visible = false;
                     return null;
                 default:
-                    return "turn start|end|reset|place|show|hide|style orb|field|solid|ghost|fade|ring|mode pad|gesture|both|latest PC CLAVE";
+                    return "turn start|end|reset|place|near|show|hide|style orb|field|solid|ghost|fade|ring|mode pad|gesture|both|latest PC CLAVE";
             }
         }
 
@@ -887,6 +894,15 @@ namespace XRCollab.Measurement.Turns
         /// participante muestra con el dedo dónde lo quiere). Si no: la ubicación guardada (ángulo y distancia; la altura
         /// solo si el origen del seguimiento es el piso, como cuando se guardó) o la de siempre, al lado de la mano.
         /// </summary>
+        private bool PlaceDefault()
+        {
+            bool was = Placed;
+            Placed = false;   // así Place() no toma la ubicación actual como eje ni la guardada
+            if (Place(false)) return true;
+            Placed = was;
+            return false;
+        }
+
         private bool Place(bool atFinger)
         {
             Camera cam = Camera.main;

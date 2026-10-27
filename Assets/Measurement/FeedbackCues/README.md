@@ -9,7 +9,7 @@ cue tono|ícono|TÍTULO|subtítulo|segundos      ej.  cue bad|cross|MAL COLOCADO
 cue clear
 ```
 - **Tonos:** great (dorado) · good (verde) · bad (rojo) · slow (naranjo) · warn (amarillo) · info (azul).
-- **Íconos:** auto (el del tono) · none · check · cross · clock · star · warning · bolt.
+- **Íconos:** auto (el del tono) · none · check · cross · clock · star · warning · bolt · tower (torre de Jenga cayéndose, para «torre caída»).
 - **Segundos:** cuánto queda en pantalla (0,5–15; 2,4 por defecto).
 
 Cada señal queda en el CSV de eventos (`FEEDBACK_CUE`) y como marca del video si se está grabando.

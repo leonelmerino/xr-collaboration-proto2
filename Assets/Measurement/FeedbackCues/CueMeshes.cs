@@ -67,6 +67,28 @@ namespace XRCollab.Measurement.Cues
             new Vector2(-0.16f, -0.52f), new Vector2(0.31f, 0.09f), new Vector2(0.05f, 0.09f),
         };
 
+        /// <summary>Un bloque de Jenga de frente: rectángulo de ancho <paramref name="w"/> y alto <paramref name="h"/>, girado.</summary>
+        public static Vector2[] Block(Vector2 center, float w, float h, float degrees)
+        {
+            var pts = new[] { new Vector2(-w, -h), new Vector2(w, -h), new Vector2(w, h), new Vector2(-w, h) };
+            for (int i = 0; i < 4; i++) pts[i] *= 0.5f;
+            pts = Rotate(pts, degrees);
+            for (int i = 0; i < 4; i++) pts[i] += center;
+            return pts;
+        }
+
+        /// <summary>
+        /// Torre de Jenga que se viene abajo (ícono de «torre caída», 2026-10-27): dos bloques firmes abajo y los de
+        /// arriba cada vez más inclinados, el último cayendo. (centro x, centro y, giro en grados) de cada bloque.
+        /// </summary>
+        public static readonly Vector3[] TowerBlocks =
+        {
+            new Vector3(-0.14f, -0.42f, 0f), new Vector3(-0.13f, -0.26f, 0f), new Vector3(-0.07f, -0.10f, -7f),
+            new Vector3(0.06f, 0.07f, -19f), new Vector3(0.25f, 0.29f, -40f),
+        };
+
+        public const float TowerBlockWidth = 0.58f, TowerBlockHeight = 0.13f;
+
         /// <summary>Contorno de una línea quebrada gruesa (uniones en inglete, extremos planos).</summary>
         public static Vector2[] Stroke(Vector2[] line, float width)
         {
